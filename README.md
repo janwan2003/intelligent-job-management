@@ -1,6 +1,4 @@
-# Embedding Model Selection Platform
-
-Platform for benchmarking and selecting embedding models on your data, built on Azure.
+# Research project 4.3
 
 ## Prerequisites
 
@@ -53,4 +51,4 @@ documentation/    # Project specs & diagrams
 
 **Backend**: Python 3.12, FastAPI, UV, Ruff, Mypy, Deptry  
 **Frontend**: TypeScript, React, Vite, pnpm, TanStack Query, Tailwind  
-**Azure**: Functions, Cosmos DB, Blob Storage, OpenAI
+**AWS**: *not defined yet*

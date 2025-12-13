@@ -1,3 +1,3 @@
-"""Embedding Model Selection Platform - Backend API."""
+"""Backend API."""
 
 __version__ = "0.1.0"

@@ -21,8 +21,8 @@ function App() {
   return (
     <>
       <div>
-        <h1>Embedding Model Selection Platform</h1>
-        <p>Find the best embedding model for your use case</p>
+        <h1>Intelligent Job Management System for GPU-Accelerated Deep Learning Clusters</h1>
+        <p>Queue models and have fun!</p>
       </div>
       <div className="card">
         <h2>Backend API Status</h2>

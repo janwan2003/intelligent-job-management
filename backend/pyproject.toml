@@ -1,7 +1,7 @@
 [project]
-name = "embedding-model-platform"
+name = "intelligent-job-management"
 version = "0.1.0"
-description = "Cloud-based platform for choosing the best embedding model"
+description = "Intelligent Job Management System for GPU-Accelerated Deep Learning Clusters"
 requires-python = ">=3.12"
 dependencies = [
     "fastapi>=0.104.0",

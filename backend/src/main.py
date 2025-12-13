@@ -6,8 +6,8 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 app = FastAPI(
-    title="Embedding Model Selection Platform",
-    description="API for benchmarking and selecting embedding models",
+    title="Intelligent Job Management Platform",
+    description="API for Intelligent Job Management",
     version="0.1.0",
 )
 
@@ -24,7 +24,7 @@ app.add_middleware(
 @app.get("/")
 async def root() -> dict[str, str]:
     """Health check endpoint."""
-    return {"status": "ok", "message": "Embedding Model Selection Platform API"}
+    return {"status": "ok", "message": "Intelligent Job Management Platform API"}
 
 
 @app.get("/health")
