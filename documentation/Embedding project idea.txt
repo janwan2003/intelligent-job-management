@@ -1,0 +1,24 @@
+Project idea: Platform for choosing the best embedding model for your data
+
+User story motivation: A user has a specific use case where they want to apply embeddings. Choosing a model is not trivial: different models behave differently across domains, tasks, sizes, and cost constraints, so simply taking the top model from the MTEB leaderboard (https://huggingface.co/spaces/mteb/leaderboard) is often not enough.
+
+User's story on the platform:
+1. The user wants to know which model is best for their specific use case.
+2. They can upload data for their task (ex. retrieval or classification) and define constraints (ex. model size and price). The platform selects suitable candidates from the MTEB leaderboard and benchmarks them on the user’s data.
+3. The user receives insights on which model performs best and how each model scored across different benchmarks.
+
+In the MVP we would have:
+1. A simple platform built on Azure App Service as the frontend/backend interface
+2. Storage of users, experiment metadata, and results in Azure Cosmos DB
+3. Benchmarking jobs executed via Azure Functions (FaaS) [as they are computational heavy]
+4. A basic retrieval benchmark using an LLM-as-judge (Azure OpenAI) on the user’s queries and documents (for cases without labeled data)
+5. Summary showing which model fits the user’s constraints best
+
+Further improvements if time allows:
+1. An Azure Semantic Kernel agent supporting model selection and guiding the user
+2. Messaging and job scheduling using Azure Service Bus
+3. Finetuning embedding models on user data
+4. Additional benchmarks for label data for example:
+– Recall@10 when relevance labels are available
+– benchmarks for classification (ex. Logistic Regression's / SVM classifier's F1 score [it's heavy but usually works best of all models])
+– a positive–negative keyword benchmark to test domain-specific behavior (ex. hazardous waste / non-hazardous waste) 
