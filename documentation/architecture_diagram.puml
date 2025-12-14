@@ -1,0 +1,66 @@
+@startuml IntelligentJobManagementSystem
+title RP4.3 — Intelligent Job Management System (Kubernetes + S3)
+
+skinparam shadowing false
+skinparam componentStyle rectangle
+skinparam wrapWidth 240
+skinparam defaultTextAlignment left
+
+actor "User" as User
+
+package "Control Plane" {
+
+  rectangle "Web UI\nReact" as UI
+
+  rectangle "Backend API\nFastAPI" as API
+
+  rectangle "Event Bus\nNATS + JetStream" as BUS
+
+  database  "State Store\nPostgreSQL" as DB
+
+  rectangle "Scheduler / Optimizer\nHeuristics + ML models" as SCHED
+
+  rectangle "Kubernetes Actuator\nOperator / Controller" as ACT
+}
+
+package "Execution Plane" {
+
+  cloud "Kubernetes Cluster\nAmazon EKS" as EKS {
+
+    rectangle "Node Autoscaling\nKarpenter" as KARP
+
+    rectangle "GPU Integration\nNVIDIA Device Plugin" as NVIDIA
+
+    rectangle "Training Jobs\nKubernetes Jobs / Pods" as PODS
+  }
+
+  cloud "Artifact Storage\nAmazon S3" as S3
+}
+
+' -------------------------
+' Main interactions
+' -------------------------
+User --> UI : submit jobs\nview status
+UI --> API : HTTP requests
+
+API --> DB : persist job specs\nand state
+API --> BUS : publish job events
+
+BUS --> SCHED : deliver events
+SCHED --> DB : read/update state
+SCHED --> ACT : start / stop / resume\nplacement decisions
+
+ACT --> EKS : create/update jobs\nGPU + node constraints
+
+PODS --> S3 : checkpoints & artifacts\n(resumable jobs)
+
+KARP --> EKS : provision GPU nodes\non demand
+
+note bottom
+Training jobs follow a standardized runtime contract:
+- periodic checkpointing
+- resumable execution
+- SIGTERM triggers checkpoint and clean exit
+end note
+
+@enduml
