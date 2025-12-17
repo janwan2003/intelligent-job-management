@@ -1,0 +1,65 @@
+@startuml CurrentPrototype
+title Current Prototype Architecture
+
+skinparam shadowing false
+skinparam componentStyle rectangle
+
+actor User
+
+package "Frontend" {
+    rectangle "Web UI\n(React)" as UI
+}
+
+package "Backend Services" {
+    rectangle "REST API\n(FastAPI)" as API
+    database "PostgreSQL" as DB
+    rectangle "NATS\nJetStream" as NATS
+}
+
+package "Worker" {
+    rectangle "Job Worker\n(Python)" as JobWorker
+}
+
+package "Execution" {
+    rectangle "Docker\nContainers" as Docker
+    folder "Checkpoints" as Checkpoints
+}
+
+' Interactions
+User --> UI : submit/stop/resume
+UI --> API : HTTP
+API --> DB : job state
+API --> NATS : publish events
+NATS --> JobWorker : subscribe
+JobWorker --> Docker : run containers
+Docker --> Checkpoints : save/load
+
+note right of API
+    • Job CRUD
+    • Stop/Resume
+    • Image upload
+end note
+
+note right of JobWorker
+    • FIFO queue
+    • Single job at a time
+    • Event-driven
+    • State reconciliation
+    
+    → Evolves to: Scheduler + K8s Actuator
+end note
+
+note right of Docker
+    • Signal handling
+    • Checkpointing
+    • Resumable execution
+    
+    → Evolves to: K8s Jobs / Pods
+    → Docker CLI → Kubernetes API
+end note
+
+note right of Checkpoints
+    → Evolves to: S3 (distributed storage)
+end note
+
+@enduml

@@ -30,3 +30,6 @@ dist/
 # Environment
 .env
 .env.local
+
+# Data directories
+data/

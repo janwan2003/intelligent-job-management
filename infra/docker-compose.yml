@@ -1,0 +1,74 @@
+services:
+  postgres:
+    image: postgres:16
+    container_name: ijm-postgres
+    environment:
+      POSTGRES_DB: ijm
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+    ports:
+      - "5432:5432"
+    volumes:
+      - ../data/pg:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  nats:
+    image: nats:2.10
+    container_name: ijm-nats
+    command: ["-js"]
+    ports:
+      - "4222:4222"
+      - "8222:8222"
+
+  api:
+    build:
+      context: ../backend
+      dockerfile: Dockerfile
+    container_name: ijm-api
+    environment:
+      DATABASE_URL: postgresql://postgres:postgres@postgres:5432/ijm
+      NATS_URL: nats://nats:4222
+    ports:
+      - "8000:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      nats:
+        condition: service_started
+    volumes:
+      - ../backend/src:/app/src
+      - /var/run/docker.sock:/var/run/docker.sock
+
+  worker:
+    build:
+      context: ../worker
+      dockerfile: Dockerfile
+    container_name: ijm-worker
+    environment:
+      DATABASE_URL: postgresql://postgres:postgres@postgres:5432/ijm
+      NATS_URL: nats://nats:4222
+      HOST_ROOT: /host
+    depends_on:
+      postgres:
+        condition: service_healthy
+      nats:
+        condition: service_started
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ..:/host
+
+  frontend:
+    build:
+      context: ../frontend
+      dockerfile: Dockerfile
+    container_name: ijm-frontend
+    ports:
+      - "5173:5173"
+    depends_on:
+      - api
+    volumes:
+      - ../frontend/src:/app/src

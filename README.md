@@ -1,54 +1,178 @@
-# Research project 4.3
+# Intelligent Job Management System
+
+A minimal end-to-end job management system for GPU-accelerated deep learning clusters with support for stoppable/resumable jobs.
 
 ## Prerequisites
 
 - Node.js 23+
 - [pnpm](https://pnpm.io/) - `curl -fsSL https://get.pnpm.io/install.sh | sh -`
 - Docker & Docker Compose
+- Python 3.11+
 
-## Setup
+## Quick Start
+
+### 1. Build the runtime container
 
 ```bash
-# Frontend
-cd frontend
-pnpm install
-
-# Pre-commit hooks (REQUIRED for development)
-uv tool install pre-commit
-uv tool update-shell  # Add UV tools to PATH
-pre-commit install
+docker build -t ijm-runtime:dev runtime/
 ```
 
-**Important**: After installing pre-commit, restart your terminal or run:
+### 2. Create data directories
+
 ```bash
-export PATH="$HOME/.local/bin:$PATH"
+mkdir -p data/pg data/checkpoints data/runs
 ```
+
+### 3. Start all services
+
+```bash
+cd infra
+docker compose up --build
+```
+
+This starts:
+- **Postgres** (port 5432) - Job state database
+- **NATS** (ports 4222, 8222) - Event bus with JetStream
+- **API** (port 8000) - FastAPI backend
+- **Worker** - Job executor with Docker container management
+- **Frontend** (port 5173) - React UI
+
+### 4. Access the UI
+
+Open [http://localhost:5173](http://localhost:5173) in your browser.
+
+## Acceptance Test
+
+Test the complete workflow:
+
+1. **Submit a job**:
+   - Open the UI at http://localhost:5173
+   - Use the form to submit a job with:
+     - Image: `ijm-runtime:dev`
+     - Command: `python -u train.py`
+   - Job should appear with status `QUEUED`, then `RUNNING`
+   - Worker starts a Docker container for the job
+
+2. **Stop the job**:
+   - Click "Stop" button on the running job
+   - Container receives SIGTERM and exits cleanly
+   - Checkpoint file is created at `data/checkpoints/<job_id>/latest.pt`
+   - Job status changes to `PREEMPTED`
+
+3. **Resume the job**:
+   - Click "Resume" button on the preempted job
+   - Container starts again with same checkpoint mount
+   - Runtime loads checkpoint and continues from previous step
+   - Status becomes `RUNNING` again
+
+4. **Verify checkpoint persistence**:
+   - Check that training continues from the step where it was stopped
+   - Look at console output to see step numbers resume correctly
+
+## Architecture
+
+### Services
+
+- **Frontend (React)**: Job submission UI with polling-based updates
+- **API (FastAPI)**: REST endpoints for job management, persists to Postgres, publishes to NATS
+- **Worker (Python)**: Consumes NATS events, executes jobs in Docker containers (FIFO, single-concurrency)
+- **Postgres**: Stores job metadata and state
+- **NATS JetStream**: Event bus for job lifecycle events
+
+### Data Flow
+
+1. User submits job via React UI → POST `/jobs`
+2. API creates job record in Postgres with status `QUEUED`
+3. API publishes `jobs.submitted` event to NATS
+4. Worker consumes event and enqueues job
+5. Worker runs job in Docker container with checkpoint/log mounts
+6. Job can be stopped (SIGTERM) or resumed (restart with same mounts)
+
+### Job States
+
+- `QUEUED` - Job submitted, waiting for execution
+- `RUNNING` - Job currently executing
+- `PREEMPTED` - Job was stopped by user request
+- `SUCCEEDED` - Job completed successfully (exit code 0)
+- `FAILED` - Job failed (non-zero exit code)
+
+### Runtime Contract
+
+Training containers must:
+- Write checkpoints to `/checkpoints/latest.pt`
+- Load checkpoint on startup if it exists
+- Handle SIGTERM gracefully by checkpointing and exiting with code 0
+- Periodically checkpoint during training
 
 ## Development
 
-```bash
-# Backend (http://localhost:8000)
-cd backend
-docker-compose up
+### Backend only
 
-# Frontend (http://localhost:5173)
+```bash
+cd backend
+docker compose up
+```
+
+### Frontend only
+
+```bash
 cd frontend
+pnpm install
 pnpm dev
 ```
 
-Backend: `http://localhost:8000`  
-Frontend: `http://localhost:5173`
+### Worker standalone
 
-## Structure
+```bash
+cd worker
+pip install -r requirements.txt
+DATABASE_URL=postgresql://postgres:postgres@localhost:5432/ijm \
+NATS_URL=nats://localhost:4222 \
+HOST_ROOT=$(pwd)/.. \
+python worker.py
+```
+
+## API Endpoints
+
+- `POST /jobs` - Submit new job
+- `GET /jobs` - List all jobs (newest first)
+- `GET /jobs/{id}` - Get specific job
+- `POST /jobs/{id}/stop` - Request job stop (publishes NATS event)
+- `POST /jobs/{id}/resume` - Request job resume (publishes NATS event)
+
+## NATS Subjects
+
+- `jobs.submitted` - New job created
+- `jobs.stop_requested` - User requested job stop
+- `jobs.resume_requested` - User requested job resume
+
+## Project Structure
 
 ```
-backend/          # Python 3.12, FastAPI, Docker
-frontend/         # React, TypeScript, Vite, pnpm
-documentation/    # Project specs & diagrams
+backend/          # FastAPI application
+frontend/         # React UI
+worker/           # Job execution worker
+runtime/          # Training container with checkpoint support
+infra/            # Docker Compose configuration
+data/             # Local persistent data
+  pg/             # Postgres data
+  checkpoints/    # Job checkpoints
+  runs/           # Job outputs
+documentation/    # Architecture diagrams
 ```
 
-## Stack
+## Tech Stack
 
-**Backend**: Python 3.12, FastAPI, UV, Ruff, Mypy, Deptry  
-**Frontend**: TypeScript, React, Vite, pnpm, TanStack Query, Tailwind  
-**AWS**: *not defined yet*
+**Backend**: Python 3.12, FastAPI, psycopg (Postgres), nats-py  
+**Frontend**: TypeScript, React 19, Vite, TanStack Query, Tailwind  
+**Infrastructure**: Docker, Postgres 16, NATS 2.10 with JetStream  
+**Worker**: Python 3.11, asyncio, Docker SDK
+
+## Non-Goals (v0)
+
+- Authentication/authorization
+- API gateway
+- Kubernetes deployment
+- Complex scheduling (only FIFO, single-concurrency)
+- Multi-tenancy
+- Resource quotas/limits

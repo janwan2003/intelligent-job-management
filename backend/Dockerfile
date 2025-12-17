@@ -2,8 +2,14 @@ FROM python:3.12-slim
 
 WORKDIR /app
 
-# Install uv
-RUN pip install uv
+# Install uv and Docker CLI
+RUN pip install uv && \
+    apt-get update && \
+    apt-get install -y curl && \
+    curl -fsSL https://get.docker.com -o get-docker.sh && \
+    sh get-docker.sh && \
+    apt-get clean && \
+    rm -rf /var/lib/apt/lists/* get-docker.sh
 
 # Copy dependency files
 COPY pyproject.toml .
