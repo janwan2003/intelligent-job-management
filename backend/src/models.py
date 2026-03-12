@@ -4,12 +4,11 @@ from datetime import datetime
 from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
+from shared.constants import DEFAULT_LOG_INTERVAL, DEFAULT_PROFILING_STEPS
 
 from src.constants import (
     DEFAULT_EPOCHS_TOTAL,
     DEFAULT_JOB_PRIORITY,
-    DEFAULT_LOG_INTERVAL,
-    DEFAULT_PROFILING_STEPS,
     PRIORITY_MAX,
     PRIORITY_MIN,
     NodeStatusEnum,

@@ -1,38 +1,6 @@
 """Constants for the IJM worker."""
 
-from shared.constants import (
-    DEFAULT_LOG_INTERVAL as DEFAULT_LOG_INTERVAL,
-)
-from shared.constants import (
-    DEFAULT_PROFILING_STEPS as DEFAULT_PROFILING_STEPS,
-)
-from shared.constants import (
-    NATS_STREAM_NAME as NATS_STREAM_NAME,
-)
-from shared.constants import (
-    NATS_SUBJECT_COMPLETED as NATS_SUBJECT_COMPLETED,
-)
-from shared.constants import (
-    NATS_SUBJECT_PROFILING_COMPLETE as NATS_SUBJECT_PROFILING_COMPLETE,
-)
-from shared.constants import (
-    NATS_SUBJECT_STOP_REQUESTED as NATS_SUBJECT_STOP_REQUESTED,
-)
-from shared.constants import (
-    NATS_SUBJECT_SUBMITTED as NATS_SUBJECT_SUBMITTED,
-)
-from shared.constants import (
-    NATS_SUBJECTS_PATTERN as NATS_SUBJECTS_PATTERN,
-)
-from shared.constants import (
-    OUTPUT_LOG_FILENAME as OUTPUT_LOG_FILENAME,
-)
-from shared.constants import (
-    RUNS_DIR as RUNS_DIR,
-)
-from shared.constants import (
-    JobStatus as JobStatus,
-)
+from shared.constants import JobStatus
 
 # Statuses eligible for execution (worker picks up QUEUED jobs)
 RUNNABLE_STATUSES = frozenset({JobStatus.QUEUED, JobStatus.RUNNING})

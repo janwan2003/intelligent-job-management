@@ -12,18 +12,16 @@ from uuid import uuid4
 from fastapi import APIRouter, HTTPException, Query
 from fastapi.responses import PlainTextResponse
 from psycopg.rows import dict_row  # type: ignore[import-not-found]
-
-import src.state as state
-from src.constants import (
+from shared.constants import (
     NATS_SUBJECT_STOP_REQUESTED,
     NATS_SUBJECT_SUBMITTED,
     OUTPUT_LOG_FILENAME,
-    RESUMABLE_STATUSES,
     RUNS_DIR,
-    STOPPABLE_STATUSES,
     JobStatus,
-    nats_job_payload,
 )
+
+import src.state as state
+from src.constants import RESUMABLE_STATUSES, STOPPABLE_STATUSES, nats_job_payload
 from src.models import Job, JobCreate
 from src.profiling import scheduler
 from src.state import require_js

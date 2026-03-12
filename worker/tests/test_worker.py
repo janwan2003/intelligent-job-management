@@ -9,15 +9,14 @@ from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from shared.constants import NATS_SUBJECT_PROFILING_COMPLETE, JobStatus
 
 from constants import (
     CHECKPOINT_MOUNT_PATH,
     CONTAINER_NAME_PREFIX,
     DOCKER_STOP_GRACE_SECONDS,
     JOB_ID_DISPLAY_LENGTH,
-    NATS_SUBJECT_PROFILING_COMPLETE,
     RUNS_MOUNT_PATH,
-    JobStatus,
 )
 from worker import PROGRESS_RE, JobWorker
 

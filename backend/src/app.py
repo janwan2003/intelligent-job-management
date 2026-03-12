@@ -18,6 +18,14 @@ from fastapi.middleware.cors import CORSMiddleware
 from nats.js.errors import BadRequestError  # type: ignore[import-not-found]
 from psycopg.types.json import Json  # type: ignore[import-not-found]
 from psycopg_pool import AsyncConnectionPool  # type: ignore[import-not-found]
+from shared.constants import (
+    NATS_STREAM_NAME,
+    NATS_SUBJECT_COMPLETED,
+    NATS_SUBJECT_PROFILING_COMPLETE,
+    NATS_SUBJECT_SUBMITTED,
+    NATS_SUBJECTS_PATTERN,
+    JobStatus,
+)
 
 import src.state as state
 from src.cluster import cluster
@@ -27,12 +35,6 @@ from src.constants import (
     DEFAULT_NATS_URL,
     NATS_CONSUMER_COMPLETED,
     NATS_CONSUMER_PROFILING,
-    NATS_STREAM_NAME,
-    NATS_SUBJECT_COMPLETED,
-    NATS_SUBJECT_PROFILING_COMPLETE,
-    NATS_SUBJECT_SUBMITTED,
-    NATS_SUBJECTS_PATTERN,
-    JobStatus,
     nats_job_payload,
 )
 from src.profiling import scheduler

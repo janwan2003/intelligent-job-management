@@ -3,10 +3,11 @@
 from typing import Any
 
 from fastapi import APIRouter
+from shared.constants import JobStatus
 
 import src.state as state
 from src.cluster import cluster
-from src.constants import JobStatus, NodeStatusEnum
+from src.constants import NodeStatusEnum
 from src.models import NodeConfig, NodeStatus
 from src.profiling import scheduler
 from src.utils.gpu import config_key

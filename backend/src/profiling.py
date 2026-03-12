@@ -11,9 +11,10 @@ from typing import Any
 
 import psycopg  # type: ignore[import-not-found]
 from psycopg.types.json import Json  # type: ignore[import-not-found]
+from shared.constants import JobStatus
 
 from src.cluster import cluster
-from src.constants import DEFAULT_PROFILING_CONFIGS_PER_JOB, JobStatus
+from src.constants import DEFAULT_PROFILING_CONFIGS_PER_JOB
 from src.models import NodeConfig, ScheduleResult
 from src.utils.gpu import config_key
 
