@@ -1,18 +1,40 @@
-## 1) Build the image
+# Training Runtime Images
+
+Sample training containers that follow the IJM checkpoint contract:
+- Write checkpoints to `/checkpoints/latest.pt`
+- Load checkpoint on startup if it exists
+- Handle SIGTERM/SIGINT gracefully by checkpointing and exiting cleanly
+- Support `MAX_STEPS` and `BATCH_SIZE` environment variables
+
+## Available images
+
+| Image | Script | Architecture |
+|-------|--------|-------------|
+| `ijm-runtime:dev` | `train.py` | Simple 2-layer MLP |
+| `ijm-cnn:dev` | `train_cnn.py` | 3-layer ConvNet (32x32 images) |
+| `ijm-lstm:dev` | `train_lstm.py` | 2-layer LSTM (sequence classification) |
+| `ijm-efficientnet:dev` | `train_efficientnet.py` | MBConv-based EfficientNet-style network |
+
+---
+
+## 1) Build the images
 
 ```bash
 docker build -t ijm-runtime:dev runtime/
+docker build -t ijm-cnn:dev -f runtime/Dockerfile.cnn runtime/
+docker build -t ijm-lstm:dev -f runtime/Dockerfile.lstm runtime/
+docker build -t ijm-efficientnet:dev -f runtime/Dockerfile.efficientnet runtime/
 ```
 
-Verify it exists:
+Verify they exist:
 
 ```bash
-docker images | grep ijm-runtime
+docker images | grep ijm-
 ```
 
 ---
 
-## 2) Run it “by hand” with a checkpoint directory
+## 2) Run manually with a checkpoint directory
 
 Create a host directory that will persist checkpoints:
 
@@ -20,18 +42,18 @@ Create a host directory that will persist checkpoints:
 mkdir -p checkpoints
 ```
 
-Run the container and mount that directory to `/checkpoints`:
+Run any of the images and mount that directory to `/checkpoints`:
 
 ```bash
 docker run --name ijm-manual-test --rm \
   -v "$(pwd)/checkpoints:/checkpoints" \
-  ijm-runtime:dev
+  ijm-cnn:dev
 ```
 
 What to expect:
 
 * It prints progress logs periodically.
-* It should create a checkpoint file in the mounted directory (e.g., `latest.pt`).
+* It creates a checkpoint file `latest.pt` in the mounted directory.
 
 ---
 
@@ -46,7 +68,7 @@ docker stop -t 30 ijm-manual-test
 Notes:
 
 * `-t 30` gives it up to 30 seconds to checkpoint and exit cleanly.
-* Your training code must handle SIGTERM for this to work.
+* All training scripts handle SIGTERM gracefully.
 
 ---
 
@@ -58,22 +80,7 @@ On the host:
 ls -lah checkpoints
 ```
 
-You should see something like:
-
-* `latest.pt` (or whatever name your script uses)
-* possibly a `.tmp` file briefly (if you used atomic writes)
-
-If you want to watch it update while running:
-
-```bash
-watch -n 1 'ls -lah checkpoints'
-```
-
-More detail (timestamps):
-
-```bash
-stat checkpoints/latest.pt
-```
+You should see `latest.pt` (possibly a `.tmp` file briefly during atomic writes).
 
 ---
 
@@ -84,12 +91,12 @@ Just run the same `docker run` command again:
 ```bash
 docker run --name ijm-manual-test --rm \
   -v "$(pwd)/checkpoints:/checkpoints" \
-  ijm-runtime:dev
+  ijm-cnn:dev
 ```
 
 What to look for:
 
-* Early in stdout, it should print something like “loaded checkpoint” / “resumed from step X”.
-* Steps should continue from the last saved step (not restart from 0).
+* Early in stdout, it prints "Resumed from step X".
+* Steps continue from the last saved step (not restart from 0).
 
 ---

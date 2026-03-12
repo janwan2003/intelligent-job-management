@@ -1,0 +1,17 @@
+[
+  {
+    "id": "node-a40-01",
+    "isForProfiling": false,
+    "cost": 0.15
+  },
+  {
+    "id": "node-l40s-01",
+    "isForProfiling": true,
+    "cost": 0.18
+  },
+  {
+    "id": "node-blackwell-01",
+    "isForProfiling": false,
+    "cost": 0.25
+  }
+]

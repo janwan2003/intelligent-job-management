@@ -11,12 +11,9 @@ COPY package.json pnpm-lock.yaml ./
 # Install dependencies
 RUN pnpm install --frozen-lockfile
 
-# Copy application code
+# Copy application code (src/ is volume-mounted in dev)
 COPY . .
-
-# Build the application
-RUN pnpm build
 
 EXPOSE 5173
 
-CMD ["pnpm", "preview", "--host", "0.0.0.0", "--port", "5173"]
+CMD ["pnpm", "dev", "--host", "0.0.0.0", "--port", "5173"]

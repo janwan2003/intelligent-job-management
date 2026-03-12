@@ -106,14 +106,26 @@ Training containers must:
 
 ## Development
 
-### Backend only
+All services depend on PostgreSQL and NATS. Start them first, then run whichever service(s) you need natively:
+
+### 1. Start infrastructure (required)
+
+```bash
+cd infra && docker compose up postgres nats
+```
+
+### 2. Backend
 
 ```bash
 cd backend
-docker compose up
+uv sync
+DATABASE_URL=postgresql://postgres:postgres@localhost:5432/ijm \
+NATS_URL=nats://localhost:4222 \
+DATA_DIR=../data \
+uv run uvicorn src.main:app --host 0.0.0.0 --port 8000 --reload
 ```
 
-### Frontend only
+### 3. Frontend
 
 ```bash
 cd frontend
@@ -121,15 +133,24 @@ pnpm install
 pnpm dev
 ```
 
-### Worker standalone
+### 4. Worker
 
 ```bash
 cd worker
-pip install -r requirements.txt
+uv sync
 DATABASE_URL=postgresql://postgres:postgres@localhost:5432/ijm \
 NATS_URL=nats://localhost:4222 \
-HOST_ROOT=$(pwd)/.. \
-python worker.py
+HOST_ROOT=.. \
+HOST_PROJECT_ROOT=$(cd .. && pwd) \
+uv run python worker.py
+```
+
+### Running tests
+
+```bash
+cd backend && uv run pytest          # Backend tests
+cd worker  && uv run --with pytest --with psycopg --with "nats-py" pytest tests/  # Worker tests
+cd frontend && pnpm lint && pnpm build   # Frontend lint + type-check
 ```
 
 ## API Endpoints
@@ -137,14 +158,16 @@ python worker.py
 - `POST /jobs` - Submit new job
 - `GET /jobs` - List all jobs (newest first)
 - `GET /jobs/{id}` - Get specific job
-- `POST /jobs/{id}/stop` - Request job stop (publishes NATS event)
-- `POST /jobs/{id}/resume` - Request job resume (publishes NATS event)
+- `POST /jobs/{id}/stop` - Stop a QUEUED or RUNNING job
+- `POST /jobs/{id}/resume` - Resume a PREEMPTED or FAILED job
+- `DELETE /jobs/{id}` - Delete a job
+- `GET /jobs/{id}/logs` - Get container output logs
+- `POST /images/upload` - Upload a Docker image (.tar/.tar.gz)
 
 ## NATS Subjects
 
-- `jobs.submitted` - New job created
-- `jobs.stop_requested` - User requested job stop
-- `jobs.resume_requested` - User requested job resume
+- `jobs.submitted` - New job created (or resumed)
+- `jobs.stop_requested` - User requested stop for a RUNNING job
 
 ## Project Structure
 
@@ -163,10 +186,10 @@ documentation/    # Architecture diagrams
 
 ## Tech Stack
 
-**Backend**: Python 3.12, FastAPI, psycopg (Postgres), nats-py  
-**Frontend**: TypeScript, React 19, Vite, TanStack Query, Tailwind  
-**Infrastructure**: Docker, Postgres 16, NATS 2.10 with JetStream  
-**Worker**: Python 3.11, asyncio, Docker SDK
+**Backend**: Python 3.12, FastAPI, psycopg (Postgres), nats-py, uv
+**Frontend**: TypeScript, React 19, Vite, TanStack Query/Table, Tailwind, shadcn/ui
+**Infrastructure**: Docker, Postgres 16, NATS 2.10 with JetStream
+**Worker**: Python 3.12, asyncio, Docker CLI, uv
 
 ## Non-Goals (v0)
 

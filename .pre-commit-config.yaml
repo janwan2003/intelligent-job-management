@@ -4,14 +4,37 @@ repos:
     hooks:
       - id: ruff
         args: [--fix]
-        files: ^backend/
+        files: ^(backend|worker|runtime)/
       - id: ruff-format
-        files: ^backend/
+        files: ^(backend|worker|runtime)/
 
   - repo: https://github.com/pre-commit/mirrors-mypy
     rev: v1.13.0
     hooks:
       - id: mypy
+        name: mypy (backend)
         files: ^backend/
-        additional_dependencies: [fastapi>=0.104.0, pydantic>=2.5.0, httpx>=0.25.0]
+        additional_dependencies: [fastapi>=0.104.0, pydantic>=2.5.0, httpx>=0.25.0, pytest>=7.4.0]
+        args: [--config-file=backend/pyproject.toml]
+      - id: mypy
+        name: mypy (worker)
+        files: ^worker/
+        additional_dependencies: [nats-py>=2.6.0, psycopg>=3.1.0]
         args: [--strict, --python-version=3.12]
+
+  - repo: local
+    hooks:
+      - id: frontend-eslint
+        name: frontend eslint
+        entry: pnpm --dir frontend lint
+        language: system
+        files: ^frontend/src/
+        types_or: [ts, tsx]
+        pass_filenames: false
+      - id: frontend-typecheck
+        name: frontend typecheck
+        entry: pnpm --dir frontend exec tsc --noEmit
+        language: system
+        files: ^frontend/src/
+        types_or: [ts, tsx]
+        pass_filenames: false
