@@ -1,12 +1,13 @@
 import { Cpu, FlaskConical } from "lucide-react";
 import { useNodes } from "@/api/hooks";
 import { Skeleton } from "@/components/ui/skeleton";
+import { NODE_STATUS_BUSY, JOB_ID_DISPLAY_LENGTH } from "@/config/constants";
 
 export default function ClusterStatus() {
   const { data: nodes, isLoading } = useNodes();
 
   const totalNodes = nodes?.length ?? 0;
-  const busyNodes = nodes?.filter((n) => n.status === "busy").length ?? 0;
+  const busyNodes = nodes?.filter((n) => n.status === NODE_STATUS_BUSY).length ?? 0;
 
   return (
     <div className="space-y-4">
@@ -38,12 +39,12 @@ export default function ClusterStatus() {
                 </div>
                 <span
                   className={`inline-flex items-center rounded px-2 py-0.5 text-xs font-medium font-mono ${
-                    node.status === "busy"
+                    node.status === NODE_STATUS_BUSY
                       ? "bg-status-running/15 text-status-running"
                       : "bg-status-queued/15 text-status-queued"
                   }`}
                 >
-                  {node.status === "busy" ? "Busy" : "Idle"}
+                  {node.status === NODE_STATUS_BUSY ? "Busy" : "Idle"}
                 </span>
               </div>
 
@@ -54,14 +55,37 @@ export default function ClusterStatus() {
                     {node.is_for_profiling ? "Profiling" : "Compute"}
                   </span>
                 </div>
+                {node.resources.length > 0 && (
+                  <>
+                    <div className="flex justify-between">
+                      <span className="text-muted-foreground">GPU</span>
+                      <span className="text-card-foreground font-mono">
+                        {node.resources.map((r, i) => (
+                          <span key={i}>
+                            {i > 0 && " + "}
+                            {r.gpu_count}&times; {r.gpu_type}
+                          </span>
+                        ))}
+                      </span>
+                    </div>
+                    <div className="flex justify-between">
+                      <span className="text-muted-foreground">VRAM</span>
+                      <span className="text-card-foreground font-mono">
+                        {node.resources.reduce((sum, r) => sum + r.gpu_count * r.memory_per_gpu_gb, 0)} GB
+                      </span>
+                    </div>
+                  </>
+                )}
                 <div className="flex justify-between">
                   <span className="text-muted-foreground">Cost</span>
                   <span className="text-card-foreground font-mono">{node.cost.toFixed(4)} &euro;/h</span>
                 </div>
                 <div className="flex justify-between">
-                  <span className="text-muted-foreground">Job</span>
+                  <span className="text-muted-foreground">{node.current_job_ids.length === 1 ? "Job" : "Jobs"}</span>
                   <span className="text-card-foreground font-mono">
-                    {node.current_job_id ? node.current_job_id.slice(0, 8) : "—"}
+                    {node.current_job_ids.length > 0
+                      ? node.current_job_ids.map((id) => id.slice(0, JOB_ID_DISPLAY_LENGTH)).join(", ")
+                      : "—"}
                   </span>
                 </div>
               </div>

@@ -1,30 +1,29 @@
-"""Shared constants for the IJM backend."""
+"""Constants for the IJM backend."""
 
 from enum import StrEnum
 
+from shared.constants import (
+    NATS_STREAM_NAME as NATS_STREAM_NAME,
+)
+from shared.constants import (
+    NATS_SUBJECT_PROFILING_COMPLETE as NATS_SUBJECT_PROFILING_COMPLETE,
+)
+from shared.constants import (
+    NATS_SUBJECT_STOP_REQUESTED as NATS_SUBJECT_STOP_REQUESTED,
+)
+from shared.constants import (
+    NATS_SUBJECT_SUBMITTED as NATS_SUBJECT_SUBMITTED,
+)
+from shared.constants import (
+    NATS_SUBJECTS_PATTERN as NATS_SUBJECTS_PATTERN,
+)
+from shared.constants import (
+    JobStatus as JobStatus,
+)
+
 # ---------------------------------------------------------------------------
-# Job statuses
+# Job status sets
 # ---------------------------------------------------------------------------
-
-
-class JobStatus(StrEnum):
-    """Job lifecycle states."""
-
-    QUEUED = "QUEUED"
-    PROFILING = "PROFILING"
-    RUNNING = "RUNNING"
-    SUCCEEDED = "SUCCEEDED"
-    FAILED = "FAILED"
-    PREEMPTED = "PREEMPTED"
-
-
-# Backward-compat aliases
-STATUS_QUEUED = JobStatus.QUEUED
-STATUS_PROFILING = JobStatus.PROFILING
-STATUS_RUNNING = JobStatus.RUNNING
-STATUS_SUCCEEDED = JobStatus.SUCCEEDED
-STATUS_FAILED = JobStatus.FAILED
-STATUS_PREEMPTED = JobStatus.PREEMPTED
 
 # Statuses that can be stopped (includes PROFILING — user can cancel mid-profile)
 STOPPABLE_STATUSES = frozenset({JobStatus.QUEUED, JobStatus.PROFILING, JobStatus.RUNNING})
@@ -43,19 +42,9 @@ class NodeStatusEnum(StrEnum):
     BUSY = "busy"
 
 
-# Backward-compat aliases
-NODE_STATUS_IDLE = NodeStatusEnum.IDLE
-NODE_STATUS_BUSY = NodeStatusEnum.BUSY
-
 # ---------------------------------------------------------------------------
-# NATS configuration
+# NATS configuration (backend-specific)
 # ---------------------------------------------------------------------------
-
-NATS_STREAM_NAME = "JOBS"
-NATS_SUBJECTS_PATTERN = "jobs.>"
-NATS_SUBJECT_SUBMITTED = "jobs.submitted"
-NATS_SUBJECT_STOP_REQUESTED = "jobs.stop_requested"
-NATS_SUBJECT_PROFILING_COMPLETE = "jobs.profiling_complete"
 
 NATS_CONSUMER_PROFILING = "api-profiling-complete"
 

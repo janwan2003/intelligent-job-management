@@ -1,4 +1,4 @@
-import type { ApiJob, ApiNode, CreateJobPayload } from "@/types/job";
+import type { ApiJob, ApiNode, CreateJobPayload, ProfilingResult, GpuConfiguration } from "@/types/job";
 
 const API_BASE = import.meta.env.VITE_API_URL ?? "http://localhost:8000";
 
@@ -7,6 +7,9 @@ async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> {
   if (!res.ok) {
     const body = await res.json().catch(() => ({})) as { detail?: string };
     throw new Error(body.detail ?? `Request failed: ${res.status}`);
+  }
+  if (res.status === 204) {
+    return undefined as T;
   }
   return res.json() as Promise<T>;
 }
@@ -29,6 +32,9 @@ export const api = {
 
   deleteJob: (id: string) =>
     apiFetch<Record<string, never>>(`/jobs/${id}`, { method: "DELETE" }),
+
+  clearAllJobs: () =>
+    apiFetch<Record<string, never>>("/jobs", { method: "DELETE" }),
 
   getJobLogs: async (id: string): Promise<string> => {
     const res = await fetch(`${API_BASE}/jobs/${id}/logs`);
@@ -53,4 +59,10 @@ export const api = {
   },
 
   getNodes: () => apiFetch<ApiNode[]>("/nodes"),
+
+  getProfilingResults: (jobId: string) =>
+    apiFetch<ProfilingResult[]>(`/profiling-results/${jobId}`),
+
+  getConfigurations: () =>
+    apiFetch<GpuConfiguration[]>("/configurations"),
 };

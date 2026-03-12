@@ -1,13 +1,14 @@
 import { NavLink as RouterNavLink, useLocation } from "react-router-dom";
 import { cn } from "@/lib/utils";
-import { LayoutDashboard, ListOrdered, PlusCircle, Server, Cpu } from "lucide-react";
-import { FEATURE_CLUSTER_STATUS } from "@/config/features";
+import { LayoutDashboard, ListOrdered, PlusCircle, Server, Cpu, FlaskConical } from "lucide-react";
+import { FEATURE_CLUSTER_STATUS, FEATURE_PROFILING_PAGE } from "@/config/features";
 
 const navItems = [
   { label: "Dashboard", path: "/", icon: LayoutDashboard },
   { label: "Job Queue", path: "/jobs", icon: ListOrdered },
   { label: "Submit Job", path: "/submit", icon: PlusCircle },
   ...(FEATURE_CLUSTER_STATUS ? [{ label: "Cluster Status", path: "/cluster", icon: Server }] : []),
+  ...(FEATURE_PROFILING_PAGE ? [{ label: "Profiling", path: "/profiling", icon: FlaskConical }] : []),
 ];
 
 export function AppSidebar() {

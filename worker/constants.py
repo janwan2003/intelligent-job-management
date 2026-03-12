@@ -1,47 +1,22 @@
-"""Shared constants for the IJM worker.
+"""Constants for the IJM worker."""
 
-Mirrors the backend constants to keep the event-driven contract consistent.
-"""
-
-from enum import StrEnum
-
-# ---------------------------------------------------------------------------
-# Job statuses
-# ---------------------------------------------------------------------------
-
-
-class JobStatus(StrEnum):
-    """Job lifecycle states."""
-
-    QUEUED = "QUEUED"
-    PROFILING = "PROFILING"
-    RUNNING = "RUNNING"
-    SUCCEEDED = "SUCCEEDED"
-    FAILED = "FAILED"
-    PREEMPTED = "PREEMPTED"
-
-
-# Backward-compat aliases
-STATUS_QUEUED = JobStatus.QUEUED
-STATUS_PROFILING = JobStatus.PROFILING
-STATUS_RUNNING = JobStatus.RUNNING
-STATUS_SUCCEEDED = JobStatus.SUCCEEDED
-STATUS_FAILED = JobStatus.FAILED
-STATUS_PREEMPTED = JobStatus.PREEMPTED
+from shared.constants import (
+    NATS_STREAM_NAME as NATS_STREAM_NAME,
+    NATS_SUBJECT_PROFILING_COMPLETE as NATS_SUBJECT_PROFILING_COMPLETE,
+    NATS_SUBJECT_STOP_REQUESTED as NATS_SUBJECT_STOP_REQUESTED,
+    NATS_SUBJECT_SUBMITTED as NATS_SUBJECT_SUBMITTED,
+    NATS_SUBJECTS_PATTERN as NATS_SUBJECTS_PATTERN,
+    JobStatus as JobStatus,
+)
 
 # Statuses eligible for execution (worker picks up QUEUED jobs)
 RUNNABLE_STATUSES = frozenset({JobStatus.QUEUED, JobStatus.RUNNING})
 
 # ---------------------------------------------------------------------------
-# NATS configuration
+# NATS configuration (worker-specific)
 # ---------------------------------------------------------------------------
 
-NATS_STREAM_NAME = "JOBS"
-NATS_SUBJECTS_PATTERN = "jobs.>"
-NATS_SUBJECT_SUBMITTED = "jobs.submitted"
-NATS_SUBJECT_STOP_REQUESTED = "jobs.stop_requested"
 NATS_SUBJECT_RESUME_REQUESTED = "jobs.resume_requested"
-NATS_SUBJECT_PROFILING_COMPLETE = "jobs.profiling_complete"
 
 # NATS consumer durable names
 CONSUMER_SUBMITTED = "worker-submitted"

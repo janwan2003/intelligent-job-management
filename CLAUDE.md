@@ -40,24 +40,25 @@ pnpm lint                      # ESLint
 
 **Event-driven, async-first** — three services communicate via NATS JetStream:
 
-1. **API** (`backend/src/main.py`) — FastAPI app. Manages job records in PostgreSQL, publishes events (`jobs.submitted`, `jobs.stop_requested`, `jobs.resume_requested`) to NATS stream "JOBS". Single-file monolith (v0).
+1. **API** (`backend/src/main.py`) — FastAPI app. Manages job records in PostgreSQL, publishes events (`jobs.submitted`, `jobs.stop_requested`) to NATS stream "JOBS". Includes a `ProfilingScheduler` that profiles jobs across all valid GPU configurations before running on the best one. Single-file monolith (v0).
 
-2. **Worker** (`worker/worker.py`) — Async Python process. Subscribes to NATS events, runs jobs as Docker containers (FIFO, single-concurrency). Manages container lifecycle: start, stop (SIGTERM with 30s grace), resume. Reconciles DB state with Docker on startup.
+2. **Worker** (`worker/worker.py`) — Async Python process. Subscribes to NATS events, runs jobs as Docker containers with concurrent execution. Manages container lifecycle: start, stop (SIGTERM with 30s grace), resume. Reports profiling results back to the API via NATS (`jobs.profiling_complete`). Reconciles DB state with Docker on startup.
 
-3. **Frontend** (`frontend/`) — React 19 SPA with Tailwind CSS + shadcn/ui components, React Router for multi-page navigation (Dashboard, Job Queue, Submit Job, Cluster Status), TanStack React Query for data fetching (polls every 3s). Features not yet supported by the API are gated behind boolean flags in `src/config/features.ts`. API base URL configurable via `VITE_API_URL` env var (defaults to `http://localhost:8000`).
+3. **Frontend** (`frontend/`) — React 19 SPA with Tailwind CSS + shadcn/ui components, React Router for multi-page navigation (Dashboard, Job Queue, Submit Job, Cluster Status, Profiling), TanStack React Query for data fetching (polls every 3-5s). Features not yet supported by the API are gated behind boolean flags in `src/config/features.ts`. API base URL configurable via `VITE_API_URL` env var (defaults to `http://localhost:8000`).
    - Path alias: `@/` maps to `src/`
    - Key directories: `src/api/` (client + React Query hooks), `src/components/ui/` (shadcn primitives), `src/components/` (custom), `src/pages/`, `src/config/features.ts` (feature flags)
 
-4. **Runtime** (`runtime/train.py`) — Example training container demonstrating the checkpoint contract: write to `/checkpoints/latest.pt`, load on startup if exists, handle SIGTERM by checkpointing then exiting cleanly.
+4. **Runtime** (`runtime/`) — Example training containers demonstrating the checkpoint contract: write to `/checkpoints/latest.pt`, load on startup if exists, handle SIGTERM by checkpointing then exiting cleanly. Includes `train.py` (simple MLP), `train_cnn.py` (ConvNet), `train_lstm.py` (LSTM), and `train_efficientnet.py` (EfficientNet-style).
 
 ### Job State Machine
 ```
-QUEUED → RUNNING → SUCCEEDED (exit 0) / FAILED (non-zero)
-                 ↘ PREEMPTED (user stop) → RUNNING (resume)
+QUEUED → PROFILING → QUEUED (re-scheduled) → RUNNING → SUCCEEDED / FAILED
+                                                     ↘ PREEMPTED → QUEUED (resume)
 ```
 
 ### Data Persistence
-- PostgreSQL stores job metadata (single `jobs` table)
+- PostgreSQL stores job metadata (`jobs` table) and profiling results (`profiling_results` table)
+- GPU configurations stored as JSONB (`{"A40": 2}` or `{"A40": 1, "L40S": 1}` for mixed nodes)
 - Checkpoints: `data/checkpoints/{job_id}/` mounted to container `/checkpoints`
 - Run outputs: `data/runs/{job_id}/` mounted to container `/runs`
 

@@ -27,7 +27,7 @@ from src.constants import (
     NATS_SUBJECT_PROFILING_COMPLETE,
     NATS_SUBJECT_SUBMITTED,
     NATS_SUBJECTS_PATTERN,
-    STATUS_QUEUED,
+    JobStatus,
 )
 from src.profiling import scheduler
 from src.routers import router
@@ -155,7 +155,7 @@ async def lifespan(_app: FastAPI) -> AsyncGenerator[None, None]:
                 async with state.db_pool.cursor() as cur:
                     await cur.execute(
                         "UPDATE jobs SET status = %s, updated_at = %s WHERE id = %s",
-                        (STATUS_QUEUED, now, job_id),
+                        (JobStatus.QUEUED, now, job_id),
                     )
 
                 # Notify the worker

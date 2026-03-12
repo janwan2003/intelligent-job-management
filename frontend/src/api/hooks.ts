@@ -1,6 +1,7 @@
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { api } from "./client";
 import type { CreateJobPayload } from "@/types/job";
+import { POLL_JOBS_MS, POLL_JOB_LOGS_MS, POLL_NODES_MS, POLL_PROFILING_MS } from "@/config/constants";
 
 const JOBS_KEY = ["jobs"] as const;
 const NODES_KEY = ["nodes"] as const;
@@ -10,7 +11,7 @@ export function useJobs() {
   return useQuery({
     queryKey: JOBS_KEY,
     queryFn: api.getJobs,
-    refetchInterval: 3000,
+    refetchInterval: POLL_JOBS_MS,
   });
 }
 
@@ -46,6 +47,14 @@ export function useDeleteJob() {
   });
 }
 
+export function useClearAllJobs() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: () => api.clearAllJobs(),
+    onSuccess: () => { void qc.invalidateQueries({ queryKey: JOBS_KEY }); },
+  });
+}
+
 export function useUploadImage() {
   return useMutation({
     mutationFn: (file: File) => api.uploadImage(file),
@@ -58,7 +67,7 @@ export function useJobLogs(jobId: string | null) {
     queryKey: ["jobLogs", jobId],
     queryFn: () => api.getJobLogs(jobId!),
     enabled: !!jobId,
-    refetchInterval: 3000,
+    refetchInterval: POLL_JOB_LOGS_MS,
   });
 }
 
@@ -67,6 +76,25 @@ export function useNodes() {
   return useQuery({
     queryKey: NODES_KEY,
     queryFn: api.getNodes,
-    refetchInterval: 5000,
+    refetchInterval: POLL_NODES_MS,
+  });
+}
+
+/** Fetch profiling results for a specific job, polling every 5s */
+export function useProfilingResults(jobId: string | null) {
+  return useQuery({
+    queryKey: ["profilingResults", jobId],
+    queryFn: () => api.getProfilingResults(jobId!),
+    enabled: !!jobId,
+    refetchInterval: POLL_PROFILING_MS,
+  });
+}
+
+/** Fetch all valid hardware configurations (rarely changes) */
+export function useConfigurations() {
+  return useQuery({
+    queryKey: ["configurations"],
+    queryFn: api.getConfigurations,
+    staleTime: 60_000,
   });
 }

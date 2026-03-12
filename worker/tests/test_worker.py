@@ -9,9 +9,8 @@ import pytest  # type: ignore[import-not-found]
 
 from constants import (
     CHECKPOINT_MOUNT_PATH,
+    JobStatus,
     RUNS_MOUNT_PATH,
-    STATUS_PROFILING,
-    STATUS_RUNNING,
 )
 from worker import PROGRESS_RE, JobWorker
 
@@ -340,7 +339,7 @@ def _make_fake_worker_db(
                     100,
                 )
             if "SELECT status" in self._last_query:
-                return (STATUS_PROFILING if is_profiling_run else STATUS_RUNNING,)
+                return (JobStatus.PROFILING if is_profiling_run else JobStatus.RUNNING,)
             if "is_profiling_run" in self._last_query:
                 return (is_profiling_run, {"A40": 2}, "node-1")
             return None
@@ -396,10 +395,10 @@ class TestStatusTransitions:
         ]
         # The first status update should be PROFILING
         assert any(
-            p[0] == STATUS_PROFILING for q, p in status_updates
+            p[0] == JobStatus.PROFILING for q, p in status_updates
         ), f"Expected PROFILING status, got updates: {status_updates}"
         assert not any(
-            p[0] == STATUS_RUNNING for q, p in status_updates
+            p[0] == JobStatus.RUNNING for q, p in status_updates
         ), "Should NOT have set RUNNING status for a profiling run"
 
     @pytest.mark.asyncio  # type: ignore[misc]
@@ -422,10 +421,10 @@ class TestStatusTransitions:
             (q, p) for q, p in queries if "SET status" in q and len(p) >= 1
         ]
         assert any(
-            p[0] == STATUS_RUNNING for q, p in status_updates
+            p[0] == JobStatus.RUNNING for q, p in status_updates
         ), f"Expected RUNNING status, got updates: {status_updates}"
         assert not any(
-            p[0] == STATUS_PROFILING for q, p in status_updates
+            p[0] == JobStatus.PROFILING for q, p in status_updates
         ), "Should NOT have set PROFILING status for a standard run"
 
     @pytest.mark.asyncio  # type: ignore[misc]

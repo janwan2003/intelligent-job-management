@@ -5,6 +5,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { useCreateJob, useUploadImage } from "@/api/hooks";
 import { FEATURE_IMAGE_UPLOAD, FEATURE_SUBMIT_EXTENDED_FIELDS } from "@/config/features";
+import { DEFAULT_IMAGE, DEFAULT_COMMAND, DEFAULT_JOB_PRIORITY } from "@/config/constants";
 import { toast } from "sonner";
 import { Upload } from "lucide-react";
 
@@ -13,16 +14,15 @@ export default function SubmitJob() {
   const createJob = useCreateJob();
   const uploadImage = useUploadImage();
 
-  const [image, setImage] = useState("ijm-runtime:dev");
-  const [command, setCommand] = useState("python -u train.py");
-  const [scriptPath, setScriptPath] = useState("");
-  const [directoryToMount, setDirectoryToMount] = useState("");
-  const [priority, setPriority] = useState(3);
+  const [image, setImage] = useState(DEFAULT_IMAGE);
+  const [command, setCommand] = useState(DEFAULT_COMMAND);
+  const [priority, setPriority] = useState(DEFAULT_JOB_PRIORITY);
   const [deadlineDate, setDeadlineDate] = useState("");
   const [deadlineTime, setDeadlineTime] = useState("23:59");
   const [batchSize, setBatchSize] = useState("");
   const [profilingEpochsNo, setProfilingEpochsNo] = useState("");
   const [epochsTotal, setEpochsTotal] = useState("");
+  const [requiredMemoryGb, setRequiredMemoryGb] = useState("");
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
@@ -32,8 +32,8 @@ export default function SubmitJob() {
       return;
     }
 
-    if (!command.trim() && !scriptPath.trim()) {
-      toast.error("Either command or script path is required");
+    if (!command.trim()) {
+      toast.error("Command is required");
       return;
     }
 
@@ -45,13 +45,12 @@ export default function SubmitJob() {
       {
         image: image.trim(),
         command: commandArray,
-        ...(scriptPath.trim() && { scriptPath: scriptPath.trim() }),
-        ...(directoryToMount.trim() && { directoryToMount: directoryToMount.trim() }),
         Priority: priority,
         ...(deadlineDate && { deadline: `${deadlineDate}T${deadlineTime || "23:59"}:00` }),
         ...(batchSize && { batchSize: Number(batchSize) }),
         ...(profilingEpochsNo && { profilingEpochsNo: Number(profilingEpochsNo) }),
         ...(epochsTotal && { epochsTotal: Number(epochsTotal) }),
+        ...(requiredMemoryGb && { requiredMemoryGb: Number(requiredMemoryGb) }),
       },
       {
         onSuccess: () => {
@@ -88,14 +87,17 @@ export default function SubmitJob() {
       </div>
 
       <form onSubmit={handleSubmit} className="space-y-5">
-        {/* Container & Execution */}
+        {/* Required: Container & Execution */}
         <div className="rounded-lg border border-border bg-card p-5 space-y-4">
-          <h2 className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">Container</h2>
+          <div className="flex items-center justify-between">
+            <h2 className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">Container</h2>
+            <span className="text-xs text-destructive">* Required</span>
+          </div>
 
           {/* Docker Image */}
           <div className="space-y-1.5">
             <Label htmlFor="image" className="text-xs">
-              Docker Image *
+              Docker Image <span className="text-destructive">*</span>
             </Label>
             <div className="flex gap-2">
               <Input
@@ -104,6 +106,7 @@ export default function SubmitJob() {
                 onChange={(e) => setImage(e.target.value)}
                 placeholder="e.g. ijm-runtime:dev"
                 className="font-mono text-sm flex-1"
+                required
               />
               {FEATURE_IMAGE_UPLOAD && (
                 <>
@@ -133,7 +136,7 @@ export default function SubmitJob() {
           {/* Command */}
           <div className="space-y-1.5">
             <Label htmlFor="command" className="text-xs">
-              Command
+              Command <span className="text-destructive">*</span>
             </Label>
             <Input
               id="command"
@@ -142,47 +145,19 @@ export default function SubmitJob() {
               placeholder="e.g. python -u train.py"
               className="font-mono text-sm"
             />
-            <p className="text-xs text-muted-foreground">Space-separated command and arguments</p>
+            <p className="text-xs text-muted-foreground">
+              Space-separated command and arguments.
+            </p>
           </div>
-
-          {FEATURE_SUBMIT_EXTENDED_FIELDS && (
-            <>
-              {/* Script Path */}
-              <div className="space-y-1.5">
-                <Label htmlFor="scriptPath" className="text-xs">
-                  Script Path
-                </Label>
-                <Input
-                  id="scriptPath"
-                  value={scriptPath}
-                  onChange={(e) => setScriptPath(e.target.value)}
-                  placeholder="e.g. /home/user/scripts/train.py"
-                  className="font-mono text-sm"
-                />
-                <p className="text-xs text-muted-foreground">Alternative to command — will run as: python -u &lt;path&gt;</p>
-              </div>
-
-              {/* Directory to Mount */}
-              <div className="space-y-1.5">
-                <Label htmlFor="directoryToMount" className="text-xs">
-                  Directory to Mount
-                </Label>
-                <Input
-                  id="directoryToMount"
-                  value={directoryToMount}
-                  onChange={(e) => setDirectoryToMount(e.target.value)}
-                  placeholder="e.g. /home/user/data/job_1"
-                  className="font-mono text-sm"
-                />
-              </div>
-            </>
-          )}
         </div>
 
-        {/* Training Parameters */}
+        {/* Optional: Training Parameters */}
         {FEATURE_SUBMIT_EXTENDED_FIELDS && (
           <div className="rounded-lg border border-border bg-card p-5 space-y-4">
-            <h2 className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">Training Parameters</h2>
+            <div className="flex items-center justify-between">
+              <h2 className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">Training Parameters</h2>
+              <span className="text-xs text-muted-foreground">Optional</span>
+            </div>
 
             <div className="grid grid-cols-2 gap-4">
               {/* Epochs Total */}
@@ -220,33 +195,53 @@ export default function SubmitJob() {
               {/* Profiling Epochs */}
               <div className="space-y-1.5">
                 <Label htmlFor="profilingEpochsNo" className="text-xs">
-                  Profiling Epochs
+                  Profiling Steps
                 </Label>
                 <Input
                   id="profilingEpochsNo"
                   type="number"
-                  min={0}
+                  min={1}
                   value={profilingEpochsNo}
                   onChange={(e) => setProfilingEpochsNo(e.target.value)}
-                  placeholder="e.g. 2"
+                  placeholder="default: 100"
                   className="font-mono text-sm"
                 />
-                <p className="text-xs text-muted-foreground">Epochs to run on profiling node first</p>
+                <p className="text-xs text-muted-foreground">Steps per profiling run on each hardware config (default: 100)</p>
+              </div>
+
+              {/* Required VRAM */}
+              <div className="space-y-1.5">
+                <Label htmlFor="requiredMemoryGb" className="text-xs">
+                  Required VRAM (GB)
+                </Label>
+                <Input
+                  id="requiredMemoryGb"
+                  type="number"
+                  min={1}
+                  value={requiredMemoryGb}
+                  onChange={(e) => setRequiredMemoryGb(e.target.value)}
+                  placeholder="e.g. 48"
+                  className="font-mono text-sm"
+                />
+                <p className="text-xs text-muted-foreground">Minimum GPU memory needed for this job</p>
               </div>
             </div>
           </div>
         )}
 
-        {/* Scheduling */}
+        {/* Optional: Scheduling */}
         {FEATURE_SUBMIT_EXTENDED_FIELDS && (
           <div className="rounded-lg border border-border bg-card p-5 space-y-4">
-            <h2 className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">Scheduling</h2>
+            <div className="flex items-center justify-between">
+              <h2 className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">Scheduling</h2>
+              <span className="text-xs text-muted-foreground">Optional</span>
+            </div>
 
             <div className="grid grid-cols-2 gap-4">
               {/* Priority */}
               <div className="space-y-1.5">
                 <Label htmlFor="priority" className="text-xs">
-                  Priority (1–5, 5 = highest)
+                  Priority (1-5, 5 = highest)
                 </Label>
                 <Input
                   id="priority"
@@ -257,6 +252,7 @@ export default function SubmitJob() {
                   onChange={(e) => setPriority(Number(e.target.value))}
                   className="font-mono text-sm"
                 />
+                <p className="text-xs text-muted-foreground">Default: 3</p>
               </div>
 
               {/* Deadline */}

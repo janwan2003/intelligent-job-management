@@ -5,7 +5,7 @@ from typing import Any
 from fastapi import APIRouter
 
 from src.cluster import cluster
-from src.constants import NODE_STATUS_BUSY, NODE_STATUS_IDLE, STATUS_PROFILING, STATUS_RUNNING
+from src.constants import JobStatus, NodeStatusEnum
 from src.models import NodeConfig, NodeStatus
 from src.profiling import scheduler
 from src.state import require_db
@@ -24,7 +24,7 @@ async def list_nodes() -> list[NodeStatus]:
     async with conn.cursor() as cur:
         await cur.execute(
             "SELECT assigned_node, id FROM jobs WHERE status IN (%s, %s) AND assigned_node IS NOT NULL",
-            (STATUS_RUNNING, STATUS_PROFILING),
+            (JobStatus.RUNNING, JobStatus.PROFILING),
         )
         for row in await cur.fetchall():
             assigned.setdefault(row[0], []).append(row[1])
@@ -39,7 +39,7 @@ async def list_nodes() -> list[NodeStatus]:
                 is_for_profiling=node.is_for_profiling,
                 cost=node.cost,
                 resources=node.resources,
-                status=NODE_STATUS_BUSY if job_ids else NODE_STATUS_IDLE,
+                status=NodeStatusEnum.BUSY if job_ids else NodeStatusEnum.IDLE,
                 current_job_ids=job_ids,
             )
         )

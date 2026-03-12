@@ -5,11 +5,12 @@ import { DataTable } from "@/components/DataTable";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
-import { useJobs, useStopJob, useResumeJob, useDeleteJob, useJobLogs } from "@/api/hooks";
-import { FEATURE_JOB_EXTENDED_FIELDS } from "@/config/features";
+import { useJobs, useStopJob, useResumeJob, useDeleteJob, useClearAllJobs, useJobLogs } from "@/api/hooks";
+import { FEATURE_JOB_EXTENDED_FIELDS, FEATURE_PROFILING_SCHEDULER } from "@/config/features";
+import { STOPPABLE_STATUSES, RESUMABLE_STATUSES, JOB_ID_DISPLAY_LENGTH, formatGpuConfig } from "@/config/constants";
 import type { ApiJob } from "@/types/job";
 import { format } from "date-fns";
-import { Square, Play, Trash2 } from "lucide-react";
+import { Square, Play, Trash2, Trash } from "lucide-react";
 import { toast } from "sonner";
 
 export default function JobQueue() {
@@ -17,6 +18,7 @@ export default function JobQueue() {
   const stopJob = useStopJob();
   const resumeJob = useResumeJob();
   const deleteJob = useDeleteJob();
+  const clearAllJobs = useClearAllJobs();
   const [logJobId, setLogJobId] = useState<string | null>(null);
   const { data: logs } = useJobLogs(logJobId);
   const logEndRef = useRef<HTMLDivElement>(null);
@@ -28,7 +30,7 @@ export default function JobQueue() {
   const handleStop = (jobId: string, e: React.MouseEvent) => {
     e.stopPropagation();
     stopJob.mutate(jobId, {
-      onSuccess: () => toast.success(`Job ${jobId.slice(0, 8)} stopped`),
+      onSuccess: () => toast.success(`Job ${jobId.slice(0, JOB_ID_DISPLAY_LENGTH)} stopped`),
       onError: (err) => toast.error(err.message || "Failed to stop job"),
     });
   };
@@ -36,7 +38,7 @@ export default function JobQueue() {
   const handleResume = (jobId: string, e: React.MouseEvent) => {
     e.stopPropagation();
     resumeJob.mutate(jobId, {
-      onSuccess: () => toast.success(`Job ${jobId.slice(0, 8)} resumed`),
+      onSuccess: () => toast.success(`Job ${jobId.slice(0, JOB_ID_DISPLAY_LENGTH)} resumed`),
       onError: (err) => toast.error(err.message || "Failed to resume job"),
     });
   };
@@ -44,7 +46,7 @@ export default function JobQueue() {
   const handleDelete = (jobId: string, e: React.MouseEvent) => {
     e.stopPropagation();
     deleteJob.mutate(jobId, {
-      onSuccess: () => toast.success(`Job ${jobId.slice(0, 8)} deleted`),
+      onSuccess: () => toast.success(`Job ${jobId.slice(0, JOB_ID_DISPLAY_LENGTH)} deleted`),
       onError: (err) => toast.error(err.message || "Failed to delete job"),
     });
   };
@@ -54,7 +56,7 @@ export default function JobQueue() {
       accessorKey: "id",
       header: "ID",
       cell: ({ row }) => (
-        <span className="font-mono font-medium text-xs">{row.original.id.slice(0, 8)}</span>
+        <span className="font-mono font-medium text-xs">{row.original.id.slice(0, JOB_ID_DISPLAY_LENGTH)}</span>
       ),
       enableSorting: false,
     },
@@ -135,6 +137,35 @@ export default function JobQueue() {
       ]
     : [];
 
+  const profilingColumns: ColumnDef<ApiJob, unknown>[] = FEATURE_PROFILING_SCHEDULER
+    ? [
+        {
+          id: "gpu_config",
+          header: "GPU Config",
+          cell: ({ row }) => {
+            const job = row.original;
+            if (!job.assigned_gpu_config) return <span className="font-mono text-xs text-muted-foreground">—</span>;
+            return (
+              <span className="font-mono text-xs">
+                {formatGpuConfig(job.assigned_gpu_config)}
+              </span>
+            );
+          },
+        },
+        {
+          accessorKey: "estimated_duration",
+          header: "ETA",
+          cell: ({ getValue }) => {
+            const v = getValue() as number | null | undefined;
+            if (v === null || v === undefined) return <span className="font-mono text-xs text-muted-foreground">—</span>;
+            const mins = Math.floor(v / 60);
+            const secs = Math.round(v % 60);
+            return <span className="font-mono text-xs text-muted-foreground">{mins}m {secs}s</span>;
+          },
+        },
+      ]
+    : [];
+
   const tailColumns: ColumnDef<ApiJob, unknown>[] = [
     {
       accessorKey: "created_at",
@@ -165,7 +196,7 @@ export default function JobQueue() {
         const job = row.original;
         return (
           <div className="flex gap-1" onClick={(e) => e.stopPropagation()}>
-            {(job.status === "RUNNING" || job.status === "QUEUED") && (
+            {STOPPABLE_STATUSES.has(job.status) && (
               <Button
                 variant="ghost"
                 size="sm"
@@ -176,7 +207,7 @@ export default function JobQueue() {
                 Stop
               </Button>
             )}
-            {(job.status === "PREEMPTED" || job.status === "FAILED") && (
+            {RESUMABLE_STATUSES.has(job.status) && (
               <Button
                 variant="ghost"
                 size="sm"
@@ -201,15 +232,34 @@ export default function JobQueue() {
     },
   ];
 
-  const columns: ColumnDef<ApiJob, unknown>[] = [...baseColumns, ...extendedColumns, ...tailColumns];
+  const columns: ColumnDef<ApiJob, unknown>[] = [...baseColumns, ...extendedColumns, ...profilingColumns, ...tailColumns];
 
   return (
     <div className="space-y-4">
-      <div>
-        <h1 className="text-lg font-semibold text-foreground">Job Queue</h1>
-        <p className="text-sm text-muted-foreground">
-          {isLoading ? "Loading..." : `${jobs?.length ?? 0} jobs in scheduler`}
-        </p>
+      <div className="flex items-center justify-between">
+        <div>
+          <h1 className="text-lg font-semibold text-foreground">Job Queue</h1>
+          <p className="text-sm text-muted-foreground">
+            {isLoading ? "Loading..." : `${jobs?.length ?? 0} jobs in scheduler`}
+          </p>
+        </div>
+        {jobs && jobs.length > 0 && (
+          <Button
+            variant="outline"
+            size="sm"
+            className="text-destructive hover:text-destructive hover:bg-destructive/10"
+            disabled={clearAllJobs.isPending}
+            onClick={() => {
+              clearAllJobs.mutate(undefined, {
+                onSuccess: () => toast.success("All jobs cleared"),
+                onError: (err) => toast.error(err.message || "Failed to clear jobs"),
+              });
+            }}
+          >
+            <Trash className="h-3.5 w-3.5 mr-1.5" />
+            {clearAllJobs.isPending ? "Clearing..." : "Clear All"}
+          </Button>
+        )}
       </div>
 
       {isLoading ? (
@@ -229,7 +279,7 @@ export default function JobQueue() {
         <DialogContent className="max-w-3xl max-h-[80vh] flex flex-col">
           <DialogHeader>
             <DialogTitle className="font-mono text-sm">
-              Logs — {logJobId?.slice(0, 8)}
+              Logs — {logJobId?.slice(0, JOB_ID_DISPLAY_LENGTH)}
             </DialogTitle>
           </DialogHeader>
           <div className="flex-1 overflow-auto bg-background rounded border border-border p-3 min-h-[300px]">

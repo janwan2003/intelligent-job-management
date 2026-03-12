@@ -10,9 +10,10 @@ RUN apt-get update && \
     apt-get clean && \
     rm -rf /var/lib/apt/lists/* get-docker.sh
 
-COPY requirements.txt .
+COPY worker/requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-COPY worker.py constants.py ./
+COPY worker/worker.py worker/constants.py ./
+COPY shared/ ./shared/
 
 CMD ["python", "-u", "worker.py"]

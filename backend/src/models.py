@@ -7,9 +7,9 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from src.constants import (
     DEFAULT_JOB_PRIORITY,
-    NODE_STATUS_IDLE,
     PRIORITY_MAX,
     PRIORITY_MIN,
+    NodeStatusEnum,
 )
 
 # ---------------------------------------------------------------------------
@@ -53,7 +53,7 @@ class NodeStatus(BaseModel):
     is_for_profiling: bool
     cost: float
     resources: list[NodeResources] = Field(default_factory=list)
-    status: str = NODE_STATUS_IDLE
+    status: str = NodeStatusEnum.IDLE
     current_job_ids: list[str] = Field(default_factory=list)
 
 

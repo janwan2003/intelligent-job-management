@@ -1,6 +1,6 @@
 """Profiling scheduler for the IJM backend.
 
-Manages exhaustive GPU configuration profiling before real job execution.
+Manages incremental GPU configuration profiling before real job execution.
 """
 
 import itertools
@@ -20,11 +20,11 @@ logger = logging.getLogger(__name__)
 
 
 class ProfilingScheduler:
-    """Exhaustive profiling strategy scheduler.
+    """Incremental profiling strategy scheduler.
 
-    Before a job runs for real, it is profiled on every valid hardware
-    configuration in the cluster.  Once all configs are tested, the job
-    is started on the fastest configuration.
+    Each submission profiles ONE previously-untested hardware configuration.
+    Once all configs have been tested across submissions, the job runs on
+    the fastest configuration found so far.
     """
 
     def get_valid_configurations(self) -> list[dict[str, int]]:
@@ -52,12 +52,17 @@ class ProfilingScheduler:
                     configs.append(parts)
         return configs
 
-    def _find_node_for_config(self, gpu_config: dict[str, int]) -> NodeConfig | None:
+    def _find_node_for_config(self, gpu_config: dict[str, int], *, is_for_profiling: bool) -> NodeConfig | None:
         """Find a node that can provide the given config.
 
         Checks each node has **all** required GPU types with sufficient
         counts.  Prefers smallest total surplus.
-        All nodes (including profiling-designated) are eligible.
+
+        - Standard runs (``is_for_profiling=False``): profiling-designated nodes
+          are excluded so production jobs never land on them.
+        - Profiling runs (``is_for_profiling=True``): profiling-designated nodes
+          are preferred; falls back to any matching node when none can satisfy
+          the config (e.g. large configs that exceed the profiling node's capacity).
         """
         required = gpu_config
         candidates: list[tuple[NodeConfig, int]] = []  # (node, total_surplus)
@@ -74,6 +79,16 @@ class ProfilingScheduler:
                 total_surplus += avail - needed
             if match:
                 candidates.append((node, total_surplus))
+
+        if not is_for_profiling:
+            # Standard runs must never use the profiling-designated node
+            candidates = [(n, s) for n, s in candidates if not n.is_for_profiling]
+        else:
+            # Profiling runs prefer the profiling-designated node
+            profiling_preferred = [(n, s) for n, s in candidates if n.is_for_profiling]
+            if profiling_preferred:
+                candidates = profiling_preferred
+
         candidates.sort(key=lambda pair: pair[1])
         return candidates[0][0] if candidates else None
 
@@ -95,15 +110,28 @@ class ProfilingScheduler:
             rows = await cur.fetchall()
         return [row[0] for row in rows]
 
-    async def _find_best_config(self, conn: psycopg.AsyncConnection[Any], job_id: str) -> dict[str, int] | None:
-        """Pick the fastest config from profiling results."""
+    async def _find_best_available_config(
+        self, conn: psycopg.AsyncConnection[Any], job_id: str
+    ) -> tuple[dict[str, int], NodeConfig, float | None] | None:
+        """Find the fastest profiled config that has an available production node.
+
+        Iterates profiling results from fastest to slowest and returns the first
+        ``(config, node, duration)`` for which a non-profiling node can be found.
+        Returns ``None`` when there are no profiling results or no node is
+        currently available for any profiled config.
+        """
         async with conn.cursor() as cur:
             await cur.execute(
-                "SELECT gpu_config FROM profiling_results " "WHERE job_id = %s ORDER BY duration_seconds ASC LIMIT 1",
+                "SELECT gpu_config, duration_seconds FROM profiling_results "
+                "WHERE job_id = %s ORDER BY duration_seconds ASC",
                 (job_id,),
             )
-            row = await cur.fetchone()
-        return row[0] if row else None
+            rows = await cur.fetchall()
+        for gpu_config, duration in rows:
+            node = self._find_node_for_config(gpu_config, is_for_profiling=False)
+            if node:
+                return gpu_config, node, float(duration) if duration is not None else None
+        return None
 
     async def _estimate_duration(
         self, conn: psycopg.AsyncConnection[Any], job_id: str, gpu_config: dict[str, int]
@@ -151,15 +179,11 @@ class ProfilingScheduler:
         Called after a profiling run completes to immediately transition to real
         execution on the best configuration discovered so far.
         """
-        gpu_config: dict[str, int] | None = await self._find_best_config(conn, job_id)
-        if gpu_config:
-            node = self._find_node_for_config(gpu_config)
-            eta = await self._estimate_duration(conn, job_id, gpu_config)
+        best = await self._find_best_available_config(conn, job_id)
+        if best:
+            gpu_config, node, eta = best
         else:
-            node = self._find_any_available_node()
-            if node and node.resources:
-                gpu_config = {node.resources[0].gpu_type: node.resources[0].gpu_count}
-            eta = None
+            gpu_config, node, eta = None, None, None
 
         result = ScheduleResult(
             mode="standard",
@@ -209,8 +233,8 @@ class ProfilingScheduler:
         gpu_config: dict[str, int] | None
         if remaining:
             # Exploration: pick a random un-profiled config
-            gpu_config = random.choice(sorted(remaining, key=config_key))
-            node = self._find_node_for_config(gpu_config)
+            gpu_config = random.choice(remaining)
+            node = self._find_node_for_config(gpu_config, is_for_profiling=True)
             eta = await self._estimate_duration(conn, job_id, gpu_config)
             result = ScheduleResult(
                 mode="profiling",
@@ -220,16 +244,12 @@ class ProfilingScheduler:
                 is_profiling_run=True,
             )
         else:
-            # All configs profiled — pick the best one
-            gpu_config = await self._find_best_config(conn, job_id)
-            if gpu_config:
-                node = self._find_node_for_config(gpu_config)
-                eta = await self._estimate_duration(conn, job_id, gpu_config)
+            # All configs profiled — pick the fastest one with an available node
+            best = await self._find_best_available_config(conn, job_id)
+            if best:
+                gpu_config, node, eta = best
             else:
-                node = self._find_any_available_node()
-                if node and node.resources:
-                    gpu_config = {node.resources[0].gpu_type: node.resources[0].gpu_count}
-                eta = None
+                gpu_config, node, eta = None, None, None
             result = ScheduleResult(
                 mode="standard",
                 gpu_config=gpu_config,

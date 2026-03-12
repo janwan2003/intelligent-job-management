@@ -12,13 +12,14 @@ RUN pip install uv && \
     rm -rf /var/lib/apt/lists/* get-docker.sh
 
 # Copy dependency files
-COPY pyproject.toml .
+COPY backend/pyproject.toml .
 
 # Install dependencies
 RUN uv sync --no-dev
 
 # Copy application code
-COPY src/ ./src/
+COPY backend/src/ ./src/
+COPY shared/ ./shared/
 
 EXPOSE 8000
 

@@ -26,3 +26,9 @@ export const FEATURE_SUBMIT_EXTENDED_FIELDS = true;
 
 /** Docker image upload (exists in API) */
 export const FEATURE_IMAGE_UPLOAD = true;
+
+/** Profiling scheduler: show GPU config, ETA, and profiling badge */
+export const FEATURE_PROFILING_SCHEDULER = true;
+
+/** Profiling page: dedicated page showing profiling results per job */
+export const FEATURE_PROFILING_PAGE = true;

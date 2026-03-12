@@ -40,15 +40,10 @@ from constants import (
     NATS_SUBJECT_SUBMITTED,
     NATS_SUBJECTS_PATTERN,
     OUTPUT_LOG_FILENAME,
+    JobStatus,
     RUNNABLE_STATUSES,
     RUNS_DIR,
     RUNS_MOUNT_PATH,
-    STATUS_FAILED,
-    STATUS_PREEMPTED,
-    STATUS_PROFILING,
-    STATUS_QUEUED,
-    STATUS_RUNNING,
-    STATUS_SUCCEEDED,
 )
 
 # Regex to parse progress from training output, e.g. "Step 50/10000"
@@ -206,13 +201,13 @@ class JobWorker:
             async with conn.cursor() as cur:
                 await cur.execute(
                     "SELECT id, container_name, status FROM jobs WHERE status IN (%s, %s, %s)",
-                    (STATUS_RUNNING, STATUS_PROFILING, STATUS_QUEUED),
+                    (JobStatus.RUNNING, JobStatus.PROFILING, JobStatus.QUEUED),
                 )
                 jobs = await cur.fetchall()
 
             reconciled_count = 0
             for job_id, container_name, status in jobs:
-                if status in (STATUS_RUNNING, STATUS_PROFILING):
+                if status in (JobStatus.RUNNING, JobStatus.PROFILING):
                     # Check if container actually exists
                     expected_container = (
                         container_name
@@ -229,7 +224,7 @@ class JobWorker:
                         async with conn.cursor() as cur:
                             await cur.execute(
                                 "UPDATE jobs SET status = %s, updated_at = %s WHERE id = %s",
-                                (STATUS_FAILED, datetime.now(timezone.utc), job_id),
+                                (JobStatus.FAILED, datetime.now(timezone.utc), job_id),
                             )
                             await conn.commit()
                         reconciled_count += 1
@@ -259,7 +254,7 @@ class JobWorker:
             async with conn.cursor() as cur:
                 await cur.execute(
                     "SELECT id FROM jobs WHERE status = %s ORDER BY created_at ASC",
-                    (STATUS_QUEUED,),
+                    (JobStatus.QUEUED,),
                 )
                 rows = await cur.fetchall()
 
@@ -344,7 +339,7 @@ class JobWorker:
                     async with conn.cursor() as cur:
                         await cur.execute(
                             "UPDATE jobs SET status = %s, updated_at = %s WHERE id = %s",
-                            (STATUS_PREEMPTED, datetime.now(timezone.utc), job_id),
+                            (JobStatus.PREEMPTED, datetime.now(timezone.utc), job_id),
                         )
                         await conn.commit()
                     logger.info(
@@ -466,7 +461,7 @@ class JobWorker:
                 return
 
             # Update status: PROFILING for profiling runs, RUNNING for real execution
-            run_status = STATUS_PROFILING if is_profiling_run else STATUS_RUNNING
+            run_status = JobStatus.PROFILING if is_profiling_run else JobStatus.RUNNING
             run_start_time = datetime.now(timezone.utc)
             async with conn.cursor() as cur:
                 await cur.execute(
@@ -599,7 +594,7 @@ class JobWorker:
                 current_status = current_status_row[0] if current_status_row else None
 
             # Only update status if not already PREEMPTED
-            if current_status == STATUS_PREEMPTED:
+            if current_status == JobStatus.PREEMPTED:
                 logger.info(
                     "Job %s was stopped (PREEMPTED), keeping that status", job_id
                 )
@@ -623,7 +618,7 @@ class JobWorker:
                             job_id[:JOB_ID_DISPLAY_LENGTH],
                         )
                     else:
-                        status = STATUS_SUCCEEDED
+                        status = JobStatus.SUCCEEDED
                         logger.info("Job %s completed successfully", job_id)
                         async with conn.cursor() as cur:
                             await cur.execute(
@@ -632,7 +627,7 @@ class JobWorker:
                             )
                             await conn.commit()
                 else:
-                    status = STATUS_FAILED
+                    status = JobStatus.FAILED
                     logger.error("Job %s failed with exit code %d", job_id, exit_code)
                     async with conn.cursor() as cur:
                         await cur.execute(
@@ -649,7 +644,7 @@ class JobWorker:
                     async with conn.cursor() as cur:
                         await cur.execute(
                             "UPDATE jobs SET status = %s, updated_at = %s WHERE id = %s",
-                            (STATUS_FAILED, datetime.now(timezone.utc), job_id),
+                            (JobStatus.FAILED, datetime.now(timezone.utc), job_id),
                         )
                         await conn.commit()
                 except Exception as db_error:
@@ -745,7 +740,7 @@ class JobWorker:
             if not container_exists:
                 logger.warning("Container %s does not exist", container_name)
 
-                if current_status == STATUS_QUEUED:
+                if current_status == JobStatus.QUEUED:
                     # Job hasn't started yet — mark as PREEMPTED directly
                     logger.info(
                         "Job %s is QUEUED, marking as PREEMPTED",
@@ -754,10 +749,10 @@ class JobWorker:
                     async with conn.cursor() as cur:
                         await cur.execute(
                             "UPDATE jobs SET status = %s, updated_at = %s WHERE id = %s",
-                            (STATUS_PREEMPTED, datetime.now(timezone.utc), job_id),
+                            (JobStatus.PREEMPTED, datetime.now(timezone.utc), job_id),
                         )
                         await conn.commit()
-                elif current_status in (STATUS_RUNNING, STATUS_PROFILING):
+                elif current_status in (JobStatus.RUNNING, JobStatus.PROFILING):
                     # If job was marked as RUNNING/PROFILING, it's orphaned - mark as FAILED
                     logger.warning(
                         "Job %s was marked %s but container is missing - marking as FAILED",
@@ -767,7 +762,7 @@ class JobWorker:
                     async with conn.cursor() as cur:
                         await cur.execute(
                             "UPDATE jobs SET status = %s, updated_at = %s WHERE id = %s",
-                            (STATUS_FAILED, datetime.now(timezone.utc), job_id),
+                            (JobStatus.FAILED, datetime.now(timezone.utc), job_id),
                         )
                         await conn.commit()
                 else:
@@ -799,7 +794,7 @@ class JobWorker:
                 async with conn.cursor() as cur:
                     await cur.execute(
                         "UPDATE jobs SET status = %s, updated_at = %s WHERE id = %s",
-                        (STATUS_PREEMPTED, datetime.now(timezone.utc), job_id),
+                        (JobStatus.PREEMPTED, datetime.now(timezone.utc), job_id),
                     )
                     await conn.commit()
             else:

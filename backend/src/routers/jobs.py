@@ -16,9 +16,8 @@ from src.constants import (
     OUTPUT_LOG_FILENAME,
     RESUMABLE_STATUSES,
     RUNS_DIR,
-    STATUS_PREEMPTED,
-    STATUS_QUEUED,
     STOPPABLE_STATUSES,
+    JobStatus,
 )
 from src.models import _JOB_COLUMNS, Job, JobCreate, _row_to_job
 from src.profiling import scheduler
@@ -68,7 +67,7 @@ async def create_job(job_request: JobCreate) -> Job:
                 job_id,
                 effective_image,
                 json.dumps(effective_command),
-                STATUS_QUEUED,
+                JobStatus.QUEUED,
                 now,
                 now,
                 job_request.priority,
@@ -93,7 +92,7 @@ async def create_job(job_request: JobCreate) -> Job:
         id=job_id,
         image=effective_image,
         command=effective_command,
-        status=STATUS_QUEUED,
+        status=JobStatus.QUEUED,
         created_at=now,
         updated_at=now,
         priority=job_request.priority,
@@ -172,12 +171,12 @@ async def stop_job(job_id: str) -> dict[str, str]:
             detail=f"Cannot stop job with status {current_status}",
         )
 
-    if current_status == STATUS_QUEUED:
+    if current_status == JobStatus.QUEUED:
         # QUEUED jobs have no container — mark PREEMPTED directly
         async with conn.cursor() as cur:
             await cur.execute(
                 "UPDATE jobs SET status = %s, updated_at = %s WHERE id = %s",
-                (STATUS_PREEMPTED, datetime.now(UTC), job_id),
+                (JobStatus.PREEMPTED, datetime.now(UTC), job_id),
             )
         logger.info("Stopped QUEUED job %s directly (no container)", job_id[:8])
         return {"status": "stopped", "job_id": job_id}
@@ -218,7 +217,7 @@ async def resume_job(job_id: str) -> dict[str, str]:
     async with conn.cursor() as cur:
         await cur.execute(
             "UPDATE jobs SET status = %s, updated_at = %s WHERE id = %s",
-            (STATUS_QUEUED, datetime.now(UTC), job_id),
+            (JobStatus.QUEUED, datetime.now(UTC), job_id),
         )
 
     # Re-schedule: profiles one new config, or runs on best if all profiled

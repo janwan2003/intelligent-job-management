@@ -1124,7 +1124,7 @@ class TestMultiJobRegression:
                 if "SELECT DISTINCT" in self._last_query:
                     return list(profiled)
                 if "ORDER BY duration_seconds" in self._last_query:
-                    return [profiled[0]] if profiled else []
+                    return [(config, 30.0) for (config,) in profiled]
                 if "duration_seconds" in self._last_query:
                     return [(30.0,)] if profiled else []
                 return []
@@ -1214,9 +1214,9 @@ class TestMultiJobRegression:
 
     def test_stop_profiling_job_does_not_block_others(self) -> None:
         """Stopping a PROFILING job should work."""
-        from src.constants import STATUS_PROFILING, STOPPABLE_STATUSES
+        from src.constants import STOPPABLE_STATUSES, JobStatus
 
-        assert STATUS_PROFILING in STOPPABLE_STATUSES
+        assert JobStatus.PROFILING in STOPPABLE_STATUSES
 
         client, _conn, fake_js = _make_client([("PROFILING",)])
         resp = client.post("/jobs/prof-job/stop")

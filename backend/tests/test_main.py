@@ -422,7 +422,7 @@ def test_find_node_for_config_exact_match() -> None:
     ]
 
     sched = ProfilingScheduler()
-    node = sched._find_node_for_config({"A40": 1})
+    node = sched._find_node_for_config({"A40": 1}, is_for_profiling=True)
     assert node is not None
     assert node.id == "small"  # exact match preferred
 
@@ -439,7 +439,7 @@ def test_find_node_for_config_larger_node() -> None:
     ]
 
     sched = ProfilingScheduler()
-    node = sched._find_node_for_config({"A40": 2})
+    node = sched._find_node_for_config({"A40": 2}, is_for_profiling=False)
     assert node is not None
     assert node.id == "big"
 
@@ -456,8 +456,8 @@ def test_find_node_for_config_no_match() -> None:
     ]
 
     sched = ProfilingScheduler()
-    assert sched._find_node_for_config({"A40": 1}) is None
-    assert sched._find_node_for_config({"L40S": 4}) is None
+    assert sched._find_node_for_config({"A40": 1}, is_for_profiling=False) is None
+    assert sched._find_node_for_config({"L40S": 4}, is_for_profiling=False) is None
 
 
 def test_configurations_endpoint(client: TestClient) -> None:
@@ -610,12 +610,12 @@ def test_find_node_for_config_prefers_smallest_surplus() -> None:
     ]
     sched = ProfilingScheduler()
     # Requesting 2 GPUs — "small" has exactly 2 (surplus 0)
-    node = sched._find_node_for_config({"A40": 2})
+    node = sched._find_node_for_config({"A40": 2}, is_for_profiling=False)
     assert node is not None
     assert node.id == "small"
 
     # Requesting 3 GPUs — "medium" has 4 (surplus 1), "big" has 8 (surplus 5)
-    node = sched._find_node_for_config({"A40": 3})
+    node = sched._find_node_for_config({"A40": 3}, is_for_profiling=False)
     assert node is not None
     assert node.id == "medium"
 
@@ -696,17 +696,17 @@ def test_find_node_for_config_mixed_gpu() -> None:
         },
     ]
     sched = ProfilingScheduler()
-    node = sched._find_node_for_config({"A40": 1})
+    node = sched._find_node_for_config({"A40": 1}, is_for_profiling=False)
     assert node is not None
     assert node.id == "mixed"
-    node = sched._find_node_for_config({"Blackwell": 1})
+    node = sched._find_node_for_config({"Blackwell": 1}, is_for_profiling=False)
     assert node is not None
     assert node.id == "mixed"
-    node = sched._find_node_for_config({"A40": 1, "Blackwell": 1})
+    node = sched._find_node_for_config({"A40": 1, "Blackwell": 1}, is_for_profiling=False)
     assert node is not None
     assert node.id == "mixed"
-    assert sched._find_node_for_config({"Blackwell": 2}) is None
-    assert sched._find_node_for_config({"A40": 3}) is None
+    assert sched._find_node_for_config({"Blackwell": 2}, is_for_profiling=False) is None
+    assert sched._find_node_for_config({"A40": 3}, is_for_profiling=False) is None
 
 
 def test_find_suitable_nodes_mixed_gpu() -> None:
@@ -812,24 +812,43 @@ class FakeAsyncConn:
         pass
 
 
-async def test_find_best_config_returns_fastest() -> None:
-    """_find_best_config selects the config with lowest duration."""
-    conn = FakeAsyncConn(
-        responses={
-            "profiling_results": [({"A40": 2},)],
+async def test_find_best_available_config_returns_fastest() -> None:
+    """_find_best_available_config returns the fastest config that has an available node."""
+    cluster.nodes = [
+        {
+            "id": "compute",
+            "isForProfiling": False,
+            "cost": 0.1,
+            "resources": [{"gpu_type": "A40", "gpu_count": 2, "memory_per_gpu_gb": 48}],
         }
-    )
+    ]
+
+    class BestCursor(FakeAsyncCursor):
+        async def fetchall(self) -> list[tuple[Any, ...]]:
+            return [({"A40": 2}, 30.0)]
+
+    class BestConn(FakeAsyncConn):
+        def __init__(self) -> None:
+            self._cursor = BestCursor()
+
+        def cursor(self) -> FakeAsyncCursor:
+            return self._cursor
+
     sched = ProfilingScheduler()
-    best = await sched._find_best_config(conn, "job-123")
-    assert best == {"A40": 2}
+    result = await sched._find_best_available_config(BestConn(), "job-123")
+    assert result is not None
+    config, node, eta = result
+    assert config == {"A40": 2}
+    assert node.id == "compute"
+    assert eta == 30.0
 
 
-async def test_find_best_config_no_results() -> None:
-    """_find_best_config returns None when no profiling results exist."""
-    conn = FakeAsyncConn()
+async def test_find_best_available_config_no_results() -> None:
+    """_find_best_available_config returns None when no profiling results exist."""
+    cluster.nodes = []
     sched = ProfilingScheduler()
-    best = await sched._find_best_config(conn, "job-missing")
-    assert best is None
+    result = await sched._find_best_available_config(FakeAsyncConn(), "job-missing")
+    assert result is None
 
 
 async def test_estimate_duration_exact_match() -> None:
@@ -930,15 +949,13 @@ async def test_schedule_job_standard_mode_after_all_profiled() -> None:
         async def fetchall(self) -> list[tuple[Any, ...]]:
             if "SELECT DISTINCT" in self._last_query:
                 return [({"A40": 1},)]
+            if "ORDER BY duration_seconds" in self._last_query:
+                return [({"A40": 1}, 42.5)]
             return []
 
         async def fetchone(self) -> tuple[Any, ...] | None:
             nonlocal call_count
             call_count += 1
-            if "ORDER BY duration_seconds" in self._last_query:
-                return ({"A40": 1},)
-            if "duration_seconds" in self._last_query and "AVG" not in self._last_query:
-                return (42.5,)
             return None
 
     class StandardConn(FakeAsyncConn):
@@ -958,40 +975,47 @@ async def test_schedule_job_standard_mode_after_all_profiled() -> None:
     assert result.estimated_duration == 42.5
 
 
-async def test_schedule_job_standard_mode_no_best_config_fallback() -> None:
-    """Standard mode falls back to _find_any_available_node when no best config found."""
+async def test_schedule_job_standard_mode_no_available_node() -> None:
+    """Standard mode yields no assignment when all profiled configs have no production node.
+
+    Cluster has only a profiling-designated node, so valid configs exist but
+    _find_node_for_config(is_for_profiling=False) always returns None.
+    """
     cluster.nodes = [
         {
-            "id": "compute",
-            "isForProfiling": False,
-            "cost": 0.2,
-            "resources": [{"gpu_type": "L40S", "gpu_count": 2, "memory_per_gpu_gb": 48}],
+            "id": "prof-only",
+            "isForProfiling": True,  # no production nodes in this cluster
+            "cost": 0.1,
+            "resources": [{"gpu_type": "A40", "gpu_count": 1, "memory_per_gpu_gb": 48}],
         },
     ]
 
-    class FallbackCursor(FakeAsyncCursor):
+    class NoProductionNodeCursor(FakeAsyncCursor):
         async def fetchall(self) -> list[tuple[Any, ...]]:
             if "SELECT DISTINCT" in self._last_query:
-                return [({"L40S": 1},), ({"L40S": 2},)]
+                # Mark the only valid config as already profiled
+                return [({"A40": 1},)]
+            if "ORDER BY duration_seconds" in self._last_query:
+                return [({"A40": 1}, 30.0)]
             return []
 
         async def fetchone(self) -> tuple[Any, ...] | None:
             return None
 
-    class FallbackConn(FakeAsyncConn):
+    class NoProductionNodeConn(FakeAsyncConn):
         def __init__(self) -> None:
-            self._cursor = FallbackCursor()
+            self._cursor = NoProductionNodeCursor()
 
         def cursor(self) -> FakeAsyncCursor:
             return self._cursor
 
-    conn = FallbackConn()
+    conn = NoProductionNodeConn()
     sched = ProfilingScheduler()
     result = await sched.schedule_job(conn, "job-fb")
     assert result.mode == "standard"
     assert result.is_profiling_run is False
-    assert result.node_id == "compute"
-    assert result.gpu_config == {"L40S": 2}
+    assert result.node_id is None
+    assert result.gpu_config is None
 
 
 # ---------------------------------------------------------------------------
@@ -1022,11 +1046,12 @@ async def test_one_config_per_submit_then_standard() -> None:
         async def fetchall(self) -> list[tuple[Any, ...]]:
             if "SELECT DISTINCT" in self._last_query:
                 return list(profiled)
+            if "ORDER BY duration_seconds" in self._last_query:
+                return [(config, 30.0) for (config,) in profiled]
             return []
 
         async def fetchone(self) -> tuple[Any, ...] | None:
-            if "ORDER BY duration_seconds" in self._last_query:
-                return profiled[0] if profiled else None
+            # Used only by _estimate_duration in the profiling exploration branch
             if "duration_seconds" in self._last_query:
                 return (30.0,) if profiled else None
             return None
@@ -1075,13 +1100,11 @@ async def test_profiling_skipped_when_all_configs_already_tested() -> None:
         async def fetchall(self) -> list[tuple[Any, ...]]:
             if "SELECT DISTINCT" in self._last_query:
                 return [({"A40": 1},)]
+            if "ORDER BY duration_seconds" in self._last_query:
+                return [({"A40": 1}, 25.0)]
             return []
 
         async def fetchone(self) -> tuple[Any, ...] | None:
-            if "ORDER BY duration_seconds" in self._last_query:
-                return ({"A40": 1},)
-            if "duration_seconds" in self._last_query:
-                return (25.0,)
             return None
 
     class AlreadyProfiledConn(FakeAsyncConn):
