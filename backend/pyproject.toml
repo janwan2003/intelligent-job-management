@@ -93,3 +93,9 @@ warn_no_return = true
 [[tool.mypy.overrides]]
 module = "tests.*"
 disallow_untyped_defs = false
+
+[tool.deptry]
+known_first_party = ["shared"]  # local sibling package, not a pip dependency
+
+[tool.deptry.per_rule_ignores]
+DEP002 = ["uvicorn", "pydantic-settings", "python-multipart"]  # runtime deps used indirectly

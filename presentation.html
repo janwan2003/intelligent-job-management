@@ -181,7 +181,7 @@
       <ul>
         <li><code>_handle_job_submitted</code> — awaits <code>jobs.submitted</code>, enqueues job</li>
         <li><code>_handle_stop_requested</code> — awaits <code>jobs.stop_requested</code>, sends SIGTERM</li>
-        <li><code>_handle_resume_requested</code> — awaits <code>jobs.resume</code></li>
+        <li><code>_handle_resume_requested</code> — awaits <code>jobs.resume_requested</code></li>
         <li><code>_job_runner</code> — dequeues and runs Docker containers concurrently</li>
         <li><code>_run_job</code> — one task per container: exec, stream logs, report completion</li>
       </ul>

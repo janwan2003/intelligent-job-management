@@ -162,10 +162,38 @@ HOST_PROJECT_ROOT=$(cd .. && pwd) \
 python worker.py
 ```
 
+### Pre-commit hooks
+
+Install [pre-commit](https://pre-commit.com/) and set up the git hooks:
+
+```bash
+pip install pre-commit   # or: uv tool install pre-commit
+pre-commit install       # installs the git hook
+```
+
+Hooks run automatically on `git commit` for changed files. To run all hooks manually:
+
+```bash
+pre-commit run --all-files
+```
+
+The following checks run on commit:
+
+| Hook | Scope | What it does |
+|---|---|---|
+| **ruff** (lint + fix) | Python files | Linting with auto-fix (isort, pyflakes, bugbear, etc.) |
+| **ruff-format** | Python files | Code formatting |
+| **mypy** (backend) | shared/, backend/ | Static type checking |
+| **mypy** (worker) | worker/ | Static type checking (strict mode) |
+| **deptry** | backend/ | Detects missing/unused dependencies |
+| **eslint** | frontend/src/ | TypeScript/React linting |
+| **tsc** | frontend/src/ | TypeScript type checking |
+
 ### Running tests
 
 ```bash
 cd backend && uv run pytest          # Backend unit tests + infra config validation
+cd backend && uv run deptry .        # Check for unused/missing dependencies
 cd worker  && python -m pytest       # Worker tests
 cd frontend && pnpm lint && pnpm build   # Frontend lint + type-check
 cd infra && ./smoke_test.sh          # Full-stack smoke test (starts Docker Compose)

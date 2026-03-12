@@ -14,6 +14,8 @@ import re
 import signal
 import subprocess
 import time
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -22,6 +24,7 @@ import nats
 import psycopg
 from nats.js import JetStreamContext
 from nats.js.api import DeliverPolicy
+from psycopg.rows import dict_row
 from shared.constants import (
     DEFAULT_LOG_INTERVAL,
     DEFAULT_PROFILING_STEPS,
@@ -87,6 +90,43 @@ class JobWorker:
         self.running_jobs: dict[str, subprocess.Popen[str]] = {}
         self._job_tasks: set[asyncio.Task[None]] = set()
 
+    # ------------------------------------------------------------------
+    # Database helpers
+    # ------------------------------------------------------------------
+
+    async def connect_db(self) -> psycopg.AsyncConnection[Any]:
+        """Create a new database connection (mockable in tests)."""
+        if self.database_url is None:
+            raise RuntimeError("DATABASE_URL environment variable is not set")
+        return await psycopg.AsyncConnection.connect(self.database_url, row_factory=dict_row)
+
+    @asynccontextmanager
+    async def _db(self) -> AsyncIterator[psycopg.AsyncConnection[Any]]:
+        """Open a short-lived DB connection, closed automatically."""
+        conn = await self.connect_db()
+        try:
+            yield conn
+        finally:
+            await conn.close()
+
+    async def _update_job(
+        self,
+        conn: psycopg.AsyncConnection[Any],
+        job_id: str,
+        **fields: Any,
+    ) -> None:
+        """Update arbitrary fields on a job row."""
+        fields["updated_at"] = datetime.now(UTC)
+        sets = ", ".join(f"{k} = %({k})s" for k in fields)
+        fields["_id"] = job_id
+        async with conn.cursor() as cur:
+            await cur.execute(f"UPDATE jobs SET {sets} WHERE id = %(_id)s", fields)  # noqa: S608
+            await conn.commit()
+
+    # ------------------------------------------------------------------
+    # Docker helpers
+    # ------------------------------------------------------------------
+
     @staticmethod
     def build_docker_cmd(
         container_name: str,
@@ -117,11 +157,31 @@ class JobWorker:
         cmd.append(image)
         return cmd + command
 
-    async def connect_db(self) -> psycopg.AsyncConnection[Any]:
-        """Create a new database connection."""
-        if self.database_url is None:
-            raise RuntimeError("DATABASE_URL environment variable is not set")
-        return await psycopg.AsyncConnection.connect(self.database_url)
+    @staticmethod
+    async def _docker_run(*args: str, timeout: int = DOCKER_CMD_TIMEOUT_SECONDS) -> subprocess.CompletedProcess[str]:
+        """Run a docker CLI command in a thread."""
+        return await asyncio.to_thread(
+            subprocess.run,
+            ["docker", *args],
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+        )
+
+    async def _list_containers(self) -> set[str]:
+        """Return names of all containers with the IJM prefix."""
+        result = await self._docker_run(
+            "ps", "-a", "--filter", f"name={CONTAINER_NAME_PREFIX}", "--format", "{{.Names}}"
+        )
+        return set(result.stdout.strip().split("\n")) if result.stdout.strip() else set()
+
+    async def _stop_container(self, container_name: str) -> subprocess.CompletedProcess[str]:
+        """Send docker stop with grace period."""
+        return await self._docker_run("stop", "-t", str(DOCKER_STOP_GRACE_SECONDS), container_name)
+
+    # ------------------------------------------------------------------
+    # Startup
+    # ------------------------------------------------------------------
 
     async def start(self) -> None:
         """Start the worker service."""
@@ -151,7 +211,7 @@ class JobWorker:
 
         # Graceful shutdown on SIGTERM/SIGINT
         shutdown_event = asyncio.Event()
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
         for sig in (signal.SIGTERM, signal.SIGINT):
             loop.add_signal_handler(sig, shutdown_event.set)
 
@@ -168,66 +228,40 @@ class JobWorker:
 
     async def _ensure_streams(self) -> None:
         """Ensure NATS JetStream streams exist."""
-        assert self.js is not None
+        if self.js is None:
+            raise RuntimeError("NATS JetStream not connected")
         try:
             await self.js.add_stream(name=NATS_STREAM_NAME, subjects=[NATS_SUBJECTS_PATTERN])
             logger.info("JetStream stream '%s' ready", NATS_STREAM_NAME)
         except Exception as e:
-            # Stream already exists
             logger.debug("Stream setup: %s", e)
 
     async def _reconcile_job_states(self) -> None:
         """Reconcile job states with actual Docker container status."""
         logger.info("Reconciling job states")
-        conn = None
         try:
-            conn = await self.connect_db()
+            running_containers = await self._list_containers()
 
-            # Get all containers with ijm- prefix
-            result = await asyncio.to_thread(
-                subprocess.run,
-                [
-                    "docker",
-                    "ps",
-                    "-a",
-                    "--filter",
-                    f"name={CONTAINER_NAME_PREFIX}",
-                    "--format",
-                    "{{.Names}}",
-                ],
-                capture_output=True,
-                text=True,
-                timeout=DOCKER_CMD_TIMEOUT_SECONDS,
-            )
-            running_containers = set(result.stdout.strip().split("\n")) if result.stdout.strip() else set()
-
-            # Get all jobs marked as RUNNING, PROFILING, or QUEUED
-            async with conn.cursor() as cur:
+            async with self._db() as conn, conn.cursor() as cur:
                 await cur.execute(
                     "SELECT id, container_name, status FROM jobs WHERE status IN (%s, %s, %s)",
                     (JobStatus.RUNNING, JobStatus.PROFILING, JobStatus.QUEUED),
                 )
                 jobs = await cur.fetchall()
 
-            reconciled_count = 0
-            for job_id, container_name, status in jobs:
-                if status in (JobStatus.RUNNING, JobStatus.PROFILING):
-                    # Check if container actually exists
-                    expected_container = container_name or f"{CONTAINER_NAME_PREFIX}{job_id[:JOB_ID_DISPLAY_LENGTH]}"
-
-                    if expected_container not in running_containers:
-                        # Container is missing, mark job as failed
+                reconciled_count = 0
+                for job in jobs:
+                    if job["status"] not in (JobStatus.RUNNING, JobStatus.PROFILING):
+                        continue
+                    expected = job["container_name"] or f"{CONTAINER_NAME_PREFIX}{job['id'][:JOB_ID_DISPLAY_LENGTH]}"
+                    if expected not in running_containers:
                         logger.warning(
-                            "Job %s marked RUNNING but container %s not found - marking as FAILED",
-                            job_id[:JOB_ID_DISPLAY_LENGTH],
-                            expected_container,
+                            "Job %s marked %s but container %s not found — marking FAILED",
+                            job["id"][:JOB_ID_DISPLAY_LENGTH],
+                            job["status"],
+                            expected,
                         )
-                        async with conn.cursor() as cur:
-                            await cur.execute(
-                                "UPDATE jobs SET status = %s, updated_at = %s WHERE id = %s",
-                                (JobStatus.FAILED, datetime.now(UTC), job_id),
-                            )
-                            await conn.commit()
+                        await self._update_job(conn, job["id"], status=JobStatus.FAILED)
                         reconciled_count += 1
 
             if reconciled_count > 0:
@@ -237,22 +271,11 @@ class JobWorker:
 
         except Exception as e:
             logger.error("Failed to reconcile job states: %s", e, exc_info=True)
-        finally:
-            if conn:
-                await conn.close()
 
     async def _pickup_queued_jobs(self) -> None:
-        """Enqueue any QUEUED jobs that were missed while the worker was down.
-
-        NATS durable consumers with DeliverPolicy.NEW only receive messages
-        published after the subscription.  If jobs were submitted while the
-        worker was offline, the events are lost.  This scan ensures those
-        jobs get picked up on startup.
-        """
-        conn = None
+        """Enqueue any QUEUED jobs that were missed while the worker was down."""
         try:
-            conn = await self.connect_db()
-            async with conn.cursor() as cur:
+            async with self._db() as conn, conn.cursor() as cur:
                 await cur.execute(
                     "SELECT id FROM jobs WHERE status = %s ORDER BY created_at ASC",
                     (JobStatus.QUEUED,),
@@ -261,57 +284,40 @@ class JobWorker:
 
             if rows:
                 logger.info("Found %d QUEUED job(s) from before startup — enqueuing", len(rows))
-                for (job_id,) in rows:
-                    await self.job_queue.put(("run", job_id))
+                for row in rows:
+                    await self.job_queue.put(("run", row["id"]))
             else:
                 logger.info("No missed QUEUED jobs")
         except Exception as e:
             logger.error("Failed to pick up queued jobs: %s", e, exc_info=True)
-        finally:
-            if conn:
-                await conn.close()
+
+    # ------------------------------------------------------------------
+    # NATS event handlers
+    # ------------------------------------------------------------------
 
     async def _subscribe_to_events(self) -> None:
         """Subscribe to NATS job events."""
-        assert self.js is not None
+        if self.js is None:
+            raise RuntimeError("NATS JetStream not connected")
 
-        # Subscribe to job submission events (only new messages)
-        await self.js.subscribe(
-            NATS_SUBJECT_SUBMITTED,
-            cb=self._handle_job_submitted,
-            durable=CONSUMER_SUBMITTED,
-            config=nats.js.api.ConsumerConfig(
-                deliver_policy=DeliverPolicy.NEW,
-            ),
-        )
-
-        # Subscribe to stop requests (only new messages)
-        await self.js.subscribe(
-            NATS_SUBJECT_STOP_REQUESTED,
-            cb=self._handle_stop_requested,
-            durable=CONSUMER_STOP,
-            config=nats.js.api.ConsumerConfig(
-                deliver_policy=DeliverPolicy.NEW,
-            ),
-        )
-
-        # Subscribe to resume requests (only new messages)
-        await self.js.subscribe(
-            NATS_SUBJECT_RESUME_REQUESTED,
-            cb=self._handle_resume_requested,
-            durable=CONSUMER_RESUME,
-            config=nats.js.api.ConsumerConfig(
-                deliver_policy=DeliverPolicy.NEW,
-            ),
-        )
+        for subject, cb, durable in [
+            (NATS_SUBJECT_SUBMITTED, self._handle_job_submitted, CONSUMER_SUBMITTED),
+            (NATS_SUBJECT_STOP_REQUESTED, self._handle_stop_requested, CONSUMER_STOP),
+            (NATS_SUBJECT_RESUME_REQUESTED, self._handle_resume_requested, CONSUMER_RESUME),
+        ]:
+            await self.js.subscribe(
+                subject,
+                cb=cb,
+                durable=durable,
+                config=nats.js.api.ConsumerConfig(deliver_policy=DeliverPolicy.NEW),
+            )
 
         logger.info("Subscribed to job events")
 
     async def _handle_job_submitted(self, msg: Any) -> None:
         """Handle jobs.submitted event."""
         try:
-            data = json.loads(msg.data.decode())
-            job_id = data["job_id"]
+            job_id = json.loads(msg.data.decode())["job_id"]
             logger.info("Job submitted: %s", job_id)
             await self.job_queue.put(("run", job_id))
             await msg.ack()
@@ -322,59 +328,10 @@ class JobWorker:
     async def _handle_stop_requested(self, msg: Any) -> None:
         """Handle jobs.stop_requested event."""
         try:
-            logger.debug("Received stop message from NATS: %s", msg.data)
-            data = json.loads(msg.data.decode())
-            job_id = data["job_id"]
-            logger.info("Stop requested for job: %s", job_id)
-
-            process = self.running_jobs.get(job_id)
-            if process:
-                logger.info("Interrupting running job: %s", job_id[:JOB_ID_DISPLAY_LENGTH])
-
-                # Update status to PREEMPTED BEFORE stopping container
-                conn = await self.connect_db()
-                try:
-                    async with conn.cursor() as cur:
-                        await cur.execute(
-                            "UPDATE jobs SET status = %s, updated_at = %s WHERE id = %s",
-                            (JobStatus.PREEMPTED, datetime.now(UTC), job_id),
-                        )
-                        await conn.commit()
-                    logger.info("Marked job %s as PREEMPTED", job_id[:JOB_ID_DISPLAY_LENGTH])
-                finally:
-                    await conn.close()
-
-                # Now stop the container
-                container_name = f"{CONTAINER_NAME_PREFIX}{job_id[:JOB_ID_DISPLAY_LENGTH]}"
-                result = await asyncio.to_thread(
-                    subprocess.run,
-                    [
-                        "docker",
-                        "stop",
-                        "-t",
-                        str(DOCKER_STOP_GRACE_SECONDS),
-                        container_name,
-                    ],
-                    capture_output=True,
-                    text=True,
-                    timeout=DOCKER_CMD_TIMEOUT_SECONDS,
-                )
-                logger.debug(
-                    "Docker stop result - returncode: %s, stdout: %s, stderr: %s",
-                    result.returncode,
-                    result.stdout,
-                    result.stderr,
-                )
-            else:
-                logger.info(
-                    "Job %s not tracked as running, handling normally",
-                    job_id[:JOB_ID_DISPLAY_LENGTH],
-                )
-                await self._stop_job(job_id)
-
-            logger.debug("Acknowledging stop message")
+            job_id = json.loads(msg.data.decode())["job_id"]
+            logger.info("Stop requested for job: %s", job_id[:JOB_ID_DISPLAY_LENGTH])
+            await self._stop_job(job_id)
             await msg.ack()
-            logger.debug("Stop message acknowledged")
         except Exception as e:
             logger.error("Failed to handle stop request: %s", e, exc_info=True)
             await msg.nak()
@@ -382,8 +339,7 @@ class JobWorker:
     async def _handle_resume_requested(self, msg: Any) -> None:
         """Handle jobs.resume_requested event."""
         try:
-            data = json.loads(msg.data.decode())
-            job_id = data["job_id"]
+            job_id = json.loads(msg.data.decode())["job_id"]
             logger.info("Resume requested for job: %s", job_id)
             await self.job_queue.put(("run", job_id))
             await msg.ack()
@@ -391,19 +347,19 @@ class JobWorker:
             logger.error("Failed to handle resume request: %s", e, exc_info=True)
             await msg.nak()
 
+    # ------------------------------------------------------------------
+    # Job dispatch loop
+    # ------------------------------------------------------------------
+
     async def _job_runner(self) -> None:
         """Main job dispatch loop — launches jobs concurrently."""
         while self.running:
             try:
-                # Get next job from queue
                 action, job_id = await asyncio.wait_for(self.job_queue.get(), timeout=1.0)
 
                 if action == "run":
                     if job_id in self.running_jobs:
-                        logger.info(
-                            "Job %s already running, skipping duplicate",
-                            job_id[:JOB_ID_DISPLAY_LENGTH],
-                        )
+                        logger.info("Job %s already running, skipping", job_id[:JOB_ID_DISPLAY_LENGTH])
                         continue
                     task = asyncio.create_task(self._run_job(job_id))
                     self._job_tasks.add(task)
@@ -415,296 +371,276 @@ class JobWorker:
                 logger.error("Job runner error: %s", e, exc_info=True)
                 await asyncio.sleep(1)
 
-    async def _update_progress(self, conn: psycopg.AsyncConnection[Any], job_id: str, progress: str) -> None:
-        """Update job progress in the database."""
-        async with conn.cursor() as cur:
-            await cur.execute(
-                "UPDATE jobs SET progress = %s, updated_at = %s WHERE id = %s",
-                (progress, datetime.now(UTC), job_id),
+    # ------------------------------------------------------------------
+    # Job execution
+    # ------------------------------------------------------------------
+
+    def _resolve_paths(self, job_id: str) -> tuple[Path, Path, Path, Path]:
+        """Return (ckpt_local, runs_local, ckpt_host, runs_host) for a job."""
+        ckpt_local = Path(self.host_root) / "data" / CHECKPOINT_DIR / job_id
+        runs_local = Path(self.host_root) / "data" / RUNS_DIR / job_id
+        ckpt_host = Path(self.host_project_root) / "data" / CHECKPOINT_DIR / job_id
+        runs_host = Path(self.host_project_root) / "data" / RUNS_DIR / job_id
+        return ckpt_local, runs_local, ckpt_host, runs_host
+
+    @staticmethod
+    def _prepare_checkpoint_dir(ckpt_local: Path, *, is_profiling: bool, is_first_run: bool) -> Path:
+        """Set up the checkpoint directory and return the path to mount.
+
+        Profiling runs use an isolated subdirectory.  First full runs clear
+        stale profiling checkpoints.  Resumed runs keep existing checkpoints.
+        """
+        if is_profiling:
+            mount = ckpt_local / ".profiling"
+            mount.mkdir(parents=True, exist_ok=True)
+            for f in mount.iterdir():
+                if f.is_file():
+                    f.unlink(missing_ok=True)
+            return mount
+
+        ckpt_local.mkdir(parents=True, exist_ok=True)
+        if is_first_run:
+            for f in ckpt_local.iterdir():
+                if f.is_file():
+                    f.unlink(missing_ok=True)
+        return ckpt_local
+
+    @staticmethod
+    def _build_env_vars(job: dict[str, Any]) -> dict[str, str]:
+        """Build environment variables to pass into the container."""
+        env: dict[str, str] = {}
+        env["LOG_INTERVAL"] = str(job.get("log_interval") or DEFAULT_LOG_INTERVAL)
+        if job["is_profiling_run"]:
+            env["MAX_STEPS"] = str(job.get("profiling_epochs_no") or DEFAULT_PROFILING_STEPS)
+        elif job.get("epochs_total"):
+            env["MAX_STEPS"] = str(job["epochs_total"])
+        return env
+
+    async def _stream_output(
+        self,
+        process: subprocess.Popen[str],
+        conn: psycopg.AsyncConnection[Any],
+        job_id: str,
+        log_path: Path,
+        step_timestamps: list[tuple[int, float]],
+        *,
+        is_profiling: bool,
+    ) -> None:
+        """Stream container stdout to log file, parse progress, collect timestamps."""
+        loop = asyncio.get_running_loop()
+        stdout = process.stdout
+        if stdout is None:
+            return
+        try:
+            with open(log_path, "a") as log_file:
+                while True:
+                    line = await loop.run_in_executor(None, stdout.readline)
+                    if not line:
+                        break
+                    stripped = line.rstrip()
+                    logger.info("[Job %s] %s", job_id[:JOB_ID_DISPLAY_LENGTH], stripped)
+                    log_file.write(line)
+                    log_file.flush()
+                    match = PROGRESS_RE.search(stripped)
+                    if match:
+                        step_num = int(match.group(1))
+                        progress = f"{step_num}/{match.group(2)}"
+                        await self._update_job(conn, job_id, progress=progress)
+                        if is_profiling:
+                            step_timestamps.append((step_num, time.monotonic()))
+        except Exception as e:
+            logger.debug("Output streaming ended: %s", e)
+
+    async def _wait_for_process(self, process: subprocess.Popen[str], job_id: str) -> int:
+        """Wait for a container process, terminating on timeout."""
+        loop = asyncio.get_running_loop()
+        try:
+            return await asyncio.wait_for(
+                loop.run_in_executor(None, process.wait),
+                timeout=JOB_TIMEOUT_SECONDS,
             )
-            await conn.commit()
+        except TimeoutError:
+            logger.error("Job %s timed out after %ds, terminating", job_id[:JOB_ID_DISPLAY_LENGTH], JOB_TIMEOUT_SECONDS)
+            process.terminate()
+            return await loop.run_in_executor(None, process.wait)
+
+    async def _handle_job_completion(
+        self,
+        conn: psycopg.AsyncConnection[Any],
+        job_id: str,
+        exit_code: int,
+        run_start_time: datetime,
+        step_timestamps: list[tuple[int, float]],
+    ) -> None:
+        """Update job status after container exits."""
+        job = await self._fetch_job(conn, job_id, "status")
+        if not job:
+            return
+
+        if job["status"] == JobStatus.PREEMPTED:
+            logger.info("Job %s was stopped (PREEMPTED), keeping status", job_id[:JOB_ID_DISPLAY_LENGTH])
+            await self._update_job(conn, job_id, exit_code=exit_code)
+            return
+
+        if exit_code != 0:
+            logger.error("Job %s failed with exit code %d", job_id[:JOB_ID_DISPLAY_LENGTH], exit_code)
+            await self._update_job(conn, job_id, status=JobStatus.FAILED, exit_code=exit_code)
+            return
+
+        # exit_code == 0
+        is_profiling = await self._check_and_report_profiling(conn, job_id, run_start_time, step_timestamps)
+        if is_profiling:
+            logger.info("Profiling run for job %s complete, backend will re-schedule", job_id[:JOB_ID_DISPLAY_LENGTH])
+        else:
+            logger.info("Job %s completed successfully", job_id[:JOB_ID_DISPLAY_LENGTH])
+            await self._update_job(conn, job_id, status=JobStatus.SUCCEEDED, exit_code=exit_code)
+
+    async def _fetch_job(self, conn: psycopg.AsyncConnection[Any], job_id: str, *columns: str) -> dict[str, Any] | None:
+        """Fetch specific columns for a job."""
+        cols = ", ".join(columns) if columns else "*"
+        async with conn.cursor() as cur:
+            await cur.execute(f"SELECT {cols} FROM jobs WHERE id = %(id)s", {"id": job_id})  # noqa: S608
+            return await cur.fetchone()
 
     async def _run_job(self, job_id: str) -> None:
         """Execute a job in a Docker container."""
-        conn = None
         try:
-            # Connect to database and fetch job details
-            conn = await self.connect_db()
-            async with conn.cursor() as cur:
-                await cur.execute(
-                    "SELECT image, command, status, is_profiling_run, profiling_epochs_no, "
-                    "exit_code, log_interval, epochs_total, assigned_node "
-                    "FROM jobs WHERE id = %s",
-                    (job_id,),
+            async with self._db() as conn:
+                job = await self._fetch_job(
+                    conn,
+                    job_id,
+                    "image",
+                    "command",
+                    "status",
+                    "is_profiling_run",
+                    "profiling_epochs_no",
+                    "exit_code",
+                    "log_interval",
+                    "epochs_total",
+                    "assigned_node",
                 )
-                result = await cur.fetchone()
-
-                if not result:
+                if not job:
                     logger.error("Job %s not found", job_id)
                     return
 
-                (
-                    image,
-                    command,
-                    current_status,
-                    is_profiling_run,
-                    profiling_epochs_no,
-                    prev_exit_code,
-                    log_interval,
-                    epochs_total,
-                    assigned_node,
-                ) = result
+                if job["status"] not in RUNNABLE_STATUSES:
+                    logger.info("Job %s status is %s, skipping", job_id[:JOB_ID_DISPLAY_LENGTH], job["status"])
+                    return
 
-            # Check if job was cancelled while in the queue
-            if current_status not in RUNNABLE_STATUSES:
-                logger.info(
-                    "Job %s status is %s, skipping execution",
-                    job_id[:JOB_ID_DISPLAY_LENGTH],
-                    current_status,
+                # Update status
+                run_status = JobStatus.PROFILING if job["is_profiling_run"] else JobStatus.RUNNING
+                run_start_time = datetime.now(UTC)
+                await self._update_job(conn, job_id, status=run_status, progress=None)
+
+                # Prepare directories
+                ckpt_local, runs_local, ckpt_host, runs_host = self._resolve_paths(job_id)
+                ckpt_local.mkdir(parents=True, exist_ok=True)
+                runs_local.mkdir(parents=True, exist_ok=True)
+
+                is_first_run = job["exit_code"] is None
+                self._prepare_checkpoint_dir(
+                    ckpt_local, is_profiling=job["is_profiling_run"], is_first_run=is_first_run
                 )
-                return
+                ckpt_host_mount = (ckpt_host / ".profiling") if job["is_profiling_run"] else ckpt_host
 
-            # If a profiling node was busy at scheduling time, assigned_node is NULL.
-            # Skip execution — the queue watcher will retry once a node is free.
-            if is_profiling_run and assigned_node is None:
-                logger.info(
-                    "Job %s has no assigned node for profiling run, skipping — queue watcher will retry",
-                    job_id[:JOB_ID_DISPLAY_LENGTH],
+                container_name = f"{CONTAINER_NAME_PREFIX}{job_id[:JOB_ID_DISPLAY_LENGTH]}"
+                await self._update_job(conn, job_id, container_name=container_name)
+
+                env_vars = self._build_env_vars(job)
+                docker_cmd = self.build_docker_cmd(
+                    container_name,
+                    str(ckpt_host_mount),
+                    str(runs_host),
+                    job["image"],
+                    job["command"],
+                    env_vars=env_vars,
                 )
-                return
 
-            # Update status: PROFILING for profiling runs, RUNNING for real execution
-            run_status = JobStatus.PROFILING if is_profiling_run else JobStatus.RUNNING
-            run_start_time = datetime.now(UTC)
-            async with conn.cursor() as cur:
-                await cur.execute(
-                    "UPDATE jobs SET status = %s, progress = NULL, updated_at = %s WHERE id = %s",
-                    (run_status, run_start_time, job_id),
-                )
-                await conn.commit()
+                logger.info("Starting job %s: %s", job_id[:JOB_ID_DISPLAY_LENGTH], " ".join(docker_cmd))
 
-            # Prepare directories (using container-internal path)
-            ckpt_local = Path(self.host_root) / "data" / CHECKPOINT_DIR / job_id
-            runs_local = Path(self.host_root) / "data" / RUNS_DIR / job_id
-            ckpt_local.mkdir(parents=True, exist_ok=True)
-            runs_local.mkdir(parents=True, exist_ok=True)
+                # Run container
+                process = subprocess.Popen(docker_cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+                self.running_jobs[job_id] = process
 
-            # Profiling runs use a separate checkpoint directory so they don't
-            # overwrite the real training checkpoint (which must be preserved
-            # for resume).  Standard runs use the normal checkpoint dir.
-            if is_profiling_run:
-                ckpt_local_mount = ckpt_local / ".profiling"
-                ckpt_local_mount.mkdir(parents=True, exist_ok=True)
-                # Clear previous profiling checkpoint data
-                for f in ckpt_local_mount.iterdir():
-                    if f.is_file():
-                        f.unlink(missing_ok=True)
-                logger.info(
-                    "Using isolated profiling checkpoint dir for job %s",
-                    job_id[:JOB_ID_DISPLAY_LENGTH],
-                )
-            else:
-                ckpt_local_mount = ckpt_local
-                # First full run after profiling — clear stale checkpoints so
-                # training starts from scratch.  Resumed jobs (PREEMPTED/FAILED)
-                # have a non-null exit_code from their previous run, so their
-                # checkpoints are preserved for continuation.
-                if prev_exit_code is None:
-                    for f in ckpt_local_mount.iterdir():
-                        if f.is_file():
-                            f.unlink(missing_ok=True)
-                    logger.info(
-                        "Cleared checkpoint dir for first full run of job %s",
-                        job_id[:JOB_ID_DISPLAY_LENGTH],
+                # Stream output
+                step_timestamps: list[tuple[int, float]] = []
+                log_path = runs_local / OUTPUT_LOG_FILENAME
+                stream_task = asyncio.create_task(
+                    self._stream_output(
+                        process, conn, job_id, log_path, step_timestamps, is_profiling=job["is_profiling_run"]
                     )
-
-            # Volume mount paths for docker run (resolved by Docker daemon on HOST)
-            ckpt_host = Path(self.host_project_root) / "data" / CHECKPOINT_DIR / job_id
-            runs_host = Path(self.host_project_root) / "data" / RUNS_DIR / job_id
-            # Profiling gets its own isolated checkpoint mount path
-            ckpt_host_mount = (ckpt_host / ".profiling") if is_profiling_run else ckpt_host
-
-            container_name = f"{CONTAINER_NAME_PREFIX}{job_id[:JOB_ID_DISPLAY_LENGTH]}"
-
-            # Store container name in DB
-            async with conn.cursor() as cur:
-                await cur.execute(
-                    "UPDATE jobs SET container_name = %s WHERE id = %s",
-                    (container_name, job_id),
                 )
-                await conn.commit()
 
-            # Pass environment variables to the container
-            env_vars: dict[str, str] = {}
-            env_vars["LOG_INTERVAL"] = str(log_interval or DEFAULT_LOG_INTERVAL)
-            if is_profiling_run:
-                max_steps = profiling_epochs_no or DEFAULT_PROFILING_STEPS
-                env_vars["MAX_STEPS"] = str(max_steps)
-            elif epochs_total:
-                env_vars["MAX_STEPS"] = str(epochs_total)
+                exit_code = await self._wait_for_process(process, job_id)
+                await stream_task
 
-            # Build docker run command
-            docker_cmd = self.build_docker_cmd(
-                container_name,
-                str(ckpt_host_mount),
-                str(runs_host),
-                image,
-                command,
-                env_vars=env_vars,
-            )
-
-            logger.info("Starting job %s: %s", job_id, " ".join(docker_cmd))
-
-            # Run container
-            process = subprocess.Popen(
-                docker_cmd,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,
-                text=True,
-            )
-
-            # Track the process for stop handling
-            self.running_jobs[job_id] = process
-            logger.debug(
-                "Tracking process - job_id: %s, PID: %s",
-                job_id[:JOB_ID_DISPLAY_LENGTH],
-                process.pid,
-            )
-
-            # Log file for this job
-            log_path = runs_local / OUTPUT_LOG_FILENAME
-
-            # Collect per-step timestamps for warmup-aware profiling duration
-            step_timestamps: list[tuple[int, float]] = []
-
-            # Stream output: write to log file, parse progress, log to console
-            async def stream_output() -> None:
-                loop = asyncio.get_event_loop()
-                assert conn is not None
-                try:
-                    stdout = process.stdout
-                    if stdout is None:
-                        return
-                    with open(log_path, "a") as log_file:
-                        while True:
-                            line = await loop.run_in_executor(None, stdout.readline)
-                            if not line:
-                                break
-                            stripped = line.rstrip()
-                            logger.info("[Job %s] %s", job_id[:JOB_ID_DISPLAY_LENGTH], stripped)
-                            log_file.write(line)
-                            log_file.flush()
-                            # Parse progress
-                            match = PROGRESS_RE.search(stripped)
-                            if match:
-                                step_num = int(match.group(1))
-                                progress = f"{step_num}/{match.group(2)}"
-                                await self._update_progress(conn, job_id, progress)
-                                if is_profiling_run:
-                                    step_timestamps.append((step_num, time.monotonic()))
-                except Exception as e:
-                    logger.debug("Output streaming ended: %s", e)
-
-            # Start streaming task and wait for process completion
-            stream_task = asyncio.create_task(stream_output())
-
-            loop = asyncio.get_event_loop()
-            try:
-                exit_code = await asyncio.wait_for(
-                    loop.run_in_executor(None, process.wait),
-                    timeout=JOB_TIMEOUT_SECONDS,
-                )
-            except TimeoutError:
-                logger.error(
-                    "Job %s timed out after %ds, terminating",
-                    job_id[:JOB_ID_DISPLAY_LENGTH],
-                    JOB_TIMEOUT_SECONDS,
-                )
-                process.terminate()
-                exit_code = await loop.run_in_executor(None, process.wait)
-
-            # Wait for streaming to finish reading remaining output
-            await stream_task
-
-            # Clear tracking
-            self.running_jobs.pop(job_id, None)
-
-            # Check current status first - don't override PREEMPTED
-            async with conn.cursor() as cur:
-                await cur.execute("SELECT status FROM jobs WHERE id = %s", (job_id,))
-                current_status_row = await cur.fetchone()
-                current_status = current_status_row[0] if current_status_row else None
-
-            # Only update status if not already PREEMPTED
-            if current_status == JobStatus.PREEMPTED:
-                logger.info("Job %s was stopped (PREEMPTED), keeping that status", job_id)
-                # Just update exit code
-                async with conn.cursor() as cur:
-                    await cur.execute(
-                        "UPDATE jobs SET exit_code = %s, updated_at = %s WHERE id = %s",
-                        (exit_code, datetime.now(UTC), job_id),
-                    )
-                    await conn.commit()
-            else:
-                # Update job status based on exit code
-                if exit_code == 0:
-                    # Check if this was a profiling run
-                    is_profiling = await self._check_and_report_profiling(conn, job_id, run_start_time, step_timestamps)
-                    if is_profiling:
-                        logger.info(
-                            "Profiling run for job %s complete, backend will re-schedule",
-                            job_id[:JOB_ID_DISPLAY_LENGTH],
-                        )
-                    else:
-                        status = JobStatus.SUCCEEDED
-                        logger.info("Job %s completed successfully", job_id)
-                        async with conn.cursor() as cur:
-                            await cur.execute(
-                                "UPDATE jobs SET status = %s, exit_code = %s, updated_at = %s WHERE id = %s",
-                                (status, exit_code, datetime.now(UTC), job_id),
-                            )
-                            await conn.commit()
-                else:
-                    status = JobStatus.FAILED
-                    logger.error("Job %s failed with exit code %d", job_id, exit_code)
-                    async with conn.cursor() as cur:
-                        await cur.execute(
-                            "UPDATE jobs SET status = %s, exit_code = %s, updated_at = %s WHERE id = %s",
-                            (status, exit_code, datetime.now(UTC), job_id),
-                        )
-                        await conn.commit()
+                self.running_jobs.pop(job_id, None)
+                await self._handle_job_completion(conn, job_id, exit_code, run_start_time, step_timestamps)
 
         except Exception as e:
             logger.error("Failed to run job %s: %s", job_id, e, exc_info=True)
-            # Mark as failed
-            if conn:
-                try:
-                    async with conn.cursor() as cur:
-                        await cur.execute(
-                            "UPDATE jobs SET status = %s, updated_at = %s WHERE id = %s",
-                            (JobStatus.FAILED, datetime.now(UTC), job_id),
-                        )
-                        await conn.commit()
-                except Exception as db_error:
-                    logger.error("Failed to update job status: %s", db_error, exc_info=True)
+            try:
+                async with self._db() as conn:
+                    await self._update_job(conn, job_id, status=JobStatus.FAILED)
+            except Exception as db_error:
+                logger.error("Failed to update job status: %s", db_error, exc_info=True)
         finally:
-            # Clear tracking
             self.running_jobs.pop(job_id, None)
-            if conn:
-                await conn.close()
-            # Notify the API that a node just freed up
             await self._publish_completed(job_id)
 
-    async def _publish_completed(self, job_id: str) -> None:
-        """Publish jobs.completed so the API can schedule waiting jobs immediately."""
-        if self.js:
-            try:
-                await self.js.publish(
-                    NATS_SUBJECT_COMPLETED,
-                    json.dumps({"job_id": job_id}).encode(),
-                )
-            except Exception:
-                logger.warning("Failed to publish jobs.completed for %s", job_id[:JOB_ID_DISPLAY_LENGTH])
+    # ------------------------------------------------------------------
+    # Stop handling
+    # ------------------------------------------------------------------
+
+    async def _stop_job(self, job_id: str) -> None:
+        """Stop a job — whether it's tracked in-process, running in Docker, or still queued."""
+        try:
+            await self._stop_job_inner(job_id)
+        except Exception:
+            logger.exception("Error stopping job %s", job_id[:JOB_ID_DISPLAY_LENGTH])
+
+    async def _stop_job_inner(self, job_id: str) -> None:
+        # Fast path: process tracked locally (we set PREEMPTED, then docker stop;
+        # _run_job will see PREEMPTED and skip final status update).
+        process = self.running_jobs.get(job_id)
+        if process:
+            logger.info("Stopping tracked job %s", job_id[:JOB_ID_DISPLAY_LENGTH])
+            async with self._db() as conn:
+                await self._update_job(conn, job_id, status=JobStatus.PREEMPTED)
+            container_name = f"{CONTAINER_NAME_PREFIX}{job_id[:JOB_ID_DISPLAY_LENGTH]}"
+            result = await self._stop_container(container_name)
+            logger.debug("Docker stop rc=%s stderr=%s", result.returncode, result.stderr)
+            return
+
+        # Slow path: not tracked locally — look up container from DB
+        async with self._db() as conn:
+            job = await self._fetch_job(conn, job_id, "container_name", "status")
+            if not job:
+                logger.warning("Job %s not found", job_id[:JOB_ID_DISPLAY_LENGTH])
+                return
+
+            container_name = job["container_name"] or f"{CONTAINER_NAME_PREFIX}{job_id[:JOB_ID_DISPLAY_LENGTH]}"
+
+            if job["status"] == JobStatus.QUEUED:
+                logger.info("Job %s is QUEUED, marking as PREEMPTED", job_id[:JOB_ID_DISPLAY_LENGTH])
+                await self._update_job(conn, job_id, status=JobStatus.PREEMPTED)
+                return
+
+            if job["status"] not in (JobStatus.RUNNING, JobStatus.PROFILING):
+                logger.info("Job %s status is %s, no action needed", job_id[:JOB_ID_DISPLAY_LENGTH], job["status"])
+                return
+
+            # Container should be running — try to stop it
+            result = await self._stop_container(container_name)
+            if result.returncode == 0:
+                logger.info("Container %s stopped", container_name)
+                await self._update_job(conn, job_id, status=JobStatus.PREEMPTED)
+            else:
+                logger.error("Failed to stop container %s: %s", container_name, result.stderr)
+
+    # ------------------------------------------------------------------
+    # Profiling
+    # ------------------------------------------------------------------
 
     @staticmethod
     def _compute_profiling_duration(
@@ -713,8 +649,6 @@ class JobWorker:
     ) -> float:
         """Compute profiling duration, excluding the first interval as warmup.
 
-        The first interval (covering the initial logged steps) includes GPU
-        warm-up overhead.  Drop it, average the rest, extrapolate to total steps.
         Falls back to wall-clock duration when fewer than 3 timestamps exist.
         """
         if step_timestamps and len(step_timestamps) >= 3:
@@ -728,7 +662,6 @@ class JobWorker:
                 mean_step_time,
             )
             return mean_step_time * total_steps
-        # Fallback: wall-clock time
         return (datetime.now(UTC) - run_start_time).total_seconds()
 
     async def _check_and_report_profiling(
@@ -740,28 +673,18 @@ class JobWorker:
     ) -> bool:
         """Check if this was a profiling run and report results via NATS.
 
-        Returns ``True`` if a profiling result was published (backend handles
-        re-scheduling).  Returns ``False`` for standard runs.
-
-        When *step_timestamps* are available, the first interval is
-        excluded as warmup to avoid GPU warm-up noise.
+        Returns True if a profiling result was published.
         """
-        async with conn.cursor() as cur:
-            await cur.execute(
-                "SELECT is_profiling_run, assigned_gpu_config, assigned_node FROM jobs WHERE id = %s",
-                (job_id,),
-            )
-            meta = await cur.fetchone()
-
-        if not meta or not meta[0]:
+        job = await self._fetch_job(conn, job_id, "is_profiling_run", "assigned_gpu_config", "assigned_node")
+        if not job or not job["is_profiling_run"]:
             return False
 
         duration = self._compute_profiling_duration(step_timestamps, run_start_time)
         total_steps = step_timestamps[-1][0] if step_timestamps else None
         payload = {
             "job_id": job_id,
-            "gpu_config": meta[1],
-            "node_id": meta[2],
+            "gpu_config": job["assigned_gpu_config"],
+            "node_id": job["assigned_node"],
             "duration_seconds": duration,
         }
 
@@ -773,118 +696,23 @@ class JobWorker:
             logger.info(
                 "Published profiling result for job %s: %s = %.1fs (steps=%s, warmup_excluded=%s)",
                 job_id[:JOB_ID_DISPLAY_LENGTH],
-                meta[1],
+                job["assigned_gpu_config"],
                 duration,
                 total_steps,
                 bool(step_timestamps and len(step_timestamps) >= 3),
             )
         return True
 
-    async def _stop_job(self, job_id: str) -> None:
-        """Stop a running job."""
-        conn = None
-        try:
-            # Get container name and current status
-            conn = await self.connect_db()
-            async with conn.cursor() as cur:
-                await cur.execute("SELECT container_name, status FROM jobs WHERE id = %s", (job_id,))
-                result = await cur.fetchone()
-
-                if not result:
-                    logger.warning("Job %s not found in database", job_id)
-                    return
-
-                container_name = result[0] or f"{CONTAINER_NAME_PREFIX}{job_id[:JOB_ID_DISPLAY_LENGTH]}"
-                current_status = result[1]
-
-            # Check if container actually exists
-            check_result = await asyncio.to_thread(
-                subprocess.run,
-                [
-                    "docker",
-                    "ps",
-                    "-a",
-                    "--filter",
-                    f"name={container_name}",
-                    "--format",
-                    "{{.Names}}",
-                ],
-                capture_output=True,
-                text=True,
-                timeout=DOCKER_CMD_TIMEOUT_SECONDS,
-            )
-
-            container_exists = container_name in check_result.stdout
-
-            if not container_exists:
-                logger.warning("Container %s does not exist", container_name)
-
-                if current_status == JobStatus.QUEUED:
-                    # Job hasn't started yet — mark as PREEMPTED directly
-                    logger.info(
-                        "Job %s is QUEUED, marking as PREEMPTED",
-                        job_id[:JOB_ID_DISPLAY_LENGTH],
-                    )
-                    async with conn.cursor() as cur:
-                        await cur.execute(
-                            "UPDATE jobs SET status = %s, updated_at = %s WHERE id = %s",
-                            (JobStatus.PREEMPTED, datetime.now(UTC), job_id),
-                        )
-                        await conn.commit()
-                elif current_status in (JobStatus.RUNNING, JobStatus.PROFILING):
-                    # If job was marked as RUNNING/PROFILING, it's orphaned - mark as FAILED
-                    logger.warning(
-                        "Job %s was marked %s but container is missing - marking as FAILED",
-                        job_id[:JOB_ID_DISPLAY_LENGTH],
-                        current_status,
-                    )
-                    async with conn.cursor() as cur:
-                        await cur.execute(
-                            "UPDATE jobs SET status = %s, updated_at = %s WHERE id = %s",
-                            (JobStatus.FAILED, datetime.now(UTC), job_id),
-                        )
-                        await conn.commit()
-                else:
-                    logger.info(
-                        "Job %s status is %s, no action needed",
-                        job_id[:JOB_ID_DISPLAY_LENGTH],
-                        current_status,
-                    )
-                return
-
-            # Container exists, stop it
-            logger.info("Stopping container %s", container_name)
-            stop_result = await asyncio.to_thread(
-                subprocess.run,
-                [
-                    "docker",
-                    "stop",
-                    "-t",
-                    str(DOCKER_STOP_GRACE_SECONDS),
-                    container_name,
-                ],
-                capture_output=True,
-                text=True,
-                timeout=DOCKER_CMD_TIMEOUT_SECONDS,
-            )
-
-            if stop_result.returncode == 0:
-                logger.info("Container %s stopped successfully", container_name)
-                # Update status
-                async with conn.cursor() as cur:
-                    await cur.execute(
-                        "UPDATE jobs SET status = %s, updated_at = %s WHERE id = %s",
-                        (JobStatus.PREEMPTED, datetime.now(UTC), job_id),
-                    )
-                    await conn.commit()
-            else:
-                logger.error("Failed to stop container: %s", stop_result.stderr)
-
-        except Exception as e:
-            logger.error("Failed to stop job %s: %s", job_id, e, exc_info=True)
-        finally:
-            if conn:
-                await conn.close()
+    async def _publish_completed(self, job_id: str) -> None:
+        """Publish jobs.completed so the API can schedule waiting jobs immediately."""
+        if self.js:
+            try:
+                await self.js.publish(
+                    NATS_SUBJECT_COMPLETED,
+                    json.dumps({"job_id": job_id}).encode(),
+                )
+            except Exception:
+                logger.warning("Failed to publish jobs.completed for %s", job_id[:JOB_ID_DISPLAY_LENGTH])
 
 
 async def main() -> None:

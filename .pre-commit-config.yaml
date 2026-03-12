@@ -24,16 +24,22 @@ repos:
 
   - repo: local
     hooks:
+      - id: deptry
+        name: deptry (backend)
+        entry: bash -c 'cd backend && uv run deptry .'
+        language: system
+        files: ^backend/
+        pass_filenames: false
       - id: frontend-eslint
         name: frontend eslint
-        entry: pnpm --dir frontend lint
+        entry: bash -c 'export PATH="$HOME/.local/bin:$HOME/.nvm/versions/node/$(ls $HOME/.nvm/versions/node/ | tail -1)/bin:$PATH" && pnpm --dir frontend lint'
         language: system
         files: ^frontend/src/
         types_or: [ts, tsx]
         pass_filenames: false
       - id: frontend-typecheck
         name: frontend typecheck
-        entry: pnpm --dir frontend exec tsc --noEmit
+        entry: bash -c 'export PATH="$HOME/.local/bin:$HOME/.nvm/versions/node/$(ls $HOME/.nvm/versions/node/ | tail -1)/bin:$PATH" && pnpm --dir frontend exec tsc --noEmit'
         language: system
         files: ^frontend/src/
         types_or: [ts, tsx]
