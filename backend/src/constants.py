@@ -1,5 +1,6 @@
 """Constants for the IJM backend."""
 
+import os
 from enum import StrEnum
 
 from shared.constants import (
@@ -56,6 +57,9 @@ DEFAULT_JOB_PRIORITY = 3
 PRIORITY_MIN = 1
 PRIORITY_MAX = 5
 
+DEFAULT_EPOCHS_TOTAL = 10_000
+DEFAULT_PROFILING_STEPS = 100
+
 DEFAULT_DATABASE_URL = "postgresql://postgres:postgres@localhost:5432/ijm"
 DEFAULT_NATS_URL = "nats://localhost:4222"
 
@@ -70,4 +74,4 @@ OUTPUT_LOG_FILENAME = "output.log"
 # CORS
 # ---------------------------------------------------------------------------
 
-CORS_ALLOWED_ORIGINS = ["http://localhost:5173"]
+CORS_ALLOWED_ORIGINS = [o.strip() for o in os.getenv("CORS_ORIGINS", "http://localhost:5173").split(",")]

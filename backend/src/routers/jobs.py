@@ -1,15 +1,19 @@
 """Job CRUD, stop, resume, clear, and log endpoints."""
 
+import asyncio
 import json
 import logging
 import os
+import re
 from datetime import UTC, datetime
 from pathlib import Path
 from uuid import uuid4
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Query
 from fastapi.responses import PlainTextResponse
+from psycopg.rows import dict_row  # type: ignore[import-not-found]
 
+import src.state as state
 from src.constants import (
     NATS_SUBJECT_STOP_REQUESTED,
     NATS_SUBJECT_SUBMITTED,
@@ -19,9 +23,9 @@ from src.constants import (
     STOPPABLE_STATUSES,
     JobStatus,
 )
-from src.models import _JOB_COLUMNS, Job, JobCreate, _row_to_job
+from src.models import Job, JobCreate, _row_to_job
 from src.profiling import scheduler
-from src.state import require_db, require_js
+from src.state import require_js
 
 logger = logging.getLogger(__name__)
 
@@ -30,22 +34,24 @@ router = APIRouter()
 # Directory where job output logs are stored (mounted from host)
 DATA_DIR = Path(os.getenv("DATA_DIR", "/data"))
 
+# Docker image name validation
+_IMAGE_RE = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9._/:@-]*$")
+
+# Max log file size to serve (5 MB)
+_MAX_LOG_SIZE = 5 * 1024 * 1024
+
+# UUID v4 pattern for path-safety validation
+_UUID_RE = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$", re.IGNORECASE)
+
 
 @router.post("/jobs", response_model=Job, status_code=201)
 async def create_job(job_request: JobCreate) -> Job:
     """Create a new job."""
-    conn = require_db()
     jetstream = require_js()
 
-    # Resolve image: prefer ANDREAS field, fall back to legacy
-    effective_image = job_request.docker_image or job_request.image
-    if not effective_image:
-        raise HTTPException(status_code=422, detail="Either 'image' or 'dockerImage' must be provided")
-
-    # Resolve command
-    if not job_request.command:
-        raise HTTPException(status_code=422, detail="'command' must be provided")
-    effective_command = job_request.command
+    # Validate image name
+    if not _IMAGE_RE.match(job_request.image):
+        raise HTTPException(status_code=422, detail="Invalid Docker image name")
 
     # Validate deadline is in the future (if provided)
     if job_request.deadline and job_request.deadline.replace(tzinfo=UTC) < datetime.now(UTC):
@@ -54,9 +60,9 @@ async def create_job(job_request: JobCreate) -> Job:
     job_id = str(uuid4())
     now = datetime.now(UTC)
 
-    # Insert job into database
-    async with conn.cursor() as cur:
-        await cur.execute(
+    async with state.get_conn() as conn:
+        # Insert job into database
+        await conn.execute(
             """
             INSERT INTO jobs (id, image, command, status, created_at, updated_at,
                               priority, deadline, batch_size, epochs_total,
@@ -65,8 +71,8 @@ async def create_job(job_request: JobCreate) -> Job:
             """,
             (
                 job_id,
-                effective_image,
-                json.dumps(effective_command),
+                job_request.image,
+                json.dumps(job_request.command),
                 JobStatus.QUEUED,
                 now,
                 now,
@@ -79,8 +85,8 @@ async def create_job(job_request: JobCreate) -> Job:
             ),
         )
 
-    # Schedule: assign profiling config (or best config if already profiled)
-    schedule_result = await scheduler.schedule_job(conn, job_id)
+        # Schedule: assign profiling config (or best config if already profiled)
+        schedule_result = await scheduler.schedule_job(conn, job_id)
 
     # Publish job submission event to NATS
     await jetstream.publish(
@@ -90,8 +96,8 @@ async def create_job(job_request: JobCreate) -> Job:
 
     return Job(
         id=job_id,
-        image=effective_image,
-        command=effective_command,
+        image=job_request.image,
+        command=job_request.command,
         status=JobStatus.QUEUED,
         created_at=now,
         updated_at=now,
@@ -109,17 +115,16 @@ async def create_job(job_request: JobCreate) -> Job:
 
 
 @router.get("/jobs", response_model=list[Job])
-async def list_jobs() -> list[Job]:
+async def list_jobs(
+    limit: int = Query(default=100, ge=1, le=500),
+    offset: int = Query(default=0, ge=0),
+) -> list[Job]:
     """List all jobs ordered by creation time (newest first)."""
-    conn = require_db()
-
-    async with conn.cursor() as cur:
+    async with state.get_conn() as conn:
+        cur = conn.cursor(row_factory=dict_row)
         await cur.execute(
-            f"""
-            SELECT {_JOB_COLUMNS}
-            FROM jobs
-            ORDER BY created_at DESC
-            """
+            "SELECT * FROM jobs ORDER BY created_at DESC LIMIT %s OFFSET %s",
+            (limit, offset),
         )
         rows = await cur.fetchall()
 
@@ -129,17 +134,9 @@ async def list_jobs() -> list[Job]:
 @router.get("/jobs/{job_id}", response_model=Job)
 async def get_job(job_id: str) -> Job:
     """Get a specific job by ID."""
-    conn = require_db()
-
-    async with conn.cursor() as cur:
-        await cur.execute(
-            f"""
-            SELECT {_JOB_COLUMNS}
-            FROM jobs
-            WHERE id = %s
-            """,
-            (job_id,),
-        )
+    async with state.get_conn() as conn:
+        cur = conn.cursor(row_factory=dict_row)
+        await cur.execute("SELECT * FROM jobs WHERE id = %s", (job_id,))
         row = await cur.fetchone()
 
     if not row:
@@ -151,37 +148,34 @@ async def get_job(job_id: str) -> Job:
 @router.post("/jobs/{job_id}/stop", status_code=202)
 async def stop_job(job_id: str) -> dict[str, str]:
     """Request job to be stopped."""
-    conn = require_db()
     jetstream = require_js()
 
     logger.info("Received stop request for job: %s", job_id)
 
-    # Fetch current status
-    async with conn.cursor() as cur:
-        await cur.execute("SELECT status FROM jobs WHERE id = %s", (job_id,))
+    async with state.get_conn() as conn:
+        # Atomic: try to mark QUEUED → PREEMPTED
+        cur = await conn.execute(
+            "UPDATE jobs SET status = %s, updated_at = %s WHERE id = %s AND status = %s RETURNING id",
+            (JobStatus.PREEMPTED, datetime.now(UTC), job_id, JobStatus.QUEUED),
+        )
+        if await cur.fetchone():
+            logger.info("Stopped QUEUED job %s directly (no container)", job_id[:8])
+            return {"status": "stopped", "job_id": job_id}
+
+        # Check if job exists and is in a stoppable status (RUNNING/PROFILING)
+        cur = await conn.execute("SELECT status FROM jobs WHERE id = %s", (job_id,))
         row = await cur.fetchone()
         if not row:
             raise HTTPException(status_code=404, detail="Job not found")
+
         current_status = row[0]
-
-    # Validate: can only stop QUEUED or RUNNING jobs
-    if current_status not in STOPPABLE_STATUSES:
-        raise HTTPException(
-            status_code=409,
-            detail=f"Cannot stop job with status {current_status}",
-        )
-
-    if current_status == JobStatus.QUEUED:
-        # QUEUED jobs have no container — mark PREEMPTED directly
-        async with conn.cursor() as cur:
-            await cur.execute(
-                "UPDATE jobs SET status = %s, updated_at = %s WHERE id = %s",
-                (JobStatus.PREEMPTED, datetime.now(UTC), job_id),
+        if current_status not in STOPPABLE_STATUSES:
+            raise HTTPException(
+                status_code=409,
+                detail=f"Cannot stop job with status {current_status}",
             )
-        logger.info("Stopped QUEUED job %s directly (no container)", job_id[:8])
-        return {"status": "stopped", "job_id": job_id}
 
-    # RUNNING jobs: publish stop request to worker via NATS
+    # RUNNING/PROFILING jobs: publish stop request to worker via NATS
     ack = await jetstream.publish(
         NATS_SUBJECT_STOP_REQUESTED,
         json.dumps({"job_id": job_id}).encode(),
@@ -194,34 +188,29 @@ async def stop_job(job_id: str) -> dict[str, str]:
 @router.post("/jobs/{job_id}/resume", status_code=202)
 async def resume_job(job_id: str) -> dict[str, str]:
     """Request job to be resumed."""
-    conn = require_db()
     jetstream = require_js()
 
-    # Fetch current status
-    async with conn.cursor() as cur:
-        await cur.execute("SELECT status FROM jobs WHERE id = %s", (job_id,))
-        row = await cur.fetchone()
-        if not row:
-            raise HTTPException(status_code=404, detail="Job not found")
-        current_status = row[0]
-
-    # Validate: can only resume PREEMPTED or FAILED jobs
-    if current_status not in RESUMABLE_STATUSES:
-        raise HTTPException(
-            status_code=409,
-            detail=f"Cannot resume job with status {current_status}",
+    async with state.get_conn() as conn:
+        # Atomic: try to mark PREEMPTED/FAILED → QUEUED
+        now = datetime.now(UTC)
+        placeholders = ", ".join(["%s"] * len(RESUMABLE_STATUSES))
+        cur = await conn.execute(
+            f"UPDATE jobs SET status = %s, updated_at = %s WHERE id = %s AND status IN ({placeholders}) RETURNING id",  # noqa: S608
+            (JobStatus.QUEUED, now, job_id, *RESUMABLE_STATUSES),
         )
+        if not await cur.fetchone():
+            # Check if job exists
+            cur = await conn.execute("SELECT status FROM jobs WHERE id = %s", (job_id,))
+            row = await cur.fetchone()
+            if not row:
+                raise HTTPException(status_code=404, detail="Job not found")
+            raise HTTPException(
+                status_code=409,
+                detail=f"Cannot resume job with status {row[0]}",
+            )
 
-    # Set status to QUEUED (profiling results are preserved across resumes
-    # so each resume profiles one additional configuration)
-    async with conn.cursor() as cur:
-        await cur.execute(
-            "UPDATE jobs SET status = %s, updated_at = %s WHERE id = %s",
-            (JobStatus.QUEUED, datetime.now(UTC), job_id),
-        )
-
-    # Re-schedule: profiles one new config, or runs on best if all profiled
-    await scheduler.schedule_job(conn, job_id)
+        # Re-schedule: profiles one new config, or runs on best if all profiled
+        await scheduler.schedule_job(conn, job_id)
 
     # Publish resume request to NATS
     await jetstream.publish(
@@ -236,18 +225,28 @@ async def resume_job(job_id: str) -> dict[str, str]:
 @router.delete("/jobs/{job_id}", status_code=204)
 async def delete_job(job_id: str) -> None:
     """Delete a job."""
-    conn = require_db()
-
-    async with conn.cursor() as cur:
-        # Check if job exists
-        await cur.execute("SELECT id FROM jobs WHERE id = %s", (job_id,))
-        if not await cur.fetchone():
+    async with state.get_conn() as conn:
+        # Check if job exists and get status
+        cur = await conn.execute("SELECT status FROM jobs WHERE id = %s", (job_id,))
+        row = await cur.fetchone()
+        if not row:
             raise HTTPException(status_code=404, detail="Job not found")
 
-    # Delete profiling results first, then the job (atomically)
-    async with conn.transaction(), conn.cursor() as cur:
-        await cur.execute("DELETE FROM profiling_results WHERE job_id = %s", (job_id,))
-        await cur.execute("DELETE FROM jobs WHERE id = %s", (job_id,))
+        # If job is running/profiling, request stop first
+        if row[0] in STOPPABLE_STATUSES and row[0] != JobStatus.QUEUED:
+            try:
+                js = require_js()
+                await js.publish(
+                    NATS_SUBJECT_STOP_REQUESTED,
+                    json.dumps({"job_id": job_id}).encode(),
+                )
+            except Exception:
+                logger.warning("Failed to publish stop event for job %s before delete", job_id[:8])
+
+        # Delete profiling results first, then the job (atomically)
+        async with conn.transaction():
+            await conn.execute("DELETE FROM profiling_results WHERE job_id = %s", (job_id,))
+            await conn.execute("DELETE FROM jobs WHERE id = %s", (job_id,))
 
     return None
 
@@ -255,11 +254,9 @@ async def delete_job(job_id: str) -> None:
 @router.delete("/jobs", status_code=204)
 async def clear_all_jobs() -> None:
     """Delete all jobs and their profiling results."""
-    conn = require_db()
-
-    async with conn.transaction(), conn.cursor() as cur:
-        await cur.execute("DELETE FROM profiling_results")
-        await cur.execute("DELETE FROM jobs")
+    async with state.get_conn() as conn, conn.transaction():
+        await conn.execute("DELETE FROM profiling_results")
+        await conn.execute("DELETE FROM jobs")
 
     return None
 
@@ -267,16 +264,29 @@ async def clear_all_jobs() -> None:
 @router.get("/jobs/{job_id}/logs")
 async def get_job_logs(job_id: str) -> PlainTextResponse:
     """Return the output log for a job."""
-    conn = require_db()
+    # Validate job_id format (path traversal prevention)
+    if not _UUID_RE.match(job_id):
+        raise HTTPException(status_code=400, detail="Invalid job ID format")
 
-    # Verify job exists
-    async with conn.cursor() as cur:
-        await cur.execute("SELECT id FROM jobs WHERE id = %s", (job_id,))
+    async with state.get_conn() as conn:
+        # Verify job exists
+        cur = await conn.execute("SELECT id FROM jobs WHERE id = %s", (job_id,))
         if not await cur.fetchone():
             raise HTTPException(status_code=404, detail="Job not found")
 
     log_path = DATA_DIR / RUNS_DIR / job_id / OUTPUT_LOG_FILENAME
+
+    # Path containment check
+    try:
+        log_path.resolve().relative_to(DATA_DIR.resolve())
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid job ID") from None
+
     if not log_path.is_file():
         return PlainTextResponse("No logs available yet.\n", status_code=200)
 
-    return PlainTextResponse(log_path.read_text())
+    if log_path.stat().st_size > _MAX_LOG_SIZE:
+        raise HTTPException(status_code=413, detail="Log file too large")
+
+    content = await asyncio.to_thread(log_path.read_text)
+    return PlainTextResponse(content)

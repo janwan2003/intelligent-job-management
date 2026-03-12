@@ -5,7 +5,7 @@ from contextlib import asynccontextmanager
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock
 
 import pytest
 from fastapi import FastAPI
@@ -17,9 +17,12 @@ from src.cluster import ClusterManager, cluster
 from src.models import NodeConfig, NodeResources, _row_to_job
 from src.profiling import ProfilingScheduler
 
+# Save original get_conn before any tests can override it
+_original_get_conn = state_module.get_conn
+
 
 @asynccontextmanager
-async def _noop_lifespan(_app: FastAPI) -> AsyncGenerator[None, None]:
+async def _noop_lifespan(_app: FastAPI) -> AsyncGenerator[None]:
     """Test lifespan that skips database and NATS connections."""
     yield
 
@@ -28,9 +31,11 @@ async def _noop_lifespan(_app: FastAPI) -> AsyncGenerator[None, None]:
 def client() -> TestClient:
     """Create a test client with mocked lifespan."""
     app.router.lifespan_context = _noop_lifespan
-    # Reset global state so require_db / require_js raise 503
-    state_module.db_pool = None
+    # Reset global state so get_conn / require_js raise 503
+    state_module.pool = None
     state_module.js = None
+    state_module.nc = None
+    state_module.get_conn = _original_get_conn
     return TestClient(app)
 
 
@@ -41,11 +46,14 @@ def test_root(client: TestClient) -> None:
     assert response.json()["status"] == "ok"
 
 
-def test_health_check(client: TestClient) -> None:
-    """Test health check endpoint."""
+def test_health_check_degraded_when_not_connected(client: TestClient) -> None:
+    """Test health check returns degraded when DB and NATS are not connected."""
     response = client.get("/health")
-    assert response.status_code == 200
-    assert response.json()["status"] == "healthy"
+    assert response.status_code == 503
+    data = response.json()
+    assert data["status"] == "degraded"
+    assert data["database"] == "unavailable"
+    assert data["nats"] == "unavailable"
 
 
 def test_list_jobs_returns_503_when_db_not_initialized(client: TestClient) -> None:
@@ -77,30 +85,30 @@ def _make_row(
     assigned_gpu_config: dict[str, int] | None = None,
     estimated_duration: float | None = None,
     is_profiling_run: bool = False,
-) -> tuple:
-    """Helper to build a 19-column row tuple."""
+) -> dict[str, Any]:
+    """Helper to build a job row dict (matching dict_row format)."""
     now = datetime.now(UTC)
-    return (
-        job_id,
-        image,
-        command or ["python", "train.py"],
-        status,
-        now,
-        now,
-        None,
-        None,
-        progress,
-        priority,
-        deadline,
-        batch_size,
-        epochs_total,
-        profiling_epochs_no,
-        assigned_node,
-        required_memory_gb,
-        assigned_gpu_config,
-        estimated_duration,
-        is_profiling_run,
-    )
+    return {
+        "id": job_id,
+        "image": image,
+        "command": command or ["python", "train.py"],
+        "status": status,
+        "created_at": now,
+        "updated_at": now,
+        "container_name": None,
+        "exit_code": None,
+        "progress": progress,
+        "priority": priority,
+        "deadline": deadline,
+        "batch_size": batch_size,
+        "epochs_total": epochs_total,
+        "profiling_epochs_no": profiling_epochs_no,
+        "assigned_node": assigned_node,
+        "required_memory_gb": required_memory_gb,
+        "assigned_gpu_config": assigned_gpu_config,
+        "estimated_duration": estimated_duration,
+        "is_profiling_run": is_profiling_run,
+    }
 
 
 def test_row_to_job() -> None:
@@ -131,7 +139,7 @@ def test_row_to_job_with_progress() -> None:
 
 
 def test_row_to_job_with_extended_fields() -> None:
-    """Test row-to-Job with ANDREAS extended fields."""
+    """Test row-to-Job with extended fields."""
     dl = datetime.now(UTC)
     row = _make_row(
         priority=5,
@@ -148,16 +156,6 @@ def test_row_to_job_with_extended_fields() -> None:
     assert job.epochs_total == 50
     assert job.profiling_epochs_no == 2
     assert job.assigned_node == "node-01"
-
-
-def test_row_to_job_legacy_9_columns() -> None:
-    """Test backward compat: old 9-column rows still work."""
-    now = datetime.now(UTC)
-    row = ("id-old", "img:v0", ["python", "run.py"], "QUEUED", now, now, None, None, None)
-    job = _row_to_job(row)
-    assert job.id == "id-old"
-    assert job.priority == 3  # default
-    assert job.deadline is None
 
 
 def test_cluster_manager_load_nodes(tmp_path: Path) -> None:
@@ -742,13 +740,17 @@ def test_node_status_resources_is_list(client: TestClient) -> None:
         },
     ]
 
-    fake_cursor = AsyncMock()
-    fake_cursor.fetchall.return_value = []
-    fake_cursor.__aenter__ = AsyncMock(return_value=fake_cursor)
-    fake_cursor.__aexit__ = AsyncMock(return_value=None)
-    fake_conn = MagicMock()
-    fake_conn.cursor.return_value = fake_cursor
-    state_module.db_pool = fake_conn
+    fake_result = AsyncMock()
+    fake_result.fetchall = AsyncMock(return_value=[])
+    fake_conn = AsyncMock()
+    fake_conn.execute = AsyncMock(return_value=fake_result)
+    original_get_conn = state_module.get_conn
+
+    @asynccontextmanager
+    async def mock_get_conn() -> AsyncGenerator[Any]:
+        yield fake_conn
+
+    state_module.get_conn = mock_get_conn
 
     response = client.get("/nodes")
     assert response.status_code == 200
@@ -759,7 +761,7 @@ def test_node_status_resources_is_list(client: TestClient) -> None:
     assert node["resources"][0]["gpu_type"] == "A40"
     assert node["resources"][1]["gpu_type"] == "Blackwell"
 
-    state_module.db_pool = None
+    state_module.get_conn = original_get_conn
 
 
 # ---------------------------------------------------------------------------

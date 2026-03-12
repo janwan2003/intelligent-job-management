@@ -4,7 +4,7 @@ from typing import Any
 
 from fastapi import APIRouter
 
-from src.state import require_db
+import src.state as state
 
 router = APIRouter()
 
@@ -12,10 +12,8 @@ router = APIRouter()
 @router.get("/profiling-results/{job_id}")
 async def get_profiling_results(job_id: str) -> list[dict[str, Any]]:
     """Get all profiling results for a job, ordered by duration (fastest first)."""
-    conn = require_db()
-
-    async with conn.cursor() as cur:
-        await cur.execute(
+    async with state.get_conn() as conn:
+        cur = await conn.execute(
             """SELECT id, gpu_config, node_id, duration_seconds, created_at
                FROM profiling_results
                WHERE job_id = %s

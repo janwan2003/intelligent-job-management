@@ -12,15 +12,13 @@ export interface ApiJob {
   container_name?: string;
   exit_code?: number;
   progress?: string;
-  // ANDREAS extended fields
   priority: number;
   deadline?: string;
   batch_size?: number;
-  epochs_total?: number;
-  profiling_epochs_no?: number;
+  epochs_total: number;
+  profiling_epochs_no: number;
   assigned_node?: string;
   required_memory_gb?: number;
-  // Profiling scheduler fields
   assigned_gpu_config?: Record<string, number>;
   estimated_duration?: number;
   is_profiling_run?: boolean;
@@ -28,14 +26,13 @@ export interface ApiJob {
 
 /** Payload for creating a new job */
 export interface CreateJobPayload {
-  image?: string;
-  command?: string[];
-  dockerImage?: string;
+  image: string;
+  command: string[];
   Priority?: number;
   deadline?: string;
   batchSize?: number;
-  profilingEpochsNo?: number;
-  epochsTotal?: number;
+  profilingEpochsNo: number;
+  epochsTotal: number;
   requiredMemoryGb?: number;
 }
 

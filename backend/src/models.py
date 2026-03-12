@@ -6,7 +6,9 @@ from typing import Any
 from pydantic import BaseModel, ConfigDict, Field
 
 from src.constants import (
+    DEFAULT_EPOCHS_TOTAL,
     DEFAULT_JOB_PRIORITY,
+    DEFAULT_PROFILING_STEPS,
     PRIORITY_MAX,
     PRIORITY_MIN,
     NodeStatusEnum,
@@ -78,21 +80,17 @@ class ScheduleResult(BaseModel):
 
 
 class JobCreate(BaseModel):
-    """Job creation request — supports both legacy and ANDREAS formats."""
+    """Job creation request."""
 
     model_config = ConfigDict(populate_by_name=True)
 
-    # Legacy fields (still supported)
-    image: str | None = None
-    command: list[str] | None = None
-
-    # ANDREAS fields
-    docker_image: str | None = Field(default=None, alias="dockerImage")
+    image: str
+    command: list[str]
     priority: int = Field(default=DEFAULT_JOB_PRIORITY, alias="Priority", ge=PRIORITY_MIN, le=PRIORITY_MAX)
     deadline: datetime | None = None
     batch_size: int | None = Field(default=None, alias="batchSize")
-    profiling_epochs_no: int | None = Field(default=None, alias="profilingEpochsNo")
-    epochs_total: int | None = Field(default=None, alias="epochsTotal")
+    profiling_epochs_no: int = Field(default=DEFAULT_PROFILING_STEPS, alias="profilingEpochsNo", ge=1)
+    epochs_total: int = Field(default=DEFAULT_EPOCHS_TOTAL, alias="epochsTotal", ge=1)
     required_memory_gb: int | None = Field(default=None, alias="requiredMemoryGb")
 
 
@@ -108,15 +106,13 @@ class Job(BaseModel):
     container_name: str | None = None
     exit_code: int | None = None
     progress: str | None = None
-    # ANDREAS extended fields
     priority: int = DEFAULT_JOB_PRIORITY
     deadline: datetime | None = None
     batch_size: int | None = None
-    epochs_total: int | None = None
-    profiling_epochs_no: int | None = None
+    epochs_total: int = DEFAULT_EPOCHS_TOTAL
+    profiling_epochs_no: int = DEFAULT_PROFILING_STEPS
     assigned_node: str | None = None
     required_memory_gb: int | None = None
-    # Profiling scheduler fields
     assigned_gpu_config: dict[str, int] | None = None
     estimated_duration: float | None = None
     is_profiling_run: bool = False
@@ -126,34 +122,27 @@ class Job(BaseModel):
 # SQL helpers
 # ---------------------------------------------------------------------------
 
-_JOB_COLUMNS = (
-    "id, image, command, status, created_at, updated_at, container_name, exit_code, progress, "
-    "priority, deadline, batch_size, epochs_total, profiling_epochs_no, "
-    "assigned_node, required_memory_gb, "
-    "assigned_gpu_config, estimated_duration, is_profiling_run"
-)
 
-
-def _row_to_job(row: tuple[Any, ...]) -> Job:
-    """Convert a database row tuple to a Job model."""
+def _row_to_job(row: dict[str, Any]) -> Job:
+    """Convert a database row dict to a Job model."""
     return Job(
-        id=row[0],
-        image=row[1],
-        command=row[2],
-        status=row[3],
-        created_at=row[4],
-        updated_at=row[5],
-        container_name=row[6],
-        exit_code=row[7],
-        progress=row[8] if len(row) > 8 else None,
-        priority=row[9] if len(row) > 9 and row[9] is not None else DEFAULT_JOB_PRIORITY,
-        deadline=row[10] if len(row) > 10 else None,
-        batch_size=row[11] if len(row) > 11 else None,
-        epochs_total=row[12] if len(row) > 12 else None,
-        profiling_epochs_no=row[13] if len(row) > 13 else None,
-        assigned_node=row[14] if len(row) > 14 else None,
-        required_memory_gb=row[15] if len(row) > 15 else None,
-        assigned_gpu_config=row[16] if len(row) > 16 else None,
-        estimated_duration=row[17] if len(row) > 17 else None,
-        is_profiling_run=bool(row[18]) if len(row) > 18 and row[18] is not None else False,
+        id=row["id"],
+        image=row["image"],
+        command=row["command"],
+        status=row["status"],
+        created_at=row["created_at"],
+        updated_at=row["updated_at"],
+        container_name=row.get("container_name"),
+        exit_code=row.get("exit_code"),
+        progress=row.get("progress"),
+        priority=row.get("priority") or DEFAULT_JOB_PRIORITY,
+        deadline=row.get("deadline"),
+        batch_size=row.get("batch_size"),
+        epochs_total=row.get("epochs_total") or DEFAULT_EPOCHS_TOTAL,
+        profiling_epochs_no=row.get("profiling_epochs_no") or DEFAULT_PROFILING_STEPS,
+        assigned_node=row.get("assigned_node"),
+        required_memory_gb=row.get("required_memory_gb"),
+        assigned_gpu_config=row.get("assigned_gpu_config"),
+        estimated_duration=row.get("estimated_duration"),
+        is_profiling_run=bool(row.get("is_profiling_run")) if row.get("is_profiling_run") is not None else False,
     )

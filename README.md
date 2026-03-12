@@ -4,10 +4,10 @@ A minimal end-to-end job management system for GPU-accelerated deep learning clu
 
 ## Prerequisites
 
-- Node.js 23+
+- Node.js 24+
 - [pnpm](https://pnpm.io/) - `curl -fsSL https://get.pnpm.io/install.sh | sh -`
 - Docker & Docker Compose
-- Python 3.11+
+- Python 3.13+
 
 ## Quick Start
 
@@ -154,21 +154,24 @@ pnpm dev
 
 ```bash
 cd worker
-uv sync
+pip install -r requirements.txt
 DATABASE_URL=postgresql://postgres:postgres@localhost:5432/ijm \
 NATS_URL=nats://localhost:4222 \
 HOST_ROOT=.. \
 HOST_PROJECT_ROOT=$(cd .. && pwd) \
-uv run python worker.py
+python worker.py
 ```
 
 ### Running tests
 
 ```bash
-cd backend && uv run pytest          # Backend tests
-cd worker  && uv run pytest          # Worker tests
+cd backend && uv run pytest          # Backend unit tests + infra config validation
+cd worker  && python -m pytest       # Worker tests
 cd frontend && pnpm lint && pnpm build   # Frontend lint + type-check
+cd infra && ./smoke_test.sh          # Full-stack smoke test (starts Docker Compose)
 ```
+
+The backend suite includes `tests/test_infra.py` which validates `infra/docker-compose.yml` for known version-specific requirements (e.g., postgres 18+ volume mount path). This catches config/version incompatibilities before running the stack.
 
 ## API Endpoints
 
@@ -201,7 +204,8 @@ cd frontend && pnpm lint && pnpm build   # Frontend lint + type-check
 ## Project Structure
 
 ```
-backend/          # FastAPI application + profiling scheduler
+backend/          # FastAPI application + profiling scheduler (modular: app, cluster, profiling, routers/)
+shared/           # Shared constants (JobStatus enum, NATS subjects) — imported by both backend and worker
 frontend/         # React UI (Dashboard, Job Queue, Submit, Cluster, Profiling)
 worker/           # Job execution worker
 runtime/          # Training containers with checkpoint support
@@ -220,10 +224,10 @@ documentation/    # ANDREAS project deliverables (D1, D2, D3)
 
 ## Tech Stack
 
-**Backend**: Python 3.12, FastAPI, psycopg (Postgres), nats-py, uv
+**Backend**: Python 3.13, FastAPI, psycopg (Postgres), nats-py, uv
 **Frontend**: TypeScript, React 19, Vite, TanStack React Query, Tailwind, shadcn/ui
-**Infrastructure**: Docker, Postgres 16, NATS 2.10 with JetStream
-**Worker**: Python 3.12, asyncio, Docker CLI, uv
+**Infrastructure**: Docker, Postgres 16, NATS 2.12 with JetStream
+**Worker**: Python 3.13, asyncio, Docker CLI, pip
 
 ## Non-Goals (v0)
 

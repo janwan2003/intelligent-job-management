@@ -1,7 +1,8 @@
 services:
   postgres:
-    image: postgres:16
+    image: postgres:18
     container_name: ijm-postgres
+    restart: unless-stopped
     environment:
       POSTGRES_DB: ijm
       POSTGRES_USER: postgres
@@ -9,16 +10,21 @@ services:
     ports:
       - "5432:5432"
     volumes:
-      - ../data/pg:/var/lib/postgresql/data
+      - ../data/pg:/var/lib/postgresql
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U postgres"]
       interval: 5s
       timeout: 5s
       retries: 5
+    deploy:
+      resources:
+        limits:
+          memory: 1G
 
   nats:
-    image: nats:2.10-alpine
+    image: nats:2.12-alpine
     container_name: ijm-nats
+    restart: unless-stopped
     command: ["-js", "-m", "8222"]
     ports:
       - "4222:4222"
@@ -28,12 +34,17 @@ services:
       interval: 5s
       timeout: 5s
       retries: 5
+    deploy:
+      resources:
+        limits:
+          memory: 256M
 
   api:
     build:
       context: ..
       dockerfile: backend/Dockerfile
     container_name: ijm-api
+    restart: unless-stopped
     environment:
       DATABASE_URL: postgresql://postgres:postgres@postgres:5432/ijm
       NATS_URL: nats://nats:4222
@@ -44,17 +55,27 @@ services:
         condition: service_healthy
       nats:
         condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:8000/health')\""]
+      interval: 10s
+      timeout: 5s
+      retries: 3
     volumes:
       - ../backend/src:/app/src
       - ../config:/app/config:ro
       - ../data:/data:ro
       - /var/run/docker.sock:/var/run/docker.sock
+    deploy:
+      resources:
+        limits:
+          memory: 512M
 
   worker:
     build:
       context: ..
       dockerfile: worker/Dockerfile
     container_name: ijm-worker
+    restart: unless-stopped
     environment:
       DATABASE_URL: postgresql://postgres:postgres@postgres:5432/ijm
       NATS_URL: nats://nats:4222
@@ -71,15 +92,22 @@ services:
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
       - ..:/host
+    deploy:
+      resources:
+        limits:
+          memory: 512M
 
   frontend:
     build:
       context: ../frontend
       dockerfile: Dockerfile
     container_name: ijm-frontend
+    restart: unless-stopped
     ports:
-      - "5173:5173"
+      - "5173:80"
     depends_on:
       - api
-    volumes:
-      - ../frontend/src:/app/src
+    deploy:
+      resources:
+        limits:
+          memory: 256M

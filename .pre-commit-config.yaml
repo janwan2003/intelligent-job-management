@@ -1,6 +1,6 @@
 repos:
   - repo: https://github.com/astral-sh/ruff-pre-commit
-    rev: v0.8.4
+    rev: v0.15.2
     hooks:
       - id: ruff
         args: [--fix]
@@ -9,18 +9,18 @@ repos:
         files: ^(backend|worker|runtime|shared)/
 
   - repo: https://github.com/pre-commit/mirrors-mypy
-    rev: v1.13.0
+    rev: v1.19.1
     hooks:
       - id: mypy
         name: mypy (shared + backend)
         files: ^(shared|backend)/
-        additional_dependencies: [fastapi>=0.104.0, pydantic>=2.5.0, httpx>=0.25.0, pytest>=7.4.0]
+        additional_dependencies: [fastapi>=0.133.0, pydantic>=2.12.0, httpx>=0.28.0, pytest>=9.0.0, pyyaml>=6.0.0, types-pyyaml>=6.0.0]
         args: [--config-file=backend/pyproject.toml]
       - id: mypy
         name: mypy (worker)
         files: ^worker/
-        additional_dependencies: [nats-py>=2.6.0, psycopg>=3.1.0]
-        args: [--strict, --python-version=3.12]
+        additional_dependencies: [nats-py>=2.14.0, psycopg>=3.3.0, psycopg-pool>=3.2.0, pytest>=9.0.0]
+        args: [--config-file=worker/pyproject.toml]
 
   - repo: local
     hooks:

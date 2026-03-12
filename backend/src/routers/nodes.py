@@ -4,11 +4,11 @@ from typing import Any
 
 from fastapi import APIRouter
 
+import src.state as state
 from src.cluster import cluster
 from src.constants import JobStatus, NodeStatusEnum
 from src.models import NodeConfig, NodeStatus
 from src.profiling import scheduler
-from src.state import require_db
 from src.utils.gpu import config_key
 
 router = APIRouter()
@@ -17,12 +17,10 @@ router = APIRouter()
 @router.get("/nodes", response_model=list[NodeStatus])
 async def list_nodes() -> list[NodeStatus]:
     """List all cluster nodes with their current status."""
-    conn = require_db()
-
-    # Find which nodes are currently busy (have RUNNING or PROFILING jobs assigned)
-    assigned: dict[str, list[str]] = {}
-    async with conn.cursor() as cur:
-        await cur.execute(
+    async with state.get_conn() as conn:
+        # Find which nodes are currently busy (have RUNNING or PROFILING jobs assigned)
+        assigned: dict[str, list[str]] = {}
+        cur = await conn.execute(
             "SELECT assigned_node, id FROM jobs WHERE status IN (%s, %s) AND assigned_node IS NOT NULL",
             (JobStatus.RUNNING, JobStatus.PROFILING),
         )

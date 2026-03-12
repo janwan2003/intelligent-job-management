@@ -1,10 +1,10 @@
-import { Cpu, FlaskConical } from "lucide-react";
+import { Cpu, FlaskConical, AlertCircle } from "lucide-react";
 import { useNodes } from "@/api/hooks";
 import { Skeleton } from "@/components/ui/skeleton";
 import { NODE_STATUS_BUSY, JOB_ID_DISPLAY_LENGTH } from "@/config/constants";
 
 export default function ClusterStatus() {
-  const { data: nodes, isLoading } = useNodes();
+  const { data: nodes, isLoading, isError, error, refetch } = useNodes();
 
   const totalNodes = nodes?.length ?? 0;
   const busyNodes = nodes?.filter((n) => n.status === NODE_STATUS_BUSY).length ?? 0;
@@ -14,7 +14,7 @@ export default function ClusterStatus() {
       <div>
         <h1 className="text-lg font-semibold text-foreground">Cluster Status</h1>
         <p className="text-sm text-muted-foreground">
-          {isLoading ? "Loading..." : `${totalNodes} nodes registered — ${busyNodes} busy`}
+          {isLoading ? "Loading..." : isError ? "Could not reach API" : `${totalNodes} nodes registered — ${busyNodes} busy`}
         </p>
       </div>
 
@@ -23,6 +23,20 @@ export default function ClusterStatus() {
           <Skeleton className="h-32" />
           <Skeleton className="h-32" />
           <Skeleton className="h-32" />
+        </div>
+      ) : isError ? (
+        <div className="rounded-lg border border-destructive/30 bg-destructive/5 p-6 flex items-start gap-3">
+          <AlertCircle className="h-5 w-5 text-destructive shrink-0 mt-0.5" />
+          <div className="space-y-1">
+            <p className="text-sm font-medium text-destructive">Failed to load cluster nodes</p>
+            <p className="text-xs text-muted-foreground">{(error as Error)?.message ?? "Unknown error"}</p>
+            <button
+              onClick={() => void refetch()}
+              className="text-xs text-primary underline underline-offset-2 hover:no-underline mt-1"
+            >
+              Retry
+            </button>
+          </div>
         </div>
       ) : (
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">

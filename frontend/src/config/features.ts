@@ -24,9 +24,6 @@ export const FEATURE_JOB_EXTENDED_FIELDS = true;
 /** Submit Job: priority slider, deadline picker, batch size, epochs, script path */
 export const FEATURE_SUBMIT_EXTENDED_FIELDS = true;
 
-/** Docker image upload (exists in API) */
-export const FEATURE_IMAGE_UPLOAD = true;
-
 /** Profiling scheduler: show GPU config, ETA, and profiling badge */
 export const FEATURE_PROFILING_SCHEDULER = true;
 

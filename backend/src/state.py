@@ -5,23 +5,28 @@ avoid circular imports between ``app.py`` (which sets state) and routers
 (which read state).
 """
 
+from collections.abc import AsyncGenerator
+from contextlib import asynccontextmanager
 from typing import Any
 
 import psycopg  # type: ignore[import-not-found]
 from fastapi import HTTPException
 from nats.js import JetStreamContext  # type: ignore[import-not-found]
+from psycopg_pool import AsyncConnectionPool  # type: ignore[import-not-found]
 
 # Global state — initialised in app.lifespan()
-db_pool: psycopg.AsyncConnection[Any] | None = None
+pool: AsyncConnectionPool | None = None
 nc: Any = None
 js: JetStreamContext | None = None
 
 
-def require_db() -> psycopg.AsyncConnection[Any]:
-    """Return the database connection or raise 503 if not initialized."""
-    if db_pool is None:
+@asynccontextmanager
+async def get_conn() -> AsyncGenerator[psycopg.AsyncConnection[Any]]:
+    """Acquire a connection from the pool (async context manager)."""
+    if pool is None:
         raise HTTPException(status_code=503, detail="Database not initialized")
-    return db_pool
+    async with pool.connection() as conn:
+        yield conn
 
 
 def require_js() -> JetStreamContext:

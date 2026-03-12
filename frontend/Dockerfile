@@ -1,4 +1,4 @@
-FROM node:23-alpine
+FROM node:24-alpine AS build
 
 WORKDIR /app
 
@@ -11,9 +11,16 @@ COPY package.json pnpm-lock.yaml ./
 # Install dependencies
 RUN pnpm install --frozen-lockfile
 
-# Copy application code (src/ is volume-mounted in dev)
+# Copy application code and build
 COPY . .
+RUN pnpm build
 
-EXPOSE 5173
+# --- Production stage ---
+FROM nginx:alpine
 
-CMD ["pnpm", "dev", "--host", "0.0.0.0", "--port", "5173"]
+COPY --from=build /app/dist /usr/share/nginx/html
+COPY nginx.conf /etc/nginx/conf.d/default.conf
+
+EXPOSE 80
+
+CMD ["nginx", "-g", "daemon off;"]

@@ -15,7 +15,7 @@ mkdir -p data/pg data/checkpoints data/runs   # Create data dirs
 cd infra && docker compose up --build         # Start all services
 ```
 
-### Backend (Python 3.12, uses uv)
+### Backend (Python 3.13, uses uv)
 ```bash
 cd backend
 uv sync                        # Install dependencies
@@ -40,7 +40,7 @@ pnpm lint                      # ESLint
 
 **Event-driven, async-first** — three services communicate via NATS JetStream:
 
-1. **API** (`backend/src/main.py`) — FastAPI app. Manages job records in PostgreSQL, publishes events (`jobs.submitted`, `jobs.stop_requested`) to NATS stream "JOBS". Includes a `ProfilingScheduler` that profiles jobs across all valid GPU configurations before running on the best one. Single-file monolith (v0).
+1. **API** (`backend/src/`) — FastAPI app. Manages job records in PostgreSQL, publishes events (`jobs.submitted`, `jobs.stop_requested`) to NATS stream "JOBS". Includes a `ProfilingScheduler` (`profiling.py`) that incrementally profiles ONE untested GPU configuration per submission, then immediately runs the job on the best available config. Modular layout: `app.py` (factory + lifespan), `cluster.py` (ClusterManager), `profiling.py` (ProfilingScheduler), `state.py` (shared mutable state), `models.py`, `routers/`.
 
 2. **Worker** (`worker/worker.py`) — Async Python process. Subscribes to NATS events, runs jobs as Docker containers with concurrent execution. Manages container lifecycle: start, stop (SIGTERM with 30s grace), resume. Reports profiling results back to the API via NATS (`jobs.profiling_complete`). Reconciles DB state with Docker on startup.
 
@@ -52,8 +52,9 @@ pnpm lint                      # ESLint
 
 ### Job State Machine
 ```
-QUEUED → PROFILING → QUEUED (re-scheduled) → RUNNING → SUCCEEDED / FAILED
-                                                     ↘ PREEMPTED → QUEUED (resume)
+QUEUED → PROFILING → QUEUED (re-queued as standard run) → RUNNING → SUCCEEDED / FAILED
+                                                               ↘ PREEMPTED ─┬──→ QUEUED (resume)
+                                                                 FAILED ─────┘
 ```
 
 ### Data Persistence
@@ -64,7 +65,7 @@ QUEUED → PROFILING → QUEUED (re-scheduled) → RUNNING → SUCCEEDED / FAILE
 
 ## Code Style
 
-**Python**: ruff (line-length 120, double quotes), mypy strict mode, Python 3.12 target. All functions must have type annotations. Pre-commit hooks enforce ruff + mypy.
+**Python**: ruff (line-length 120, double quotes), mypy strict mode, Python 3.13 target. All functions must have type annotations. Pre-commit hooks enforce ruff + mypy.
 
 **TypeScript/React**: ESLint with react-hooks and react-refresh plugins. Tailwind CSS for styling, shadcn/ui component library. `strict: true` + `verbatimModuleSyntax` in tsconfig.
 

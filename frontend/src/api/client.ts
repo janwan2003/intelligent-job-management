@@ -44,20 +44,6 @@ export const api = {
     return res.text();
   },
 
-  uploadImage: async (file: File): Promise<{ image: string; message: string }> => {
-    const formData = new FormData();
-    formData.append("file", file);
-    const res = await fetch(`${API_BASE}/images/upload`, {
-      method: "POST",
-      body: formData,
-    });
-    if (!res.ok) {
-      const body = await res.json().catch(() => ({})) as { detail?: string };
-      throw new Error(body.detail ?? "Upload failed");
-    }
-    return res.json() as Promise<{ image: string; message: string }>;
-  },
-
   getNodes: () => apiFetch<ApiNode[]>("/nodes"),
 
   getProfilingResults: (jobId: string) =>

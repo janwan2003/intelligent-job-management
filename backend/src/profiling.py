@@ -139,7 +139,7 @@ class ProfilingScheduler:
         """Estimate duration for a config.  Exact match first, then average."""
         async with conn.cursor() as cur:
             await cur.execute(
-                "SELECT duration_seconds FROM profiling_results " "WHERE job_id = %s AND gpu_config = %s",
+                "SELECT duration_seconds FROM profiling_results WHERE job_id = %s AND gpu_config = %s::jsonb",
                 (job_id, Json(gpu_config)),
             )
             row = await cur.fetchone()

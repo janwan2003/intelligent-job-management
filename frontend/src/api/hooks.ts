@@ -55,11 +55,6 @@ export function useClearAllJobs() {
   });
 }
 
-export function useUploadImage() {
-  return useMutation({
-    mutationFn: (file: File) => api.uploadImage(file),
-  });
-}
 
 /** Fetch job logs, polling every 3s while enabled */
 export function useJobLogs(jobId: string | null) {
