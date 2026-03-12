@@ -114,10 +114,10 @@
   <h2>Architecture</h2>
   <div class="grid3">
     <div class="box">
-      <h3>API <span class="tag">:8000</span></h3>
+      <h3>Application Programming Interface (API) <span class="tag">:8000</span></h3>
       <ul>
-        <li>FastAPI + psycopg3 pool</li>
-        <li>Job CRUD + state machine</li>
+        <li>FastAPI + psycopg3 connection pool</li>
+        <li>Job Create, Read, Update, Delete (CRUD) + state machine</li>
         <li>Profiling scheduler</li>
         <li>Publishes + subscribes to NATS</li>
       </ul>
@@ -125,7 +125,7 @@
     <div class="box">
       <h3>Worker</h3>
       <ul>
-        <li>Publishes + subscribes to NATS</li>
+        <li>Publishes + subscribes to NATS (Neural Autonomic Transport System)</li>
         <li>Runs Docker containers</li>
         <li>Streams logs, parses progress</li>
         <li>Reconciles state on startup</li>
@@ -134,7 +134,7 @@
     <div class="box">
       <h3>Frontend <span class="tag">:5173</span></h3>
       <ul>
-        <li>React 19 + TanStack Query</li>
+        <li>React 19 + TanStack Query (Single-Page Application)</li>
         <li>Dashboard, Queue, Submit</li>
         <li>Cluster Status, Profiling</li>
       </ul>
@@ -142,7 +142,7 @@
   </div>
   <div class="grid2" style="margin-top:18px;">
     <div class="box">
-      <h3>PostgreSQL</h3>
+      <h3>PostgreSQL (SQL = Structured Query Language)</h3>
       <ul>
         <li><code>jobs</code> — metadata + scheduling decisions</li>
         <li><code>profiling_results</code> — per-config durations</li>
@@ -189,7 +189,7 @@
   </div>
 
   <h3>Inter-process flow</h3>
-  <pre>HTTP request  →  API publishes NATS event  →  Worker picks up
+  <pre>Hypertext Transfer Protocol (HTTP) request  →  API publishes NATS event  →  Worker picks up
 Worker finishes →  publishes completed/profiling_complete  →  API listener reacts
 All scheduling goes through schedule_lock  →  reads GPU usage from DB  →  assigns node</pre>
 </div>
@@ -240,7 +240,7 @@ All scheduling goes through schedule_lock  →  reads GPU usage from DB  →  as
 <!-- Slide 4: Profiling Scheduler -->
 <div class="slide">
   <h2>Profiling Scheduler</h2>
-  <p>Goal: find the <span class="highlight">fastest GPU configuration</span> per job through incremental measurement.</p>
+  <p>Goal: find the <span class="highlight">fastest GPU configuration</span> per job through incremental measurement. Each config is a JSON map like <code>{"A40": 2}</code>.</p>
 
   <div class="grid2" style="margin-top:14px;">
     <div class="box">
@@ -293,8 +293,8 @@ Checkpoint dir: data/checkpoints/{id}/.profiling/  (isolated, cleared each run)<
       <h3 style="margin-top:24px;">Tests (purely AI-generated)</h3>
       <ul>
         <li>Backend: pytest + mypy strict (102 tests)</li>
-        <li>Worker: pytest (mocked Docker/NATS)</li>
-        <li>Infra: smoke_test.sh (full-stack E2E)</li>
+        <li>Worker: pytest — 69 tests (mocked Docker/NATS)</li>
+        <li>Infra: smoke_test.sh (full-stack end-to-end)</li>
       </ul>
     </div>
   </div>
