@@ -6,8 +6,6 @@ import os
 from pathlib import Path
 from typing import Any
 
-from src.models import NodeConfig
-
 logger = logging.getLogger(__name__)
 
 
@@ -58,14 +56,6 @@ class ClusterManager:
 
     # -- queries -------------------------------------------------------------
 
-    def get_profiling_node(self) -> NodeConfig | None:
-        """Return the node designated for profiling, or ``None``."""
-        for raw in self.nodes:
-            node = NodeConfig.model_validate(raw)
-            if node.is_for_profiling:
-                return node
-        return None
-
     def get_energy_cost(self, gpu_type: str, num_gpus: int) -> float | None:
         """Look up the hourly energy cost for *gpu_type* x *num_gpus*.
 
@@ -75,20 +65,6 @@ class ClusterManager:
         if gpu_costs is None:
             return None
         return gpu_costs.get(str(num_gpus))
-
-    def find_suitable_nodes(self, required_memory_gb: int) -> list[NodeConfig]:
-        """Return nodes whose total VRAM meets *required_memory_gb*.
-
-        Only non-profiling nodes with at least one GPU group are considered.
-        """
-        suitable: list[NodeConfig] = []
-        for raw in self.nodes:
-            node = NodeConfig.model_validate(raw)
-            if node.is_for_profiling:
-                continue
-            if node.resources and node.get_available_memory() >= required_memory_gb:
-                suitable.append(node)
-        return suitable
 
 
 # Singleton instance — populated during lifespan startup

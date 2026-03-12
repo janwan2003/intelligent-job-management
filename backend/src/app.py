@@ -8,6 +8,8 @@ import re
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime
+from pathlib import Path
+from typing import Any
 from uuid import uuid4
 
 import nats  # type: ignore[import-not-found]
@@ -23,19 +25,20 @@ from src.constants import (
     CORS_ALLOWED_ORIGINS,
     DEFAULT_DATABASE_URL,
     DEFAULT_NATS_URL,
+    NATS_CONSUMER_COMPLETED,
     NATS_CONSUMER_PROFILING,
     NATS_STREAM_NAME,
+    NATS_SUBJECT_COMPLETED,
     NATS_SUBJECT_PROFILING_COMPLETE,
     NATS_SUBJECT_SUBMITTED,
     NATS_SUBJECTS_PATTERN,
     JobStatus,
+    nats_job_payload,
 )
 from src.profiling import scheduler
 from src.routers import router
 
 logger = logging.getLogger(__name__)
-
-_VALID_STATUSES = ", ".join(f"'{s.value}'" for s in JobStatus)
 
 
 @asynccontextmanager
@@ -52,64 +55,14 @@ async def lifespan(_app: FastAPI) -> AsyncGenerator[None]:
     # Connect to database (connection pool)
     masked_url = re.sub(r"://[^@]+@", "://*****@", database_url)
     logger.info("Connecting to database: %s", masked_url)
-    state.pool = AsyncConnectionPool(conninfo=database_url, min_size=2, max_size=10)
+    state.pool = AsyncConnectionPool(conninfo=database_url, min_size=2, max_size=10, open=False)
     await state.pool.open()
 
-    # Create tables, indexes, and constraints
+    # Create tables, indexes, and constraints from schema.sql
+    schema_path = Path(__file__).resolve().parent.parent / "schema.sql"
+    schema_sql = schema_path.read_text()
     async with state.get_conn() as conn, conn.transaction():
-        cur = conn.cursor()
-        await cur.execute(f"""
-                CREATE TABLE IF NOT EXISTS jobs (
-                    id TEXT PRIMARY KEY,
-                    image TEXT NOT NULL,
-                    command JSONB NOT NULL,
-                    status TEXT NOT NULL CHECK (status IN ({_VALID_STATUSES})),
-                    created_at TIMESTAMPTZ NOT NULL,
-                    updated_at TIMESTAMPTZ NOT NULL,
-                    container_name TEXT,
-                    exit_code INT,
-                    progress TEXT,
-                    priority INT DEFAULT 3,
-                    deadline TIMESTAMPTZ,
-                    batch_size INT,
-                    epochs_total INT,
-                    profiling_epochs_no INT,
-                    assigned_node TEXT,
-                    required_memory_gb INT
-                )
-            """)
-        # Migration for existing databases
-        for col, col_type in [
-            ("progress", "TEXT"),
-            ("priority", "INT DEFAULT 3"),
-            ("deadline", "TIMESTAMPTZ"),
-            ("batch_size", "INT"),
-            ("epochs_total", "INT"),
-            ("profiling_epochs_no", "INT"),
-            ("assigned_node", "TEXT"),
-            ("required_memory_gb", "INT"),
-            ("assigned_gpu_config", "JSONB"),
-            ("estimated_duration", "FLOAT"),
-            ("is_profiling_run", "BOOLEAN DEFAULT FALSE"),
-        ]:
-            await cur.execute(f"ALTER TABLE jobs ADD COLUMN IF NOT EXISTS {col} {col_type}")  # noqa: S608
-
-        # Indexes
-        await cur.execute("CREATE INDEX IF NOT EXISTS idx_jobs_status ON jobs(status)")
-        await cur.execute("CREATE INDEX IF NOT EXISTS idx_jobs_created_at ON jobs(created_at DESC)")
-
-        # Create profiling_results table
-        await cur.execute("""
-                CREATE TABLE IF NOT EXISTS profiling_results (
-                    id TEXT PRIMARY KEY,
-                    job_id TEXT NOT NULL,
-                    gpu_config JSONB NOT NULL,
-                    node_id TEXT NOT NULL,
-                    duration_seconds FLOAT NOT NULL,
-                    created_at TIMESTAMPTZ NOT NULL
-                )
-            """)
-        await cur.execute("CREATE INDEX IF NOT EXISTS idx_profiling_results_job_id ON profiling_results(job_id)")
+        await conn.execute(schema_sql)
     logger.info("Database initialized")
 
     # Connect to NATS
@@ -131,72 +84,173 @@ async def lifespan(_app: FastAPI) -> AsyncGenerator[None]:
     )
 
     async def _profiling_listener() -> None:
-        """Background task: handle profiling run completions."""
+        """Background task: handle profiling run completions.
+
+        Wraps the message loop in a retry so a transient NATS disconnect
+        doesn't silently kill the task.
+        """
         assert state.js is not None
-        async for msg in profiling_sub.messages:
+        while True:
             try:
-                # Limit retries to avoid infinite redelivery loops
-                meta = await msg.metadata()
-                if meta.num_delivered and meta.num_delivered > 3:
-                    logger.error("Profiling message exceeded retry limit (%d), acking to discard", meta.num_delivered)
-                    await msg.ack()
-                    continue
+                async for msg in profiling_sub.messages:
+                    await _handle_profiling_msg(msg)
+            except asyncio.CancelledError:
+                return
+            except Exception:
+                logger.exception("Profiling listener crashed — restarting in 2 s")
+                await asyncio.sleep(2)
 
-                data = json.loads(msg.data)
-                job_id: str = data["job_id"]
-                gpu_config: dict[str, int] = data["gpu_config"]
-                node_id: str = data["node_id"]
-                duration: float = data["duration_seconds"]
+    async def _handle_profiling_msg(msg: Any) -> None:
+        """Process a single profiling-complete NATS message."""
+        assert state.js is not None
+        meta = msg.metadata
+        if meta.num_delivered and meta.num_delivered > 3:
+            logger.error("Profiling message exceeded retry limit (%d), discarding", meta.num_delivered)
+            await msg.ack()
+            return
 
-                async with state.get_conn() as conn:
-                    # Record profiling result
-                    result_id = str(uuid4())
-                    now = datetime.now(UTC)
-                    await conn.execute(
-                        """INSERT INTO profiling_results
-                           (id, job_id, gpu_config, node_id, duration_seconds, created_at)
-                           VALUES (%s, %s, %s, %s, %s, %s)""",
-                        (result_id, job_id, Json(gpu_config), node_id, duration, now),
-                    )
-                    logger.info(
-                        "Recorded profiling result for job %s: %s = %.1fs",
-                        job_id[:8],
-                        gpu_config,
-                        duration,
-                    )
+        # Parse payload — reject malformed messages immediately
+        try:
+            data = json.loads(msg.data)
+            job_id: str = data["job_id"]
+            gpu_config: dict[str, int] = data["gpu_config"]
+            node_id: str = data["node_id"]
+            duration: float = data["duration_seconds"]
+        except (json.JSONDecodeError, KeyError, TypeError) as exc:
+            logger.error("Malformed profiling message, discarding: %s", exc)
+            await msg.ack()
+            return
 
-                    # After profiling one config, go straight to standard run on best config
-                    schedule_result = await scheduler.schedule_standard_run(conn, job_id)
+        try:
+            # All DB work in a single transaction for atomicity
+            async with state.schedule_lock, state.get_conn() as conn, conn.transaction():
+                result_id = str(uuid4())
+                now = datetime.now(UTC)
 
-                    # Re-queue the job
-                    await conn.execute(
-                        "UPDATE jobs SET status = %s, updated_at = %s WHERE id = %s",
-                        (JobStatus.QUEUED, now, job_id),
-                    )
-
-                # Notify the worker
-                await state.js.publish(
-                    NATS_SUBJECT_SUBMITTED,
-                    json.dumps({"job_id": job_id}).encode(),
+                # Idempotent insert — ON CONFLICT skips duplicate (job_id, gpu_config)
+                await conn.execute(
+                    """INSERT INTO profiling_results
+                       (id, job_id, gpu_config, node_id, duration_seconds, created_at)
+                       VALUES (%s, %s, %s, %s, %s, %s)
+                       ON CONFLICT (job_id, gpu_config) DO NOTHING""",
+                    (result_id, job_id, Json(gpu_config), node_id, duration, now),
                 )
+
+                # Decide next step: more profiling or standard run
+                schedule_result = await scheduler.schedule_job(conn, job_id, profiled_this_round=1)
+
+                await conn.execute(
+                    "UPDATE jobs SET status = %s, updated_at = %s WHERE id = %s",
+                    (JobStatus.QUEUED, now, job_id),
+                )
+
+            logger.info("Recorded profiling result for job %s: %s = %.1fs", job_id[:8], gpu_config, duration)
+
+            if schedule_result.node_id is not None:
+                await state.js.publish(NATS_SUBJECT_SUBMITTED, nats_job_payload(job_id))
                 logger.info(
-                    "Re-queued job %s (%s mode, config=%s)",
+                    "Re-queued job %s (%s mode, config=%s, node=%s)",
                     job_id[:8],
                     schedule_result.mode,
                     schedule_result.gpu_config,
+                    schedule_result.node_id,
                 )
-                await msg.ack()
-            except Exception:
-                logger.exception("Error handling profiling completion")
-                await msg.nak()
+            else:
+                logger.info(
+                    "No node available for job %s after profiling — leaving QUEUED, watcher will retry",
+                    job_id[:8],
+                )
+
+            await msg.ack()
+        except Exception:
+            logger.exception("Error handling profiling completion for job %s", job_id[:8])
+            await msg.nak()
 
     profiling_task = asyncio.create_task(_profiling_listener())
+
+    # ------------------------------------------------------------------
+    # Schedule waiting QUEUED jobs (shared by completed listener + watcher)
+    # ------------------------------------------------------------------
+
+    async def _schedule_waiting_jobs() -> None:
+        """Try to assign nodes to QUEUED jobs with assigned_node IS NULL."""
+        assert state.js is not None
+        scheduled: list[tuple[str, str]] = []  # (job_id, node_id)
+
+        async with state.schedule_lock:
+            async with state.get_conn() as conn:
+                cur = await conn.execute(
+                    "SELECT id FROM jobs WHERE status = %s AND assigned_node IS NULL ORDER BY created_at ASC",
+                    (JobStatus.QUEUED,),
+                )
+                unassigned = [row[0] for row in await cur.fetchall()]
+
+            for job_id in unassigned:
+                async with state.get_conn() as conn:
+                    result = await scheduler.schedule_job(conn, job_id)
+                    if result.node_id is not None:
+                        now = datetime.now(UTC)
+                        await conn.execute(
+                            "UPDATE jobs SET status = %s, updated_at = %s WHERE id = %s",
+                            (JobStatus.QUEUED, now, job_id),
+                        )
+                        scheduled.append((job_id, result.node_id))
+
+        # Publish NATS events outside the lock to avoid holding it during I/O
+        for job_id, node_id in scheduled:
+            await state.js.publish(NATS_SUBJECT_SUBMITTED, nats_job_payload(job_id))
+            logger.info("Scheduled waiting job %s on node %s", job_id[:8], node_id)
+
+    # ------------------------------------------------------------------
+    # Event-driven: react to jobs.completed (node just freed up)
+    # ------------------------------------------------------------------
+
+    completed_sub = await state.js.subscribe(
+        NATS_SUBJECT_COMPLETED,
+        durable=NATS_CONSUMER_COMPLETED,
+    )
+
+    async def _completed_listener() -> None:
+        """When a job finishes, immediately try to schedule waiting jobs."""
+        while True:
+            try:
+                async for msg in completed_sub.messages:
+                    try:
+                        await _schedule_waiting_jobs()
+                    except Exception:
+                        logger.exception("Error scheduling after job completion")
+                    await msg.ack()
+            except asyncio.CancelledError:
+                return
+            except Exception:
+                logger.exception("Completed listener crashed — restarting in 2 s")
+                await asyncio.sleep(2)
+
+    completed_task = asyncio.create_task(_completed_listener())
+
+    # ------------------------------------------------------------------
+    # Fallback watcher: catch anything missed (runs infrequently)
+    # ------------------------------------------------------------------
+
+    async def _queue_watcher() -> None:
+        """Safety net: retry scheduling every 60 s in case an event was missed."""
+        while True:
+            await asyncio.sleep(60)
+            try:
+                await _schedule_waiting_jobs()
+            except Exception:
+                logger.exception("Queue watcher error")
+
+    watcher_task = asyncio.create_task(_queue_watcher())
 
     yield
 
     # Cleanup
     profiling_task.cancel()
+    completed_task.cancel()
+    watcher_task.cancel()
     await profiling_sub.unsubscribe()
+    await completed_sub.unsubscribe()
 
     if state.pool:
         await state.pool.close()

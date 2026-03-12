@@ -17,36 +17,12 @@
     ]
   },
   {
-    "id": "node-l40s-01",
-    "isForProfiling": false,
-    "cost": 0.18,
-    "resources": [
-      { "gpu_type": "L40S", "gpu_count": 2, "memory_per_gpu_gb": 48 }
-    ]
-  },
-  {
-    "id": "node-blackwell-01",
-    "isForProfiling": false,
-    "cost": 0.45,
-    "resources": [
-      { "gpu_type": "Blackwell", "gpu_count": 2, "memory_per_gpu_gb": 192 }
-    ]
-  },
-  {
-    "id": "node-a40-prof",
-    "isForProfiling": true,
-    "cost": 0.15,
-    "resources": [
-      { "gpu_type": "A40", "gpu_count": 1, "memory_per_gpu_gb": 48 }
-    ]
-  },
-  {
     "id": "node-mixed-prof",
     "isForProfiling": true,
     "cost": 0.25,
     "resources": [
-      { "gpu_type": "L40S", "gpu_count": 1, "memory_per_gpu_gb": 48 },
-      { "gpu_type": "Blackwell", "gpu_count": 1, "memory_per_gpu_gb": 192 }
+      { "gpu_type": "L40S", "gpu_count": 4, "memory_per_gpu_gb": 48 },
+      { "gpu_type": "A40", "gpu_count": 4, "memory_per_gpu_gb": 48 }
     ]
   }
 ]

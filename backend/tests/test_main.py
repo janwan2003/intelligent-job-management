@@ -14,7 +14,7 @@ from fastapi.testclient import TestClient
 import src.state as state_module
 from src.app import app
 from src.cluster import ClusterManager, cluster
-from src.models import NodeConfig, NodeResources, _row_to_job
+from src.models import Job
 from src.profiling import ProfilingScheduler
 
 # Save original get_conn before any tests can override it
@@ -83,8 +83,8 @@ def _make_row(
     assigned_node: str | None = None,
     required_memory_gb: int | None = None,
     assigned_gpu_config: dict[str, int] | None = None,
-    estimated_duration: float | None = None,
     is_profiling_run: bool = False,
+    log_interval: int | None = None,
 ) -> dict[str, Any]:
     """Helper to build a job row dict (matching dict_row format)."""
     now = datetime.now(UTC)
@@ -106,15 +106,15 @@ def _make_row(
         "assigned_node": assigned_node,
         "required_memory_gb": required_memory_gb,
         "assigned_gpu_config": assigned_gpu_config,
-        "estimated_duration": estimated_duration,
         "is_profiling_run": is_profiling_run,
+        "log_interval": log_interval,
     }
 
 
-def test_row_to_job() -> None:
+def test_job_model_validate() -> None:
     """Test the row-to-Job conversion helper with full 21-column row."""
     row = _make_row()
-    job = _row_to_job(row)
+    job = Job.model_validate(row)
     assert job.id == "id-123"
     assert job.image == "image:latest"
     assert job.command == ["python", "train.py"]
@@ -126,19 +126,18 @@ def test_row_to_job() -> None:
     assert job.deadline is None
     assert job.assigned_node is None
     assert job.assigned_gpu_config is None
-    assert job.estimated_duration is None
     assert job.is_profiling_run is False
 
 
-def test_row_to_job_with_progress() -> None:
+def test_job_model_validate_with_progress() -> None:
     """Test the row-to-Job conversion with progress field."""
     row = _make_row(job_id="id-456", image="img:v1", status="RUNNING", progress="150/10000")
-    job = _row_to_job(row)
+    job = Job.model_validate(row)
     assert job.status == "RUNNING"
     assert job.progress == "150/10000"
 
 
-def test_row_to_job_with_extended_fields() -> None:
+def test_job_model_validate_with_extended_fields() -> None:
     """Test row-to-Job with extended fields."""
     dl = datetime.now(UTC)
     row = _make_row(
@@ -149,7 +148,7 @@ def test_row_to_job_with_extended_fields() -> None:
         profiling_epochs_no=2,
         assigned_node="node-01",
     )
-    job = _row_to_job(row)
+    job = Job.model_validate(row)
     assert job.priority == 5
     assert job.deadline == dl
     assert job.batch_size == 2048
@@ -200,19 +199,6 @@ def test_cluster_manager_load_gpu_energy_costs(tmp_path: Path) -> None:
     assert cm.gpu_energy_costs["L40S"]["1"] == 0.18
 
 
-def test_cluster_manager_get_profiling_node() -> None:
-    """Test ClusterManager.get_profiling_node."""
-    cm = ClusterManager()
-    cm.nodes = [
-        {"id": "node-a40-01", "isForProfiling": False, "cost": 0.15},
-        {"id": "node-l40s-01", "isForProfiling": True, "cost": 0.18},
-    ]
-    prof = cm.get_profiling_node()
-    assert prof is not None
-    assert prof.id == "node-l40s-01"
-    assert prof.is_for_profiling is True
-
-
 def test_cluster_manager_get_energy_cost() -> None:
     """Test ClusterManager.get_energy_cost lookups."""
     cm = ClusterManager()
@@ -229,88 +215,21 @@ def test_cluster_manager_get_energy_cost() -> None:
     assert cm.get_energy_cost("A40", 8) is None
 
 
-def test_node_resources_get_available_memory() -> None:
-    """Test NodeResources.get_available_memory returns total VRAM."""
-    res = NodeResources(gpu_type="A40", gpu_count=4, memory_per_gpu_gb=48)
-    assert res.get_available_memory() == 192
-
-    res_single = NodeResources(gpu_type="Blackwell", gpu_count=2, memory_per_gpu_gb=192)
-    assert res_single.get_available_memory() == 384
-
-
-def test_node_config_get_available_memory() -> None:
-    """Test NodeConfig.get_available_memory delegates to resources."""
-    node_with = NodeConfig.model_validate(
-        {
-            "id": "n1",
-            "isForProfiling": False,
-            "cost": 0.15,
-            "resources": [{"gpu_type": "A40", "gpu_count": 4, "memory_per_gpu_gb": 48}],
-        }
-    )
-    assert node_with.get_available_memory() == 192
-
-    node_without = NodeConfig.model_validate({"id": "n2", "isForProfiling": False})
-    assert node_without.get_available_memory() == 0
-
-
-def test_cluster_manager_find_suitable_nodes() -> None:
-    """Test find_suitable_nodes filters by memory and excludes profiling nodes."""
-    cm = ClusterManager()
-    cm.nodes = [
-        {
-            "id": "node-a40-01",
-            "isForProfiling": False,
-            "cost": 0.15,
-            "resources": [{"gpu_type": "A40", "gpu_count": 4, "memory_per_gpu_gb": 48}],
-        },
-        {
-            "id": "node-l40s-01",
-            "isForProfiling": True,
-            "cost": 0.18,
-            "resources": [{"gpu_type": "L40S", "gpu_count": 2, "memory_per_gpu_gb": 48}],
-        },
-        {
-            "id": "node-blackwell-01",
-            "isForProfiling": False,
-            "cost": 0.45,
-            "resources": [{"gpu_type": "Blackwell", "gpu_count": 2, "memory_per_gpu_gb": 192}],
-        },
-    ]
-
-    # 48 GB: A40 (192 total) and Blackwell (384 total) qualify; L40S is profiling
-    suitable = cm.find_suitable_nodes(48)
-    ids = [n.id for n in suitable]
-    assert "node-a40-01" in ids
-    assert "node-blackwell-01" in ids
-    assert "node-l40s-01" not in ids
-
-    # 200 GB: only Blackwell qualifies
-    suitable = cm.find_suitable_nodes(200)
-    assert len(suitable) == 1
-    assert suitable[0].id == "node-blackwell-01"
-
-    # 500 GB: nothing qualifies
-    assert cm.find_suitable_nodes(500) == []
-
-
-def test_row_to_job_with_required_memory_gb() -> None:
+def test_job_model_validate_with_required_memory_gb() -> None:
     """Test row-to-Job includes required_memory_gb field."""
     row = _make_row(required_memory_gb=96)
-    job = _row_to_job(row)
+    job = Job.model_validate(row)
     assert job.required_memory_gb == 96
 
 
-def test_row_to_job_with_profiling_fields() -> None:
+def test_job_model_validate_with_profiling_fields() -> None:
     """Test row-to-Job includes profiling scheduler fields."""
     row = _make_row(
         assigned_gpu_config={"A40": 2},
-        estimated_duration=123.4,
         is_profiling_run=True,
     )
-    job = _row_to_job(row)
+    job = Job.model_validate(row)
     assert job.assigned_gpu_config == {"A40": 2}
-    assert job.estimated_duration == 123.4
     assert job.is_profiling_run is True
 
 
@@ -364,17 +283,15 @@ def test_get_valid_configurations() -> None:
     sched = ProfilingScheduler()
     configs = sched.get_valid_configurations()
 
-    # A40: 1,2,3,4  L40S: 1,2  Blackwell: 1,2  = 8 configs
-    assert len(configs) == 8
+    # Only profiling nodes contribute: A40:1, L40S:1, Blackwell:1 = 3 configs
+    assert len(configs) == 3
     assert {"A40": 1} in configs
-    assert {"A40": 4} in configs
     assert {"L40S": 1} in configs
-    assert {"L40S": 2} in configs
     assert {"Blackwell": 1} in configs
-    assert {"Blackwell": 2} in configs
-    # Should NOT contain counts beyond what nodes have
-    assert {"L40S": 3} not in configs
-    assert {"Blackwell": 4} not in configs
+    # Production-node-only configs must NOT appear
+    assert {"A40": 4} not in configs
+    assert {"L40S": 2} not in configs
+    assert {"Blackwell": 2} not in configs
 
 
 def test_get_valid_configurations_deduplicates() -> None:
@@ -396,10 +313,9 @@ def test_get_valid_configurations_deduplicates() -> None:
 
     sched = ProfilingScheduler()
     configs = sched.get_valid_configurations()
-    # n1 -> A40:1, A40:2;  n2 -> A40:1 (already covered)
-    assert len(configs) == 2
+    # only profiling node n2 contributes: A40:1
+    assert len(configs) == 1
     assert {"A40": 1} in configs
-    assert {"A40": 2} in configs
 
 
 def test_find_node_for_config_exact_match() -> None:
@@ -471,34 +387,22 @@ def test_configurations_endpoint(client: TestClient) -> None:
             "id": "n2",
             "isForProfiling": True,
             "cost": 0.1,
-            "resources": [{"gpu_type": "L40S", "gpu_count": 1, "memory_per_gpu_gb": 48}],
+            "resources": [{"gpu_type": "A40", "gpu_count": 1, "memory_per_gpu_gb": 48}],
         },
     ]
 
     response = client.get("/configurations")
     assert response.status_code == 200
     data = response.json()
-    # A40: 1,2  L40S: 1  = 3 configs
-    assert len(data) == 3
+    # profiling node n2 contributes A40:1; intersects with production node n1 (A40:1,2)
+    assert len(data) == 1
     configs = [c["gpu_config"] for c in data]
     assert {"A40": 1} in configs
-    assert {"A40": 2} in configs
-    assert {"L40S": 1} in configs
 
 
 # ---------------------------------------------------------------------------
 # ClusterManager edge cases
 # ---------------------------------------------------------------------------
-
-
-def test_get_profiling_node_returns_none_when_no_profiling_node() -> None:
-    """get_profiling_node returns None when no node has isForProfiling=True."""
-    cm = ClusterManager()
-    cm.nodes = [
-        {"id": "n1", "isForProfiling": False, "cost": 0.1},
-        {"id": "n2", "isForProfiling": False, "cost": 0.2},
-    ]
-    assert cm.get_profiling_node() is None
 
 
 def test_load_nodes_missing_file(tmp_path: Path) -> None:
@@ -513,70 +417,6 @@ def test_load_gpu_energy_costs_missing_file(tmp_path: Path) -> None:
     cm = ClusterManager()
     cm.load_gpu_energy_costs(tmp_path / "does_not_exist.json")
     assert cm.gpu_energy_costs == {}
-
-
-# ---------------------------------------------------------------------------
-# ProfilingScheduler — _find_any_available_node
-# ---------------------------------------------------------------------------
-
-
-def test_find_any_available_node_returns_non_profiling() -> None:
-    """Should return a non-profiling node with resources."""
-    cluster.nodes = [
-        {
-            "id": "prof",
-            "isForProfiling": True,
-            "cost": 0.1,
-            "resources": [{"gpu_type": "A40", "gpu_count": 1, "memory_per_gpu_gb": 48}],
-        },
-        {
-            "id": "compute",
-            "isForProfiling": False,
-            "cost": 0.2,
-            "resources": [{"gpu_type": "L40S", "gpu_count": 2, "memory_per_gpu_gb": 48}],
-        },
-    ]
-    sched = ProfilingScheduler()
-    node = sched._find_any_available_node()
-    assert node is not None
-    assert node.id == "compute"
-
-
-def test_find_any_available_node_all_profiling_returns_none() -> None:
-    """Returns None when all nodes are for profiling."""
-    cluster.nodes = [
-        {
-            "id": "p1",
-            "isForProfiling": True,
-            "cost": 0.1,
-            "resources": [{"gpu_type": "A40", "gpu_count": 1, "memory_per_gpu_gb": 48}],
-        },
-        {
-            "id": "p2",
-            "isForProfiling": True,
-            "cost": 0.2,
-            "resources": [{"gpu_type": "L40S", "gpu_count": 1, "memory_per_gpu_gb": 48}],
-        },
-    ]
-    sched = ProfilingScheduler()
-    assert sched._find_any_available_node() is None
-
-
-def test_find_any_available_node_skips_nodes_without_resources() -> None:
-    """Nodes without resources are skipped."""
-    cluster.nodes = [
-        {"id": "no-res", "isForProfiling": False, "cost": 0.1},
-        {
-            "id": "has-res",
-            "isForProfiling": False,
-            "cost": 0.2,
-            "resources": [{"gpu_type": "A40", "gpu_count": 2, "memory_per_gpu_gb": 48}],
-        },
-    ]
-    sched = ProfilingScheduler()
-    node = sched._find_any_available_node()
-    assert node is not None
-    assert node.id == "has-res"
 
 
 # ---------------------------------------------------------------------------
@@ -639,30 +479,22 @@ def test_get_valid_configurations_nodes_without_resources() -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_mixed_gpu_node_get_available_memory() -> None:
-    """NodeConfig with multiple GPU groups sums total VRAM."""
-    node = NodeConfig.model_validate(
-        {
-            "id": "mixed",
-            "isForProfiling": False,
-            "cost": 0.2,
-            "resources": [
-                {"gpu_type": "A40", "gpu_count": 2, "memory_per_gpu_gb": 48},
-                {"gpu_type": "L40S", "gpu_count": 2, "memory_per_gpu_gb": 48},
-            ],
-        }
-    )
-    # 2*48 + 2*48 = 192
-    assert node.get_available_memory() == 192
-
-
 def test_mixed_gpu_node_valid_configurations() -> None:
     """Mixed-GPU node generates cartesian product of all GPU group combos."""
     cluster.nodes = [
         {
             "id": "mixed-01",
-            "isForProfiling": False,
+            "isForProfiling": True,
             "cost": 0.2,
+            "resources": [
+                {"gpu_type": "A40", "gpu_count": 2, "memory_per_gpu_gb": 48},
+                {"gpu_type": "L40S", "gpu_count": 3, "memory_per_gpu_gb": 48},
+            ],
+        },
+        {
+            "id": "prod-01",
+            "isForProfiling": False,
+            "cost": 0.3,
             "resources": [
                 {"gpu_type": "A40", "gpu_count": 2, "memory_per_gpu_gb": 48},
                 {"gpu_type": "L40S", "gpu_count": 3, "memory_per_gpu_gb": 48},
@@ -671,7 +503,7 @@ def test_mixed_gpu_node_valid_configurations() -> None:
     ]
     sched = ProfilingScheduler()
     configs = sched.get_valid_configurations()
-    # Cartesian product of [0,1,2] x [0,1,2,3] minus (0,0) = 11 configs
+    # Cartesian product of [0,1,2] x [0,1,2,3] minus (0,0) = 11 configs; all intersect with prod node
     assert len(configs) == 11
     assert {"A40": 1} in configs
     assert {"A40": 2} in configs
@@ -705,25 +537,6 @@ def test_find_node_for_config_mixed_gpu() -> None:
     assert node.id == "mixed"
     assert sched._find_node_for_config({"Blackwell": 2}, is_for_profiling=False) is None
     assert sched._find_node_for_config({"A40": 3}, is_for_profiling=False) is None
-
-
-def test_find_suitable_nodes_mixed_gpu() -> None:
-    """find_suitable_nodes uses total memory across all GPU groups."""
-    cm = ClusterManager()
-    cm.nodes = [
-        {
-            "id": "mixed",
-            "isForProfiling": False,
-            "cost": 0.2,
-            "resources": [
-                {"gpu_type": "A40", "gpu_count": 2, "memory_per_gpu_gb": 48},
-                {"gpu_type": "L40S", "gpu_count": 1, "memory_per_gpu_gb": 48},
-            ],
-        },
-    ]
-    assert len(cm.find_suitable_nodes(100)) == 1
-    assert len(cm.find_suitable_nodes(144)) == 1
-    assert len(cm.find_suitable_nodes(145)) == 0
 
 
 def test_node_status_resources_is_list(client: TestClient) -> None:
@@ -814,115 +627,20 @@ class FakeAsyncConn:
         pass
 
 
-async def test_find_best_available_config_returns_fastest() -> None:
-    """_find_best_available_config returns the fastest config that has an available node."""
-    cluster.nodes = [
-        {
-            "id": "compute",
-            "isForProfiling": False,
-            "cost": 0.1,
-            "resources": [{"gpu_type": "A40", "gpu_count": 2, "memory_per_gpu_gb": 48}],
-        }
-    ]
-
-    class BestCursor(FakeAsyncCursor):
-        async def fetchall(self) -> list[tuple[Any, ...]]:
-            return [({"A40": 2}, 30.0)]
-
-    class BestConn(FakeAsyncConn):
-        def __init__(self) -> None:
-            self._cursor = BestCursor()
-
-        def cursor(self) -> FakeAsyncCursor:
-            return self._cursor
-
-    sched = ProfilingScheduler()
-    result = await sched._find_best_available_config(BestConn(), "job-123")
-    assert result is not None
-    config, node, eta = result
-    assert config == {"A40": 2}
-    assert node.id == "compute"
-    assert eta == 30.0
-
-
-async def test_find_best_available_config_no_results() -> None:
-    """_find_best_available_config returns None when no profiling results exist."""
-    cluster.nodes = []
-    sched = ProfilingScheduler()
-    result = await sched._find_best_available_config(FakeAsyncConn(), "job-missing")
-    assert result is None
-
-
-async def test_estimate_duration_exact_match() -> None:
-    """_estimate_duration returns exact match when available."""
-    conn = FakeAsyncConn(
-        responses={
-            "profiling_results": [(45.3,)],
-        }
-    )
-    sched = ProfilingScheduler()
-    dur = await sched._estimate_duration(conn, "job-1", {"A40": 2})
-    assert dur == 45.3
-
-
-async def test_estimate_duration_average_fallback() -> None:
-    """_estimate_duration falls back to average when no exact match."""
-    call_count = 0
-
-    class AvgFakeCursor(FakeAsyncCursor):
-        async def fetchone(self) -> tuple[Any, ...] | None:
-            nonlocal call_count
-            call_count += 1
-            if call_count == 1:
-                return None
-            return (60.0,)
-
-    class AvgFakeConn(FakeAsyncConn):
-        def __init__(self) -> None:
-            self._cursor = AvgFakeCursor()
-
-        def cursor(self) -> FakeAsyncCursor:
-            return self._cursor
-
-    conn = AvgFakeConn()
-    sched = ProfilingScheduler()
-    dur = await sched._estimate_duration(conn, "job-1", {"L40S": 1})
-    assert dur == 60.0
-
-
-async def test_estimate_duration_no_data() -> None:
-    """_estimate_duration returns None when no profiling data at all."""
-    call_count = 0
-
-    class EmptyAvgCursor(FakeAsyncCursor):
-        async def fetchone(self) -> tuple[Any, ...] | None:
-            nonlocal call_count
-            call_count += 1
-            if call_count == 1:
-                return None
-            return (None,)
-
-    class EmptyAvgConn(FakeAsyncConn):
-        def __init__(self) -> None:
-            self._cursor = EmptyAvgCursor()
-
-        def cursor(self) -> FakeAsyncCursor:
-            return self._cursor
-
-    conn = EmptyAvgConn()
-    sched = ProfilingScheduler()
-    dur = await sched._estimate_duration(conn, "job-1", {"A40": 4})
-    assert dur is None
-
-
 async def test_schedule_job_exploration_mode() -> None:
     """schedule_job picks a random un-profiled config in exploration mode."""
     cluster.nodes = [
         {
-            "id": "n1",
+            "id": "prod",
             "isForProfiling": False,
             "cost": 0.1,
             "resources": [{"gpu_type": "A40", "gpu_count": 2, "memory_per_gpu_gb": 48}],
+        },
+        {
+            "id": "prof",
+            "isForProfiling": True,
+            "cost": 0.1,
+            "resources": [{"gpu_type": "A40", "gpu_count": 1, "memory_per_gpu_gb": 48}],
         },
     ]
 
@@ -931,8 +649,8 @@ async def test_schedule_job_exploration_mode() -> None:
     result = await sched.schedule_job(conn, "job-new")
     assert result.mode == "profiling"
     assert result.is_profiling_run is True
-    assert result.gpu_config in ({"A40": 1}, {"A40": 2})
-    assert result.node_id == "n1"
+    assert result.gpu_config == {"A40": 1}
+    assert result.node_id == "prof"
 
 
 async def test_schedule_job_standard_mode_after_all_profiled() -> None:
@@ -974,7 +692,6 @@ async def test_schedule_job_standard_mode_after_all_profiled() -> None:
     assert result.is_profiling_run is False
     assert result.gpu_config == {"A40": 1}
     assert result.node_id == "n1"
-    assert result.estimated_duration == 42.5
 
 
 async def test_schedule_job_standard_mode_no_available_node() -> None:
@@ -1020,6 +737,89 @@ async def test_schedule_job_standard_mode_no_available_node() -> None:
     assert result.gpu_config is None
 
 
+async def test_schedule_job_skips_fully_allocated_nodes() -> None:
+    """schedule_job must prefer a node with remaining GPU capacity over a fully allocated one."""
+    cluster.nodes = [
+        {
+            "id": "full-node",
+            "isForProfiling": False,
+            "cost": 0.1,
+            "resources": [{"gpu_type": "A40", "gpu_count": 2, "memory_per_gpu_gb": 48}],
+        },
+        {
+            "id": "free-node",
+            "isForProfiling": False,
+            "cost": 0.1,
+            "resources": [{"gpu_type": "A40", "gpu_count": 2, "memory_per_gpu_gb": 48}],
+        },
+    ]
+
+    class BusyNodeCursor(FakeAsyncCursor):
+        async def fetchall(self) -> list[tuple[Any, ...]]:
+            # GPU usage query — full-node has all 2 A40s allocated
+            if "assigned_node" in self._last_query and "assigned_gpu_config" in self._last_query:
+                return [("full-node", {"A40": 2})]
+            # profiling results query — all profiled
+            if "SELECT DISTINCT" in self._last_query:
+                return [({"A40": 1},), ({"A40": 2},)]
+            return []
+
+        async def fetchone(self) -> tuple[Any, ...] | None:
+            return None
+
+    class BusyNodeConn(FakeAsyncConn):
+        def __init__(self) -> None:
+            self._cursor = BusyNodeCursor()
+
+        def cursor(self) -> FakeAsyncCursor:
+            return self._cursor
+
+    conn = BusyNodeConn()
+    sched = ProfilingScheduler()
+    result = await sched.schedule_job(conn, "job-x")
+    assert result.mode == "standard"
+    assert result.node_id == "free-node"
+
+
+async def test_schedule_job_packs_onto_partially_used_node() -> None:
+    """schedule_job should assign to a node that still has remaining GPUs."""
+    cluster.nodes = [
+        {
+            "id": "partial-node",
+            "isForProfiling": False,
+            "cost": 0.1,
+            "resources": [{"gpu_type": "A40", "gpu_count": 4, "memory_per_gpu_gb": 48}],
+        },
+    ]
+
+    class PartialCursor(FakeAsyncCursor):
+        async def fetchall(self) -> list[tuple[Any, ...]]:
+            # GPU usage query — 2 of 4 A40s already allocated
+            if "assigned_node" in self._last_query and "assigned_gpu_config" in self._last_query:
+                return [("partial-node", {"A40": 2})]
+            # profiling results — config {"A40": 1} profiled
+            if "SELECT DISTINCT" in self._last_query:
+                return [({"A40": 1},)]
+            return []
+
+        async def fetchone(self) -> tuple[Any, ...] | None:
+            return None
+
+    class PartialConn(FakeAsyncConn):
+        def __init__(self) -> None:
+            self._cursor = PartialCursor()
+
+        def cursor(self) -> FakeAsyncCursor:
+            return self._cursor
+
+    conn = PartialConn()
+    sched = ProfilingScheduler()
+    result = await sched.schedule_job(conn, "job-y")
+    assert result.mode == "standard"
+    assert result.node_id == "partial-node"
+    assert result.gpu_config == {"A40": 1}
+
+
 # ---------------------------------------------------------------------------
 # Profiling-first enforcement tests
 # ---------------------------------------------------------------------------
@@ -1032,13 +832,19 @@ async def test_one_config_per_submit_then_standard() -> None:
             "id": "n1",
             "isForProfiling": False,
             "cost": 0.1,
-            "resources": [{"gpu_type": "A40", "gpu_count": 2, "memory_per_gpu_gb": 48}],
+            "resources": [
+                {"gpu_type": "A40", "gpu_count": 2, "memory_per_gpu_gb": 48},
+                {"gpu_type": "L40S", "gpu_count": 2, "memory_per_gpu_gb": 48},
+            ],
         },
         {
             "id": "n2",
             "isForProfiling": True,
             "cost": 0.1,
-            "resources": [{"gpu_type": "L40S", "gpu_count": 1, "memory_per_gpu_gb": 48}],
+            "resources": [
+                {"gpu_type": "A40", "gpu_count": 1, "memory_per_gpu_gb": 48},
+                {"gpu_type": "L40S", "gpu_count": 1, "memory_per_gpu_gb": 48},
+            ],
         },
     ]
 
@@ -1067,6 +873,7 @@ async def test_one_config_per_submit_then_standard() -> None:
 
     conn = IncrementalConn()
     sched = ProfilingScheduler()
+    sched.configs_per_job = 999  # profile all configs in this test
 
     all_configs = sched.get_valid_configurations()
     assert len(all_configs) == 3

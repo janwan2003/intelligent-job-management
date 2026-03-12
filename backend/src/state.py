@@ -5,6 +5,7 @@ avoid circular imports between ``app.py`` (which sets state) and routers
 (which read state).
 """
 
+import asyncio
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 from typing import Any
@@ -18,6 +19,9 @@ from psycopg_pool import AsyncConnectionPool  # type: ignore[import-not-found]
 pool: AsyncConnectionPool | None = None
 nc: Any = None
 js: JetStreamContext | None = None
+
+# Serialises all scheduling decisions so two coroutines cannot assign the same node
+schedule_lock: asyncio.Lock = asyncio.Lock()
 
 
 @asynccontextmanager

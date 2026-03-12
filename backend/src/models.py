@@ -3,11 +3,12 @@
 from datetime import datetime
 from typing import Any
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from src.constants import (
     DEFAULT_EPOCHS_TOTAL,
     DEFAULT_JOB_PRIORITY,
+    DEFAULT_LOG_INTERVAL,
     DEFAULT_PROFILING_STEPS,
     PRIORITY_MAX,
     PRIORITY_MIN,
@@ -28,10 +29,6 @@ class NodeResources(BaseModel):
     gpu_count: int
     memory_per_gpu_gb: int
 
-    def get_available_memory(self) -> int:
-        """Return total VRAM across all GPUs (in GB)."""
-        return self.gpu_count * self.memory_per_gpu_gb
-
 
 class NodeConfig(BaseModel):
     """Node definition loaded from config JSON."""
@@ -42,10 +39,6 @@ class NodeConfig(BaseModel):
     is_for_profiling: bool = Field(default=False, alias="isForProfiling")
     cost: float = 0.0
     resources: list[NodeResources] = Field(default_factory=list)
-
-    def get_available_memory(self) -> int:
-        """Return total VRAM across all GPU groups, or 0 if no resources."""
-        return sum(r.get_available_memory() for r in self.resources)
 
 
 class NodeStatus(BaseModel):
@@ -70,7 +63,6 @@ class ScheduleResult(BaseModel):
     mode: str  # "profiling" or "standard"
     gpu_config: dict[str, int] | None = None
     node_id: str | None = None
-    estimated_duration: float | None = None
     is_profiling_run: bool = False
 
 
@@ -85,17 +77,21 @@ class JobCreate(BaseModel):
     model_config = ConfigDict(populate_by_name=True)
 
     image: str
-    command: list[str]
+    command: list[str] = Field(default_factory=list)
     priority: int = Field(default=DEFAULT_JOB_PRIORITY, alias="Priority", ge=PRIORITY_MIN, le=PRIORITY_MAX)
     deadline: datetime | None = None
     batch_size: int | None = Field(default=None, alias="batchSize")
     profiling_epochs_no: int = Field(default=DEFAULT_PROFILING_STEPS, alias="profilingEpochsNo", ge=1)
     epochs_total: int = Field(default=DEFAULT_EPOCHS_TOTAL, alias="epochsTotal", ge=1)
     required_memory_gb: int | None = Field(default=None, alias="requiredMemoryGb")
+    log_interval: int = Field(default=DEFAULT_LOG_INTERVAL, alias="logInterval", ge=1)
+
+
+_DB_NULLABLE_DEFAULTS = ("priority", "epochs_total", "profiling_epochs_no", "log_interval")
 
 
 class Job(BaseModel):
-    """Job response model."""
+    """Job response model — also used to hydrate DB rows via model_validate()."""
 
     id: str
     image: str
@@ -114,35 +110,15 @@ class Job(BaseModel):
     assigned_node: str | None = None
     required_memory_gb: int | None = None
     assigned_gpu_config: dict[str, int] | None = None
-    estimated_duration: float | None = None
     is_profiling_run: bool = False
+    log_interval: int = DEFAULT_LOG_INTERVAL
 
-
-# ---------------------------------------------------------------------------
-# SQL helpers
-# ---------------------------------------------------------------------------
-
-
-def _row_to_job(row: dict[str, Any]) -> Job:
-    """Convert a database row dict to a Job model."""
-    return Job(
-        id=row["id"],
-        image=row["image"],
-        command=row["command"],
-        status=row["status"],
-        created_at=row["created_at"],
-        updated_at=row["updated_at"],
-        container_name=row.get("container_name"),
-        exit_code=row.get("exit_code"),
-        progress=row.get("progress"),
-        priority=row.get("priority") or DEFAULT_JOB_PRIORITY,
-        deadline=row.get("deadline"),
-        batch_size=row.get("batch_size"),
-        epochs_total=row.get("epochs_total") or DEFAULT_EPOCHS_TOTAL,
-        profiling_epochs_no=row.get("profiling_epochs_no") or DEFAULT_PROFILING_STEPS,
-        assigned_node=row.get("assigned_node"),
-        required_memory_gb=row.get("required_memory_gb"),
-        assigned_gpu_config=row.get("assigned_gpu_config"),
-        estimated_duration=row.get("estimated_duration"),
-        is_profiling_run=bool(row.get("is_profiling_run")) if row.get("is_profiling_run") is not None else False,
-    )
+    @model_validator(mode="before")
+    @classmethod
+    def _defaults_for_db_nulls(cls, data: Any) -> Any:
+        """Drop NULL DB values for non-optional fields so Pydantic uses field defaults."""
+        if isinstance(data, dict):
+            for key in _DB_NULLABLE_DEFAULTS:
+                if data.get(key) is None:
+                    data.pop(key, None)
+        return data

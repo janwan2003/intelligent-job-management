@@ -1,10 +1,20 @@
 """Constants for the IJM backend."""
 
+import json
 import os
 from enum import StrEnum
 
 from shared.constants import (
+    DEFAULT_LOG_INTERVAL as DEFAULT_LOG_INTERVAL,
+)
+from shared.constants import (
+    DEFAULT_PROFILING_STEPS as DEFAULT_PROFILING_STEPS,
+)
+from shared.constants import (
     NATS_STREAM_NAME as NATS_STREAM_NAME,
+)
+from shared.constants import (
+    NATS_SUBJECT_COMPLETED as NATS_SUBJECT_COMPLETED,
 )
 from shared.constants import (
     NATS_SUBJECT_PROFILING_COMPLETE as NATS_SUBJECT_PROFILING_COMPLETE,
@@ -17,6 +27,12 @@ from shared.constants import (
 )
 from shared.constants import (
     NATS_SUBJECTS_PATTERN as NATS_SUBJECTS_PATTERN,
+)
+from shared.constants import (
+    OUTPUT_LOG_FILENAME as OUTPUT_LOG_FILENAME,
+)
+from shared.constants import (
+    RUNS_DIR as RUNS_DIR,
 )
 from shared.constants import (
     JobStatus as JobStatus,
@@ -48,6 +64,13 @@ class NodeStatusEnum(StrEnum):
 # ---------------------------------------------------------------------------
 
 NATS_CONSUMER_PROFILING = "api-profiling-complete"
+NATS_CONSUMER_COMPLETED = "api-completed"
+
+
+def nats_job_payload(job_id: str) -> bytes:
+    """Encode a job_id into the standard NATS message format."""
+    return json.dumps({"job_id": job_id}).encode()
+
 
 # ---------------------------------------------------------------------------
 # Defaults
@@ -58,17 +81,10 @@ PRIORITY_MIN = 1
 PRIORITY_MAX = 5
 
 DEFAULT_EPOCHS_TOTAL = 10_000
-DEFAULT_PROFILING_STEPS = 100
+DEFAULT_PROFILING_CONFIGS_PER_JOB = 1
 
 DEFAULT_DATABASE_URL = "postgresql://postgres:postgres@localhost:5432/ijm"
 DEFAULT_NATS_URL = "nats://localhost:4222"
-
-# ---------------------------------------------------------------------------
-# Data directories & file names
-# ---------------------------------------------------------------------------
-
-RUNS_DIR = "runs"
-OUTPUT_LOG_FILENAME = "output.log"
 
 # ---------------------------------------------------------------------------
 # CORS

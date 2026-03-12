@@ -238,22 +238,21 @@ class TestResumeJob:
     """Tests for POST /jobs/{job_id}/resume."""
 
     def test_resume_preempted_job_sets_queued(self) -> None:
-        """Resuming a PREEMPTED job should set it to QUEUED and publish."""
+        """Resuming a PREEMPTED job should set it to QUEUED (no publish when no node available)."""
         client, _conn, fake_js = _make_client(responses={"RETURNING": [("preempt-id",)]})
 
         response = client.post("/jobs/preempt-id/resume")
         assert response.status_code == 202
-        fake_js.publish.assert_called_once()
-        call_args = fake_js.publish.call_args
-        assert call_args[0][0] == "jobs.submitted"
+        # No cluster nodes configured → schedule_job returns node_id=None → no NATS publish
+        fake_js.publish.assert_not_called()
 
     def test_resume_failed_job_sets_queued(self) -> None:
-        """Resuming a FAILED job should set it to QUEUED and publish."""
+        """Resuming a FAILED job should set it to QUEUED (no publish when no node available)."""
         client, _conn, fake_js = _make_client(responses={"RETURNING": [("fail-id",)]})
 
         response = client.post("/jobs/fail-id/resume")
         assert response.status_code == 202
-        fake_js.publish.assert_called_once()
+        fake_js.publish.assert_not_called()
 
     def test_resume_nonexistent_job_returns_404(self) -> None:
         client, _conn, _ = _make_client()
@@ -453,10 +452,10 @@ _CLUSTER_NODES = [
         "resources": [{"gpu_type": "A40", "gpu_count": 4, "memory_per_gpu_gb": 48}],
     },
     {
-        "id": "node-l40s-01",
+        "id": "node-a40-prof",
         "isForProfiling": True,
-        "cost": 0.18,
-        "resources": [{"gpu_type": "L40S", "gpu_count": 2, "memory_per_gpu_gb": 48}],
+        "cost": 0.15,
+        "resources": [{"gpu_type": "A40", "gpu_count": 1, "memory_per_gpu_gb": 48}],
     },
 ]
 
@@ -469,8 +468,8 @@ def _job_row(
     priority: int = 3,
     assigned_node: str | None = None,
     assigned_gpu_config: dict[str, int] | None = None,
-    estimated_duration: float | None = None,
     is_profiling_run: bool = False,
+    log_interval: int | None = None,
 ) -> dict[str, Any]:
     """Build a job row dict (matching dict_row format)."""
     now = datetime.now(UTC)
@@ -492,8 +491,8 @@ def _job_row(
         "assigned_node": assigned_node,
         "required_memory_gb": None,
         "assigned_gpu_config": assigned_gpu_config,
-        "estimated_duration": estimated_duration,
         "is_profiling_run": is_profiling_run,
+        "log_interval": log_interval,
     }
 
 
@@ -565,11 +564,6 @@ class TestCreateJob:
     def test_create_job_missing_image_returns_422(self) -> None:
         client, _conn, _ = _make_rich_client()
         response = client.post("/jobs", json={"command": ["python", "run.py"]})
-        assert response.status_code == 422
-
-    def test_create_job_missing_command_returns_422(self) -> None:
-        client, _conn, _ = _make_rich_client()
-        response = client.post("/jobs", json={"image": "my-image:v1"})
         assert response.status_code == 422
 
     def test_create_job_priority_out_of_range_returns_422(self) -> None:
@@ -675,7 +669,7 @@ class TestListNodes:
         assert len(data) == 2
         ids = {n["id"] for n in data}
         assert "node-a40-01" in ids
-        assert "node-l40s-01" in ids
+        assert "node-a40-prof" in ids
 
     def test_list_nodes_marks_busy_when_running_job(self) -> None:
         client, conn, _ = _make_rich_client(
@@ -686,11 +680,11 @@ class TestListNodes:
         data = response.json()
 
         a40 = next(n for n in data if n["id"] == "node-a40-01")
-        l40s = next(n for n in data if n["id"] == "node-l40s-01")
+        prof = next(n for n in data if n["id"] == "node-a40-prof")
         assert a40["status"] == "busy"
         assert a40["current_job_ids"] == ["job-xyz"]
-        assert l40s["status"] == "idle"
-        assert l40s["current_job_ids"] == []
+        assert prof["status"] == "idle"
+        assert prof["current_job_ids"] == []
 
     def test_list_nodes_includes_resources(self) -> None:
         client, _conn, _ = _make_rich_client()
@@ -707,9 +701,9 @@ class TestListNodes:
         response = client.get("/nodes")
         data = response.json()
         a40 = next(n for n in data if n["id"] == "node-a40-01")
-        l40s = next(n for n in data if n["id"] == "node-l40s-01")
+        prof = next(n for n in data if n["id"] == "node-a40-prof")
         assert a40["is_for_profiling"] is False
-        assert l40s["is_for_profiling"] is True
+        assert prof["is_for_profiling"] is True
 
 
 # ---------------------------------------------------------------------------
@@ -1007,13 +1001,17 @@ class TestMultiJobRegression:
         sched = ProfilingScheduler()
         cluster.nodes = _REAL_CLUSTER_NODES
         all_configs = sched.get_valid_configurations()
-        assert len(all_configs) >= 8
+        # Profiling nodes: node-a40-prof (A40:1) + node-mixed-prof (L40S:1, Blackwell:1, L40S+Blackwell:1)
+        # Intersection: L40S+Blackwell:1 filtered (no production node has both), leaving 3 configs
+        assert len(all_configs) >= 3
 
     async def test_one_config_per_submission_then_standard(self) -> None:
-        """Simulate the one-at-a-time profiling cycle."""
+        """Simulate profiling all configs when configs_per_job is high enough."""
         cluster.nodes = _REAL_CLUSTER_NODES
         sched = ProfilingScheduler()
         all_configs = sched.get_valid_configurations()
+        # Allow profiling ALL configs before switching to standard
+        sched.configs_per_job = len(all_configs)
 
         profiled: list[tuple[dict[str, int]]] = []
 
@@ -1050,12 +1048,61 @@ class TestMultiJobRegression:
         assert result.is_profiling_run is False
         assert result.mode == "standard"
 
+    async def test_configs_per_job_limits_per_round(self) -> None:
+        """With configs_per_job=1, one profiling run per round then standard run."""
+        cluster.nodes = _REAL_CLUSTER_NODES
+        sched = ProfilingScheduler()
+        all_configs = sched.get_valid_configurations()
+        assert len(all_configs) > 1, "Need multiple configs for this test"
+        assert sched.configs_per_job == 1
+
+        profiled: list[tuple[dict[str, int]]] = []
+
+        class CycleCursor(FakeCursor):
+            def _resolve(self) -> list[Any]:
+                if "SELECT DISTINCT" in self._last_query:
+                    return list(profiled)
+                if "ORDER BY duration_seconds" in self._last_query:
+                    return [(config, 30.0) for (config,) in profiled]
+                if "duration_seconds" in self._last_query:
+                    return [(30.0,)] if profiled else []
+                return []
+
+        class CycleConn(FakeConn):
+            def __init__(self) -> None:
+                super().__init__()
+                self._cursor = CycleCursor()
+
+        conn = CycleConn()
+
+        # Round start: should profile first config
+        result = await sched.schedule_job(conn, "job-limit")
+        assert result.is_profiling_run is True
+        assert result.gpu_config is not None
+        profiled.append((result.gpu_config,))
+
+        # Post-profiling (profiled_this_round=1): round limit reached → standard run
+        result = await sched.schedule_job(conn, "job-limit", profiled_this_round=1)
+        assert result.is_profiling_run is False
+        assert result.mode == "standard"
+
+        # Next round (profiled_this_round=0): should profile the next config
+        result = await sched.schedule_job(conn, "job-limit")
+        assert result.is_profiling_run is True
+        assert result.gpu_config is not None
+
     async def test_multiple_jobs_independent_profiling_cycles(self) -> None:
         """Different jobs have independent profiling state."""
         cluster.nodes = [
             {
                 "id": "n1",
                 "isForProfiling": False,
+                "cost": 0.1,
+                "resources": [{"gpu_type": "A40", "gpu_count": 1, "memory_per_gpu_gb": 48}],
+            },
+            {
+                "id": "n-prof",
+                "isForProfiling": True,
                 "cost": 0.1,
                 "resources": [{"gpu_type": "A40", "gpu_count": 1, "memory_per_gpu_gb": 48}],
             },

@@ -101,13 +101,17 @@ services:
     build:
       context: ../frontend
       dockerfile: Dockerfile
+      target: dev
     container_name: ijm-frontend
     restart: unless-stopped
     ports:
-      - "5173:80"
+      - "5173:5173"
+    volumes:
+      - ../frontend:/app
+      - /app/node_modules
     depends_on:
       - api
     deploy:
       resources:
         limits:
-          memory: 256M
+          memory: 512M

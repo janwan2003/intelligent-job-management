@@ -1,0 +1,330 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>IJM — Project Presentation</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    font-family: 'Courier New', monospace;
+    background: #0d0d0d;
+    color: #e0e0e0;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    min-height: 100vh;
+  }
+  .slide {
+    display: none;
+    width: 900px;
+    min-height: 540px;
+    padding: 48px 56px;
+    flex-direction: column;
+    justify-content: flex-start;
+  }
+  .slide.active { display: flex; }
+  h1 { font-size: 2rem; color: #ffffff; margin-bottom: 8px; }
+  h2 { font-size: 1.4rem; color: #aaffaa; margin-bottom: 24px; border-bottom: 1px solid #333; padding-bottom: 8px; }
+  h3 { font-size: 1rem; color: #ffcc66; margin: 18px 0 8px; }
+  p, li { font-size: 0.92rem; line-height: 1.65; color: #cccccc; }
+  ul { padding-left: 20px; }
+  li { margin-bottom: 5px; }
+  .sub { color: #888; font-size: 0.85rem; }
+  .tag { background: #1e3a1e; color: #aaffaa; padding: 1px 7px; border-radius: 3px; font-size: 0.78rem; }
+  .tag.red { background: #3a1e1e; color: #ff9999; }
+  .tag.yellow { background: #3a3a1e; color: #ffdd99; }
+  pre {
+    background: #111;
+    border: 1px solid #2a2a2a;
+    padding: 14px 18px;
+    font-size: 0.82rem;
+    line-height: 1.6;
+    overflow-x: auto;
+    margin: 12px 0;
+    border-radius: 4px;
+  }
+  .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; margin-top: 8px; }
+  .grid3 { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 18px; margin-top: 8px; }
+  .box { border: 1px solid #2a2a2a; background: #111; padding: 14px 16px; border-radius: 4px; }
+  .box h3 { margin-top: 0; }
+  .arrow { color: #555; }
+  .flow {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    flex-wrap: wrap;
+    margin: 10px 0;
+    font-size: 0.88rem;
+  }
+  .state {
+    border: 1px solid #444;
+    padding: 4px 12px;
+    border-radius: 3px;
+    white-space: nowrap;
+  }
+  .state.green { border-color: #3a7a3a; color: #aaffaa; }
+  .state.blue  { border-color: #3a5a7a; color: #99ccff; }
+  .state.yellow{ border-color: #7a7a3a; color: #ffdd99; }
+  .state.red   { border-color: #7a3a3a; color: #ff9999; }
+  .nav {
+    position: fixed;
+    bottom: 28px;
+    display: flex;
+    gap: 16px;
+    align-items: center;
+  }
+  button {
+    background: #1a1a1a;
+    border: 1px solid #333;
+    color: #ccc;
+    padding: 7px 22px;
+    font-family: inherit;
+    font-size: 0.85rem;
+    cursor: pointer;
+    border-radius: 3px;
+  }
+  button:hover { border-color: #aaffaa; color: #aaffaa; }
+  .counter { color: #555; font-size: 0.82rem; min-width: 60px; text-align: center; }
+  .title-card { margin-top: 80px; }
+  .title-card h1 { font-size: 2.6rem; }
+  .highlight { color: #aaffaa; }
+  .note { color: #666; font-size: 0.8rem; margin-top: 8px; font-style: italic; }
+</style>
+</head>
+<body>
+
+<!-- Slide 1: Title -->
+<div class="slide active">
+  <div class="title-card">
+    <h1>Intelligent Job Management</h1>
+    <p style="color:#aaffaa; margin-top:6px; font-size:1.1rem;">v0.1.0 Prototype</p>
+    <p class="sub" style="margin-top:24px;">
+      GPU cluster job scheduler with automatic hardware profiling,<br>
+      stoppable/resumable execution, and checkpoint-based recovery.
+    </p>
+    <p class="sub" style="margin-top:32px;">
+       &nbsp;·&nbsp; Jan Wangrat &nbsp;·&nbsp;
+    </p>
+  </div>
+</div>
+
+<!-- Slide 2: Architecture -->
+<div class="slide">
+  <h2>Architecture</h2>
+  <div class="grid3">
+    <div class="box">
+      <h3>API <span class="tag">:8000</span></h3>
+      <ul>
+        <li>FastAPI + psycopg3 pool</li>
+        <li>Job CRUD + state machine</li>
+        <li>Profiling scheduler</li>
+        <li>Publishes + subscribes to NATS</li>
+      </ul>
+    </div>
+    <div class="box">
+      <h3>Worker</h3>
+      <ul>
+        <li>Publishes + subscribes to NATS</li>
+        <li>Runs Docker containers</li>
+        <li>Streams logs, parses progress</li>
+        <li>Reconciles state on startup</li>
+      </ul>
+    </div>
+    <div class="box">
+      <h3>Frontend <span class="tag">:5173</span></h3>
+      <ul>
+        <li>React 19 + TanStack Query</li>
+        <li>Dashboard, Queue, Submit</li>
+        <li>Cluster Status, Profiling</li>
+      </ul>
+    </div>
+  </div>
+  <div class="grid2" style="margin-top:18px;">
+    <div class="box">
+      <h3>PostgreSQL</h3>
+      <ul>
+        <li><code>jobs</code> — metadata + scheduling decisions</li>
+        <li><code>profiling_results</code> — per-config durations</li>
+      </ul>
+    </div>
+    <div class="box">
+      <h3>NATS JetStream</h3>
+      <ul>
+        <li><code>jobs.submitted</code> — job ready to run</li>
+        <li><code>jobs.stop_requested</code> — stop/preempt</li>
+        <li><code>jobs.profiling_complete</code> — result</li>
+        <li><code>jobs.completed</code> — node freed up</li>
+      </ul>
+    </div>
+  </div>
+</div>
+
+<!-- Slide 3: Async Processes & Communication -->
+<div class="slide">
+  <h2>Async Processes &amp; Communication</h2>
+  <p>Both API and Worker are <span class="highlight">single-threaded asyncio</span> processes — concurrency via coroutines, not threads.</p>
+
+  <div class="grid2" style="margin-top:14px;">
+    <div class="box">
+      <h3 style="color:#99ccff;">API (FastAPI)</h3>
+      <ul>
+        <li>HTTP handlers — create, stop, resume, list</li>
+        <li><code>_profiling_listener</code> — awaits <code>jobs.profiling_complete</code>, stores result, re-schedules</li>
+        <li><code>_completed_listener</code> — awaits <code>jobs.completed</code>, schedules waiting jobs</li>
+        <li><code>_queue_watcher</code> — 60 s poll safety net</li>
+      </ul>
+      <p class="note" style="margin-top:8px;"><code>schedule_lock</code> (asyncio.Lock) serialises all scheduling decisions across coroutines.</p>
+    </div>
+    <div class="box">
+      <h3 style="color:#ffcc66;">Worker</h3>
+      <ul>
+        <li><code>_handle_job_submitted</code> — awaits <code>jobs.submitted</code>, enqueues job</li>
+        <li><code>_handle_stop_requested</code> — awaits <code>jobs.stop_requested</code>, sends SIGTERM</li>
+        <li><code>_handle_resume_requested</code> — awaits <code>jobs.resume</code></li>
+        <li><code>_job_runner</code> — dequeues and runs Docker containers concurrently</li>
+        <li><code>_run_job</code> — one task per container: exec, stream logs, report completion</li>
+      </ul>
+    </div>
+  </div>
+
+  <h3>Inter-process flow</h3>
+  <pre>HTTP request  →  API publishes NATS event  →  Worker picks up
+Worker finishes →  publishes completed/profiling_complete  →  API listener reacts
+All scheduling goes through schedule_lock  →  reads GPU usage from DB  →  assigns node</pre>
+</div>
+
+<!-- Slide 4: State Machine -->
+<div class="slide">
+  <h2>Job Lifecycle</h2>
+
+  <h3>Normal flow</h3>
+  <div class="flow">
+    <div class="state green">QUEUED</div><span class="arrow">→</span>
+    <div class="state yellow">PROFILING</div><span class="arrow">→</span>
+    <div class="state green">QUEUED</div><span class="arrow">→</span>
+    <div class="state blue">RUNNING</div><span class="arrow">→</span>
+    <div class="state green">SUCCEEDED</div>
+  </div>
+  <p class="sub" style="margin-bottom:10px;">After profiling one config the job is re-queued for a standard run. If no production node is free it waits in QUEUED (completed-event listener + 60 s fallback watcher).</p>
+
+  <h3>Stop</h3>
+  <div class="flow">
+    <div class="state blue">RUNNING</div><span class="arrow">→</span>
+    <div class="state red">PREEMPTED</div>
+    &nbsp;&nbsp;
+    <div class="state yellow">PROFILING</div><span class="arrow">→</span>
+    <div class="state red">PREEMPTED</div>
+    &nbsp;&nbsp;
+    <div class="state blue">RUNNING</div><span class="arrow">→</span>
+    <div class="state red">FAILED</div><span style="color:#555; font-size:0.8rem;">(non-zero exit)</span>
+  </div>
+
+  <h3>Resume (PREEMPTED or FAILED → QUEUED)</h3>
+  <div class="flow">
+    <div class="state green">QUEUED</div>
+    <span class="arrow">→</span>
+    <div class="state yellow">PROFILING</div><span style="color:#555; font-size:0.8rem;">(if configs remain)</span>
+    <span class="arrow">→</span>
+    <div class="state green">QUEUED</div>
+    <span class="arrow">→</span>
+    <div class="state blue">RUNNING</div><span style="color:#555; font-size:0.8rem;">(from checkpoint)</span>
+  </div>
+  <div class="flow" style="margin-top:4px;">
+    <div class="state green">QUEUED</div>
+    <span class="arrow">→</span>
+    <div class="state blue">RUNNING</div><span style="color:#555; font-size:0.8rem;">(all configs already profiled — from checkpoint)</span>
+  </div>
+</div>
+
+<!-- Slide 4: Profiling Scheduler -->
+<div class="slide">
+  <h2>Profiling Scheduler</h2>
+  <p>Goal: find the <span class="highlight">fastest GPU configuration</span> per job through incremental measurement.</p>
+
+  <div class="grid2" style="margin-top:14px;">
+    <div class="box">
+      <h3 style="color:#99ccff;">Exploration</h3>
+      <ul>
+        <li>Enumerate configs as cartesian product of profiling-node GPU counts</li>
+        <li>Intersect with configs production nodes can run</li>
+        <li>Sort by <span class="highlight">total GPU count ascending</span></li>
+        <li>Pick next un-profiled config → run on profiling node</li>
+        <li>Record <code>(gpu_config, duration_seconds)</code></li>
+      </ul>
+    </div>
+    <div class="box">
+      <h3 style="color:#aaffaa;">Exploitation</h3>
+      <ul>
+        <li>All configs profiled → pick first with available production node</li>
+        <li>Duration recorded but not yet used for config ranking</li>
+        <li>Warmup-aware estimation: drop first inter-step interval, average the rest</li>
+      </ul>
+    </div>
+  </div>
+
+  <h3>Profiling execution</h3>
+  <pre>MAX_STEPS = profiling_epochs_no   (default 100)
+LOG_INTERVAL = per-job setting    (default 50 → 2 intervals, configurable lower)
+Checkpoint dir: data/checkpoints/{id}/.profiling/  (isolated, cleared each run)</pre>
+
+  <p class="note">Worker reports result via <code>jobs.profiling_complete</code> → API re-queues job. When a job completes (<code>jobs.completed</code>), the API immediately tries to schedule waiting jobs; 60 s watcher as safety net.</p>
+</div>
+
+<!-- Slide 5: Status -->
+<div class="slide">
+  <h2>Implementation Status</h2>
+  <div class="grid2">
+    <div>
+      <h3>Done</h3>
+      <ul>
+        <li><span class="tag">✓</span> Full job lifecycle (submit, stop, resume from checkpoint)</li>
+        <li><span class="tag">✓</span> Incremental GPU profiling with warmup-aware estimation</li>
+        <li><span class="tag">✓</span> Event-driven scheduling with concurrency safety</li>
+        <li><span class="tag">✓</span> Simple React frontend (purely AI-generated)</li>
+      </ul>
+    </div>
+    <div>
+      <h3>Not yet</h3>
+      <ul>
+        <li><span class="tag red">✗</span> Actual deadline and performance aware scheduling! </li>
+        <li><span class="tag red">✗</span> Integration with actual GPUs </li>
+      </ul>
+      <h3 style="margin-top:24px;">Tests (purely AI-generated)</h3>
+      <ul>
+        <li>Backend: pytest + mypy strict (102 tests)</li>
+        <li>Worker: pytest (mocked Docker/NATS)</li>
+        <li>Infra: smoke_test.sh (full-stack E2E)</li>
+      </ul>
+    </div>
+  </div>
+</div>
+
+<!-- Navigation -->
+<nav class="nav">
+  <button onclick="prev()">← prev</button>
+  <span class="counter" id="counter">1 / 6</span>
+  <button onclick="next()">next →</button>
+</nav>
+
+<script>
+  const slides = document.querySelectorAll('.slide');
+  let cur = 0;
+
+  function show(n) {
+    slides[cur].classList.remove('active');
+    cur = (n + slides.length) % slides.length;
+    slides[cur].classList.add('active');
+    document.getElementById('counter').textContent = `${cur + 1} / ${slides.length}`;
+  }
+
+  function next() { show(cur + 1); }
+  function prev() { show(cur - 1); }
+
+  document.addEventListener('keydown', e => {
+    if (e.key === 'ArrowRight' || e.key === 'ArrowDown') next();
+    if (e.key === 'ArrowLeft'  || e.key === 'ArrowUp')   prev();
+  });
+</script>
+</body>
+</html>

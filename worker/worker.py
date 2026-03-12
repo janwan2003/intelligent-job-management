@@ -13,6 +13,7 @@ import os
 import re
 import signal
 import subprocess
+import time
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -29,12 +30,14 @@ from constants import (
     CONSUMER_STOP,
     CONSUMER_SUBMITTED,
     CONTAINER_NAME_PREFIX,
+    DEFAULT_LOG_INTERVAL,
     DEFAULT_NATS_URL,
     DEFAULT_PROFILING_STEPS,
     DOCKER_CMD_TIMEOUT_SECONDS,
     DOCKER_STOP_GRACE_SECONDS,
     JOB_ID_DISPLAY_LENGTH,
     NATS_STREAM_NAME,
+    NATS_SUBJECT_COMPLETED,
     NATS_SUBJECT_PROFILING_COMPLETE,
     NATS_SUBJECT_RESUME_REQUESTED,
     NATS_SUBJECT_STOP_REQUESTED,
@@ -427,7 +430,8 @@ class JobWorker:
             conn = await self.connect_db()
             async with conn.cursor() as cur:
                 await cur.execute(
-                    "SELECT image, command, status, is_profiling_run, profiling_epochs_no, exit_code "
+                    "SELECT image, command, status, is_profiling_run, profiling_epochs_no, "
+                    "exit_code, log_interval, epochs_total, assigned_node "
                     "FROM jobs WHERE id = %s",
                     (job_id,),
                 )
@@ -444,6 +448,9 @@ class JobWorker:
                     is_profiling_run,
                     profiling_epochs_no,
                     prev_exit_code,
+                    log_interval,
+                    epochs_total,
+                    assigned_node,
                 ) = result
 
             # Check if job was cancelled while in the queue
@@ -452,6 +459,15 @@ class JobWorker:
                     "Job %s status is %s, skipping execution",
                     job_id[:JOB_ID_DISPLAY_LENGTH],
                     current_status,
+                )
+                return
+
+            # If a profiling node was busy at scheduling time, assigned_node is NULL.
+            # Skip execution — the queue watcher will retry once a node is free.
+            if is_profiling_run and assigned_node is None:
+                logger.info(
+                    "Job %s has no assigned node for profiling run, skipping — queue watcher will retry",
+                    job_id[:JOB_ID_DISPLAY_LENGTH],
                 )
                 return
 
@@ -516,11 +532,14 @@ class JobWorker:
                 )
                 await conn.commit()
 
-            # For profiling runs, limit the training to profiling_epochs_no steps
+            # Pass environment variables to the container
             env_vars: dict[str, str] = {}
+            env_vars["LOG_INTERVAL"] = str(log_interval or DEFAULT_LOG_INTERVAL)
             if is_profiling_run:
                 max_steps = profiling_epochs_no or DEFAULT_PROFILING_STEPS
                 env_vars["MAX_STEPS"] = str(max_steps)
+            elif epochs_total:
+                env_vars["MAX_STEPS"] = str(epochs_total)
 
             # Build docker run command
             docker_cmd = self.build_docker_cmd(
@@ -553,6 +572,9 @@ class JobWorker:
             # Log file for this job
             log_path = runs_local / OUTPUT_LOG_FILENAME
 
+            # Collect per-step timestamps for warmup-aware profiling duration
+            step_timestamps: list[tuple[int, float]] = []
+
             # Stream output: write to log file, parse progress, log to console
             async def stream_output() -> None:
                 loop = asyncio.get_event_loop()
@@ -573,8 +595,11 @@ class JobWorker:
                             # Parse progress
                             match = PROGRESS_RE.search(stripped)
                             if match:
-                                progress = f"{match.group(1)}/{match.group(2)}"
+                                step_num = int(match.group(1))
+                                progress = f"{step_num}/{match.group(2)}"
                                 await self._update_progress(conn, job_id, progress)
+                                if is_profiling_run:
+                                    step_timestamps.append((step_num, time.monotonic()))
                 except Exception as e:
                     logger.debug("Output streaming ended: %s", e)
 
@@ -622,7 +647,7 @@ class JobWorker:
                 # Update job status based on exit code
                 if exit_code == 0:
                     # Check if this was a profiling run
-                    is_profiling = await self._check_and_report_profiling(conn, job_id, run_start_time)
+                    is_profiling = await self._check_and_report_profiling(conn, job_id, run_start_time, step_timestamps)
                     if is_profiling:
                         logger.info(
                             "Profiling run for job %s complete, backend will re-schedule",
@@ -665,14 +690,59 @@ class JobWorker:
             self.running_jobs.pop(job_id, None)
             if conn:
                 await conn.close()
+            # Notify the API that a node just freed up
+            await self._publish_completed(job_id)
+
+    async def _publish_completed(self, job_id: str) -> None:
+        """Publish jobs.completed so the API can schedule waiting jobs immediately."""
+        if self.js:
+            try:
+                await self.js.publish(
+                    NATS_SUBJECT_COMPLETED,
+                    json.dumps({"job_id": job_id}).encode(),
+                )
+            except Exception:
+                logger.warning("Failed to publish jobs.completed for %s", job_id[:JOB_ID_DISPLAY_LENGTH])
+
+    @staticmethod
+    def _compute_profiling_duration(
+        step_timestamps: list[tuple[int, float]] | None,
+        run_start_time: datetime,
+    ) -> float:
+        """Compute profiling duration, excluding the first interval as warmup.
+
+        The first interval (covering the initial logged steps) includes GPU
+        warm-up overhead.  Drop it, average the rest, extrapolate to total steps.
+        Falls back to wall-clock duration when fewer than 3 timestamps exist.
+        """
+        if step_timestamps and len(step_timestamps) >= 3:
+            intervals = [step_timestamps[i + 1][1] - step_timestamps[i][1] for i in range(len(step_timestamps) - 1)]
+            steady = intervals[1:]  # drop first interval (warmup)
+            mean_step_time = sum(steady) / len(steady)
+            total_steps = step_timestamps[-1][0]
+            logger.info(
+                "Profiling: dropped warmup interval (%.4fs), steady mean=%.4fs/step",
+                intervals[0],
+                mean_step_time,
+            )
+            return mean_step_time * total_steps
+        # Fallback: wall-clock time
+        return (datetime.now(UTC) - run_start_time).total_seconds()
 
     async def _check_and_report_profiling(
-        self, conn: psycopg.AsyncConnection[Any], job_id: str, run_start_time: datetime
+        self,
+        conn: psycopg.AsyncConnection[Any],
+        job_id: str,
+        run_start_time: datetime,
+        step_timestamps: list[tuple[int, float]] | None = None,
     ) -> bool:
         """Check if this was a profiling run and report results via NATS.
 
         Returns ``True`` if a profiling result was published (backend handles
         re-scheduling).  Returns ``False`` for standard runs.
+
+        When *step_timestamps* are available, the first interval is
+        excluded as warmup to avoid GPU warm-up noise.
         """
         async with conn.cursor() as cur:
             await cur.execute(
@@ -684,7 +754,8 @@ class JobWorker:
         if not meta or not meta[0]:
             return False
 
-        duration = (datetime.now(UTC) - run_start_time).total_seconds()
+        duration = self._compute_profiling_duration(step_timestamps, run_start_time)
+        total_steps = step_timestamps[-1][0] if step_timestamps else None
         payload = {
             "job_id": job_id,
             "gpu_config": meta[1],
@@ -698,10 +769,12 @@ class JobWorker:
                 json.dumps(payload).encode(),
             )
             logger.info(
-                "Published profiling result for job %s: %s = %.1fs",
+                "Published profiling result for job %s: %s = %.1fs (steps=%s, warmup_excluded=%s)",
                 job_id[:JOB_ID_DISPLAY_LENGTH],
                 meta[1],
                 duration,
+                total_steps,
+                bool(step_timestamps and len(step_timestamps) >= 3),
             )
         return True
 

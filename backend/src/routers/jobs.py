@@ -22,8 +22,9 @@ from src.constants import (
     RUNS_DIR,
     STOPPABLE_STATUSES,
     JobStatus,
+    nats_job_payload,
 )
-from src.models import Job, JobCreate, _row_to_job
+from src.models import Job, JobCreate
 from src.profiling import scheduler
 from src.state import require_js
 
@@ -60,14 +61,14 @@ async def create_job(job_request: JobCreate) -> Job:
     job_id = str(uuid4())
     now = datetime.now(UTC)
 
-    async with state.get_conn() as conn:
+    async with state.schedule_lock, state.get_conn() as conn:
         # Insert job into database
         await conn.execute(
             """
             INSERT INTO jobs (id, image, command, status, created_at, updated_at,
                               priority, deadline, batch_size, epochs_total,
-                              profiling_epochs_no, required_memory_gb)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                              profiling_epochs_no, required_memory_gb, log_interval)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             """,
             (
                 job_id,
@@ -82,17 +83,22 @@ async def create_job(job_request: JobCreate) -> Job:
                 job_request.epochs_total,
                 job_request.profiling_epochs_no,
                 job_request.required_memory_gb,
+                job_request.log_interval,
             ),
         )
 
         # Schedule: assign profiling config (or best config if already profiled)
         schedule_result = await scheduler.schedule_job(conn, job_id)
 
-    # Publish job submission event to NATS
-    await jetstream.publish(
-        NATS_SUBJECT_SUBMITTED,
-        json.dumps({"job_id": job_id}).encode(),
-    )
+    if schedule_result.node_id is not None:
+        # Notify the worker immediately — a node is ready
+        await jetstream.publish(
+            NATS_SUBJECT_SUBMITTED,
+            nats_job_payload(job_id),
+        )
+    else:
+        # No node available right now; queue watcher will start it when one frees up
+        logger.info("No node available for new job %s — leaving QUEUED, watcher will retry", job_id[:8])
 
     return Job(
         id=job_id,
@@ -109,8 +115,8 @@ async def create_job(job_request: JobCreate) -> Job:
         required_memory_gb=job_request.required_memory_gb,
         assigned_node=schedule_result.node_id,
         assigned_gpu_config=schedule_result.gpu_config,
-        estimated_duration=schedule_result.estimated_duration,
         is_profiling_run=schedule_result.is_profiling_run,
+        log_interval=job_request.log_interval,
     )
 
 
@@ -128,7 +134,7 @@ async def list_jobs(
         )
         rows = await cur.fetchall()
 
-    return [_row_to_job(row) for row in rows]
+    return [Job.model_validate(row) for row in rows]
 
 
 @router.get("/jobs/{job_id}", response_model=Job)
@@ -142,7 +148,7 @@ async def get_job(job_id: str) -> Job:
     if not row:
         raise HTTPException(status_code=404, detail="Job not found")
 
-    return _row_to_job(row)
+    return Job.model_validate(row)
 
 
 @router.post("/jobs/{job_id}/stop", status_code=202)
@@ -178,7 +184,7 @@ async def stop_job(job_id: str) -> dict[str, str]:
     # RUNNING/PROFILING jobs: publish stop request to worker via NATS
     ack = await jetstream.publish(
         NATS_SUBJECT_STOP_REQUESTED,
-        json.dumps({"job_id": job_id}).encode(),
+        nats_job_payload(job_id),
     )
     logger.debug("NATS ack - seq: %s, duplicate: %s", ack.seq, ack.duplicate)
 
@@ -190,13 +196,12 @@ async def resume_job(job_id: str) -> dict[str, str]:
     """Request job to be resumed."""
     jetstream = require_js()
 
-    async with state.get_conn() as conn:
+    async with state.schedule_lock, state.get_conn() as conn:
         # Atomic: try to mark PREEMPTED/FAILED → QUEUED
         now = datetime.now(UTC)
-        placeholders = ", ".join(["%s"] * len(RESUMABLE_STATUSES))
         cur = await conn.execute(
-            f"UPDATE jobs SET status = %s, updated_at = %s WHERE id = %s AND status IN ({placeholders}) RETURNING id",  # noqa: S608
-            (JobStatus.QUEUED, now, job_id, *RESUMABLE_STATUSES),
+            "UPDATE jobs SET status = %s, updated_at = %s WHERE id = %s AND status = ANY(%s) RETURNING id",
+            (JobStatus.QUEUED, now, job_id, list(RESUMABLE_STATUSES)),
         )
         if not await cur.fetchone():
             # Check if job exists
@@ -210,14 +215,16 @@ async def resume_job(job_id: str) -> dict[str, str]:
             )
 
         # Re-schedule: profiles one new config, or runs on best if all profiled
-        await scheduler.schedule_job(conn, job_id)
+        schedule_result = await scheduler.schedule_job(conn, job_id)
 
-    # Publish resume request to NATS
-    await jetstream.publish(
-        NATS_SUBJECT_SUBMITTED,
-        json.dumps({"job_id": job_id}).encode(),
-    )
-    logger.info("Resumed job %s (set to QUEUED, will profile next config)", job_id[:8])
+    if schedule_result.node_id is not None:
+        await jetstream.publish(
+            NATS_SUBJECT_SUBMITTED,
+            nats_job_payload(job_id),
+        )
+        logger.info("Resumed job %s (node=%s)", job_id[:8], schedule_result.node_id)
+    else:
+        logger.info("Resumed job %s — no node available, watcher will retry", job_id[:8])
 
     return {"status": "resume_requested", "job_id": job_id}
 
@@ -238,7 +245,7 @@ async def delete_job(job_id: str) -> None:
                 js = require_js()
                 await js.publish(
                     NATS_SUBJECT_STOP_REQUESTED,
-                    json.dumps({"job_id": job_id}).encode(),
+                    nats_job_payload(job_id),
                 )
             except Exception:
                 logger.warning("Failed to publish stop event for job %s before delete", job_id[:8])

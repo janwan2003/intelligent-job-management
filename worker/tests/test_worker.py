@@ -333,6 +333,9 @@ def _make_fake_worker_db(
                     is_profiling_run,
                     100,
                     prev_exit_code,
+                    50,  # log_interval
+                    10000,  # epochs_total
+                    "node-1",  # assigned_node
                 )
             if "SELECT status" in self._last_query:
                 return (JobStatus.PROFILING if is_profiling_run else JobStatus.RUNNING,)
@@ -435,15 +438,16 @@ class TestStatusTransitions:
 
             await worker._run_job("job-prof-002")
 
-        # Check that the docker command includes MAX_STEPS
+        # Check that the docker command includes MAX_STEPS and LOG_INTERVAL
         cmd = mock_popen.call_args[0][0]
-        assert "-e" in cmd, "Expected -e flag for environment variables"
-        e_idx = cmd.index("-e")
-        assert cmd[e_idx + 1].startswith("MAX_STEPS="), f"Expected MAX_STEPS env var, got: {cmd[e_idx + 1]}"
+        e_indices = [i for i, c in enumerate(cmd) if c == "-e"]
+        env_pairs = [cmd[i + 1] for i in e_indices]
+        assert "MAX_STEPS=100" in env_pairs
+        assert "LOG_INTERVAL=50" in env_pairs
 
     @pytest.mark.asyncio
-    async def test_standard_run_no_max_steps_env(self, tmp_path: Path) -> None:
-        """Standard (non-profiling) runs should NOT pass MAX_STEPS."""
+    async def test_standard_run_passes_env_vars(self, tmp_path: Path) -> None:
+        """Standard runs pass LOG_INTERVAL and MAX_STEPS (from epochs_total)."""
         worker, _ = _make_fake_worker_db(is_profiling_run=False)
         worker.host_root = str(tmp_path)
         worker.host_project_root = str(tmp_path)
@@ -458,7 +462,10 @@ class TestStatusTransitions:
             await worker._run_job("job-run-002")
 
         cmd = mock_popen.call_args[0][0]
-        assert "-e" not in cmd, f"Standard run should NOT have -e flag, got: {cmd}"
+        e_indices = [i for i, c in enumerate(cmd) if c == "-e"]
+        env_pairs = [cmd[i + 1] for i in e_indices]
+        assert "LOG_INTERVAL=50" in env_pairs
+        assert "MAX_STEPS=10000" in env_pairs
 
     @pytest.mark.asyncio
     async def test_profiling_run_uses_isolated_checkpoint_dir(self, tmp_path: Path) -> None:
@@ -952,6 +959,9 @@ class TestRunJobEdgeCases:
                     False,
                     100,
                     None,
+                    50,  # log_interval
+                    10000,  # epochs_total
+                    "node-1",  # assigned_node
                 ),
             ],
         }
@@ -1005,6 +1015,9 @@ class TestRunJobEdgeCases:
                         False,
                         100,
                         0,
+                        50,  # log_interval
+                        10000,  # epochs_total
+                        "node-1",  # assigned_node
                     )
                 if "SELECT status" in self._last_query:
                     return (JobStatus.PREEMPTED,)  # Already preempted
@@ -1153,6 +1166,7 @@ class TestCheckAndReportProfiling:
             fake_conn,  # type: ignore[arg-type]
             "job-prof-report",
             datetime.now(UTC),
+            step_timestamps=[],
         )
 
         assert result is True
@@ -1217,6 +1231,37 @@ class TestCheckAndReportProfiling:
         )
 
         assert result is True
+
+    @pytest.mark.asyncio
+    async def test_warmup_excluded_from_duration(self) -> None:
+        """First interval (warmup) should be dropped, rest averaged."""
+        responses: dict[str, list[tuple[object, ...] | None]] = {
+            "is_profiling_run": [(True, {"A40": 1}, "node-1")],
+        }
+        fake_conn = FlexFakeConn(responses)
+        worker = JobWorker()
+        worker.js = AsyncMock()
+
+        # 4 timestamps → 3 intervals; first interval (2.0s) is warmup
+        base = 1000.0
+        step_timestamps = [
+            (10, base),
+            (20, base + 2.0),  # interval 0: 2.0s (warmup, dropped)
+            (30, base + 2.5),  # interval 1: 0.5s
+            (40, base + 3.0),  # interval 2: 0.5s
+        ]
+
+        result = await worker._check_and_report_profiling(
+            fake_conn,  # type: ignore[arg-type]
+            "job-warmup",
+            datetime.now(UTC),
+            step_timestamps=step_timestamps,
+        )
+
+        assert result is True
+        payload = json.loads(worker.js.publish.call_args[0][1].decode())
+        # steady mean = 0.5s, total_steps = 40 → 0.5 * 40 = 20.0
+        assert abs(payload["duration_seconds"] - 20.0) < 0.01
 
 
 # ---------------------------------------------------------------------------

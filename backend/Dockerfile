@@ -19,6 +19,7 @@ RUN uv sync --no-dev
 
 # Copy application code
 COPY backend/src/ ./src/
+COPY backend/schema.sql ./schema.sql
 COPY shared/ ./shared/
 
 EXPOSE 8000

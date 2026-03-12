@@ -24,3 +24,12 @@ NATS_SUBJECTS_PATTERN = "jobs.>"
 NATS_SUBJECT_SUBMITTED = "jobs.submitted"
 NATS_SUBJECT_STOP_REQUESTED = "jobs.stop_requested"
 NATS_SUBJECT_PROFILING_COMPLETE = "jobs.profiling_complete"
+NATS_SUBJECT_COMPLETED = "jobs.completed"
+
+# Defaults shared by both backend and worker
+DEFAULT_LOG_INTERVAL = 50
+DEFAULT_PROFILING_STEPS = 100
+
+# Data directories & file names
+RUNS_DIR = "runs"
+OUTPUT_LOG_FILENAME = "output.log"

@@ -8,40 +8,14 @@ import { useCreateJob } from "@/api/hooks";
 import { FEATURE_SUBMIT_EXTENDED_FIELDS } from "@/config/features";
 import {
   DEFAULT_IMAGE,
-  DEFAULT_COMMAND,
   DEFAULT_JOB_PRIORITY,
   DEFAULT_EPOCHS_TOTAL,
   DEFAULT_PROFILING_STEPS,
+  DEFAULT_LOG_INTERVAL,
 } from "@/config/constants";
 import { toast } from "sonner";
 import { HelpCircle } from "lucide-react";
 
-/** Split a command string respecting single and double quotes. */
-function shellSplit(input: string): string[] {
-  const tokens: string[] = [];
-  let current = "";
-  let quote: string | null = null;
-  for (const ch of input) {
-    if (quote) {
-      if (ch === quote) {
-        quote = null;
-      } else {
-        current += ch;
-      }
-    } else if (ch === '"' || ch === "'") {
-      quote = ch;
-    } else if (ch === " ") {
-      if (current) {
-        tokens.push(current);
-        current = "";
-      }
-    } else {
-      current += ch;
-    }
-  }
-  if (current) tokens.push(current);
-  return tokens;
-}
 
 function FieldHint({ text }: { text: string }) {
   return (
@@ -61,14 +35,12 @@ export default function SubmitJob() {
   const createJob = useCreateJob();
 
   const [image, setImage] = useState(DEFAULT_IMAGE);
-  const [command, setCommand] = useState(DEFAULT_COMMAND);
   const [priority, setPriority] = useState(DEFAULT_JOB_PRIORITY);
   const [deadlineDate, setDeadlineDate] = useState("");
   const [deadlineTime, setDeadlineTime] = useState("23:59");
-  const [batchSize, setBatchSize] = useState("");
   const [profilingEpochsNo, setProfilingEpochsNo] = useState(DEFAULT_PROFILING_STEPS);
   const [epochsTotal, setEpochsTotal] = useState(DEFAULT_EPOCHS_TOTAL);
-  const [requiredMemoryGb, setRequiredMemoryGb] = useState("");
+  const [logInterval, setLogInterval] = useState(DEFAULT_LOG_INTERVAL);
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
@@ -78,23 +50,14 @@ export default function SubmitJob() {
       return;
     }
 
-    if (!command.trim()) {
-      toast.error("Command is required");
-      return;
-    }
-
-    const commandArray = shellSplit(command);
-
     createJob.mutate(
       {
         image: image.trim(),
-        command: commandArray,
         Priority: priority,
         epochsTotal: epochsTotal,
         profilingEpochsNo: profilingEpochsNo,
+        logInterval: logInterval,
         ...(deadlineDate && { deadline: `${deadlineDate}T${deadlineTime || "23:59"}:00` }),
-        ...(batchSize && { batchSize: Number(batchSize) }),
-        ...(requiredMemoryGb && { requiredMemoryGb: Number(requiredMemoryGb) }),
       },
       {
         onSuccess: () => {
@@ -119,10 +82,7 @@ export default function SubmitJob() {
         <form onSubmit={handleSubmit} className="space-y-5">
           {/* Required: Container & Execution */}
           <div className="rounded-lg border border-border bg-card p-5 space-y-4">
-            <div className="flex items-center justify-between">
-              <h2 className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">Container</h2>
-              <span className="text-xs text-destructive">* Required</span>
-            </div>
+            <h2 className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">Container</h2>
 
             {/* Docker Image */}
             <div className="space-y-1.5">
@@ -140,23 +100,6 @@ export default function SubmitJob() {
               />
             </div>
 
-            {/* Command */}
-            <div className="space-y-1.5">
-              <Label htmlFor="command" className="text-xs">
-                Command <span className="text-destructive">*</span>
-                <FieldHint text="The command to execute inside the container. Overrides the image's CMD." />
-              </Label>
-              <Input
-                id="command"
-                value={command}
-                onChange={(e) => setCommand(e.target.value)}
-                placeholder="e.g. python -u train.py"
-                className="font-mono text-sm"
-              />
-              <p className="text-xs text-muted-foreground">
-                Space-separated command and arguments. Use quotes for args with spaces.
-              </p>
-            </div>
           </div>
 
           {/* Training Parameters */}
@@ -181,23 +124,6 @@ export default function SubmitJob() {
                   />
                 </div>
 
-                {/* Batch Size */}
-                <div className="space-y-1.5">
-                  <Label htmlFor="batchSize" className="text-xs">
-                    Batch Size
-                    <FieldHint text="Passed as BATCH_SIZE env var. Your training script should read os.environ.get('BATCH_SIZE') to configure batch size." />
-                  </Label>
-                  <Input
-                    id="batchSize"
-                    type="number"
-                    min={1}
-                    value={batchSize}
-                    onChange={(e) => setBatchSize(e.target.value)}
-                    placeholder="e.g. 2048"
-                    className="font-mono text-sm"
-                  />
-                </div>
-
                 {/* Profiling Steps */}
                 <div className="space-y-1.5">
                   <Label htmlFor="profilingEpochsNo" className="text-xs">
@@ -214,19 +140,18 @@ export default function SubmitJob() {
                   />
                 </div>
 
-                {/* Required VRAM */}
+                {/* Log Interval */}
                 <div className="space-y-1.5">
-                  <Label htmlFor="requiredMemoryGb" className="text-xs">
-                    Required VRAM (GB)
-                    <FieldHint text="Minimum GPU memory needed. The scheduler skips nodes with less VRAM than this." />
+                  <Label htmlFor="logInterval" className="text-xs">
+                    Log Interval
+                    <FieldHint text="Steps between progress log lines. Passed as LOG_INTERVAL env var. Lower values give more frequent progress updates and better profiling accuracy." />
                   </Label>
                   <Input
-                    id="requiredMemoryGb"
+                    id="logInterval"
                     type="number"
                     min={1}
-                    value={requiredMemoryGb}
-                    onChange={(e) => setRequiredMemoryGb(e.target.value)}
-                    placeholder="e.g. 48"
+                    value={logInterval}
+                    onChange={(e) => setLogInterval(Number(e.target.value))}
                     className="font-mono text-sm"
                   />
                 </div>

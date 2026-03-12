@@ -65,6 +65,7 @@ class Trainer:
         self.current_step = 0
         self.total_steps = int(os.environ.get("MAX_STEPS", "10000"))
         self.checkpoint_interval = 200
+        self.log_interval = int(os.environ.get("LOG_INTERVAL", "50"))
 
         # Register signal handlers
         signal.signal(signal.SIGTERM, self._handle_signal)
@@ -144,7 +145,7 @@ class Trainer:
             self.current_step += 1
 
             # Print progress
-            if self.current_step % 50 == 0:
+            if self.current_step % self.log_interval == 0:
                 logger.info(
                     "Step %d/%d - Loss: %.6f",
                     self.current_step,

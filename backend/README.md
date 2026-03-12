@@ -1,6 +1,6 @@
 # Backend
 
-FastAPI backend with Python 3.12 and UV.
+FastAPI backend with Python 3.13 and uv.
 
 ## Setup
 

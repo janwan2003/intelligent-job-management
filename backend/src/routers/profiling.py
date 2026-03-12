@@ -20,15 +20,5 @@ async def get_profiling_results(job_id: str) -> list[dict[str, Any]]:
                ORDER BY duration_seconds ASC""",
             (job_id,),
         )
-        rows = await cur.fetchall()
-
-    return [
-        {
-            "id": r[0],
-            "gpu_config": r[1],
-            "node_id": r[2],
-            "duration_seconds": r[3],
-            "created_at": r[4].isoformat() if r[4] else None,
-        }
-        for r in rows
-    ]
+        cols = ("id", "gpu_config", "node_id", "duration_seconds", "created_at")
+        return [dict(zip(cols, row, strict=True)) for row in await cur.fetchall()]
