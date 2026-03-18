@@ -4,7 +4,7 @@ from datetime import datetime
 from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
-from shared.constants import DEFAULT_LOG_INTERVAL, DEFAULT_PROFILING_STEPS
+from shared.constants import DEFAULT_PROFILING_EPOCHS
 
 from src.constants import (
     DEFAULT_EPOCHS_TOTAL,
@@ -80,13 +80,12 @@ class JobCreate(BaseModel):
     priority: int = Field(default=DEFAULT_JOB_PRIORITY, alias="Priority", ge=PRIORITY_MIN, le=PRIORITY_MAX)
     deadline: datetime | None = None
     batch_size: int | None = Field(default=None, alias="batchSize")
-    profiling_epochs_no: int = Field(default=DEFAULT_PROFILING_STEPS, alias="profilingEpochsNo", ge=1)
+    profiling_epochs_no: int = Field(default=DEFAULT_PROFILING_EPOCHS, alias="profilingEpochsNo", ge=1)
     epochs_total: int = Field(default=DEFAULT_EPOCHS_TOTAL, alias="epochsTotal", ge=1)
     required_memory_gb: int | None = Field(default=None, alias="requiredMemoryGb")
-    log_interval: int = Field(default=DEFAULT_LOG_INTERVAL, alias="logInterval", ge=1)
 
 
-_DB_NULLABLE_DEFAULTS = ("priority", "epochs_total", "profiling_epochs_no", "log_interval")
+_DB_NULLABLE_DEFAULTS = ("priority", "epochs_total", "profiling_epochs_no")
 
 
 class Job(BaseModel):
@@ -105,12 +104,11 @@ class Job(BaseModel):
     deadline: datetime | None = None
     batch_size: int | None = None
     epochs_total: int = DEFAULT_EPOCHS_TOTAL
-    profiling_epochs_no: int = DEFAULT_PROFILING_STEPS
+    profiling_epochs_no: int = DEFAULT_PROFILING_EPOCHS
     assigned_node: str | None = None
     required_memory_gb: int | None = None
     assigned_gpu_config: dict[str, int] | None = None
     is_profiling_run: bool = False
-    log_interval: int = DEFAULT_LOG_INTERVAL
 
     @model_validator(mode="before")
     @classmethod

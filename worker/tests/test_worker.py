@@ -75,14 +75,14 @@ class TestBuildDockerCmd:
             runs_host_path="/tmp/runs",
             image="test:latest",
             command=["train.py"],
-            env_vars={"LOG_INTERVAL": "50", "MAX_STEPS": "100"},
+            env_vars={"LOG_INTERVAL": "50", "EPOCHS_TOTAL": "100"},
         )
         env_pairs = []
         for i, arg in enumerate(cmd):
             if arg == "-e":
                 env_pairs.append(cmd[i + 1])
         assert "LOG_INTERVAL=50" in env_pairs
-        assert "MAX_STEPS=100" in env_pairs
+        assert "EPOCHS_TOTAL=100" in env_pairs
 
     def test_none_env_vars(self) -> None:
         cmd = JobWorker.build_docker_cmd(
@@ -102,14 +102,14 @@ class TestBuildDockerCmd:
 
 
 class TestProgressRegex:
-    def test_matches_step_pattern(self) -> None:
-        m = PROGRESS_RE.search("Step 50/10000")
+    def test_matches_epoch_pattern(self) -> None:
+        m = PROGRESS_RE.search("Epoch 50/10000")
         assert m is not None
         assert m.group(1) == "50"
         assert m.group(2) == "10000"
 
     def test_matches_with_prefix(self) -> None:
-        m = PROGRESS_RE.search("[Job abc123] Step 100/5000")
+        m = PROGRESS_RE.search("[Job abc123] Epoch 100/5000")
         assert m is not None
         assert m.group(1) == "100"
 
@@ -200,21 +200,25 @@ class TestPrepareCheckpointDir:
 
 class TestBuildEnvVars:
     def test_profiling_run(self) -> None:
-        job = {"is_profiling_run": True, "log_interval": 25, "profiling_epochs_no": 50, "epochs_total": 10000}
+        job = {"is_profiling_run": True, "profiling_epochs_no": 5, "epochs_total": 20, "batch_size": None}
         env = JobWorker._build_env_vars(job)
-        assert env["LOG_INTERVAL"] == "25"
-        assert env["MAX_STEPS"] == "50"
+        assert env["EPOCHS_TOTAL"] == "5"
+        assert "BATCH_SIZE" not in env
 
     def test_standard_run(self) -> None:
-        job = {"is_profiling_run": False, "log_interval": 50, "profiling_epochs_no": 100, "epochs_total": 5000}
+        job = {"is_profiling_run": False, "profiling_epochs_no": 2, "epochs_total": 20, "batch_size": None}
         env = JobWorker._build_env_vars(job)
-        assert env["LOG_INTERVAL"] == "50"
-        assert env["MAX_STEPS"] == "5000"
+        assert env["EPOCHS_TOTAL"] == "20"
 
     def test_standard_run_no_epochs(self) -> None:
-        job = {"is_profiling_run": False, "log_interval": 50, "profiling_epochs_no": 100, "epochs_total": None}
+        job = {"is_profiling_run": False, "profiling_epochs_no": 2, "epochs_total": None, "batch_size": None}
         env = JobWorker._build_env_vars(job)
-        assert "MAX_STEPS" not in env
+        assert "EPOCHS_TOTAL" not in env
+
+    def test_batch_size_passed(self) -> None:
+        job = {"is_profiling_run": False, "profiling_epochs_no": 2, "epochs_total": 20, "batch_size": 64}
+        env = JobWorker._build_env_vars(job)
+        assert env["BATCH_SIZE"] == "64"
 
 
 # ---------------------------------------------------------------------------
@@ -262,10 +266,10 @@ def _make_job_dict(
         "command": ["python", "train.py"],
         "status": status,
         "is_profiling_run": is_profiling_run,
-        "profiling_epochs_no": 100,
+        "profiling_epochs_no": 3,
         "exit_code": prev_exit_code,
-        "log_interval": 50,
-        "epochs_total": 10000,
+        "epochs_total": 20,
+        "batch_size": None,
         "assigned_node": "node-1",
         "assigned_gpu_config": {"A40": 2},
     }
@@ -403,8 +407,8 @@ class TestStatusTransitions:
         )
 
     @pytest.mark.asyncio
-    async def test_profiling_run_sets_max_steps_env(self, tmp_path: Path) -> None:
-        """Profiling runs should pass MAX_STEPS env var to docker."""
+    async def test_profiling_run_sets_epochs_total_env(self, tmp_path: Path) -> None:
+        """Profiling runs should pass EPOCHS_TOTAL env var to docker."""
         worker, _ = _make_fake_worker_db(is_profiling_run=True)
         worker.host_root = str(tmp_path)
         worker.host_project_root = str(tmp_path)
@@ -420,11 +424,11 @@ class TestStatusTransitions:
         cmd = mock_popen.call_args[0][0]
         env_idx = [i for i, c in enumerate(cmd) if c == "-e"]
         env_vals = [cmd[i + 1] for i in env_idx]
-        assert "MAX_STEPS=100" in env_vals
+        assert "EPOCHS_TOTAL=3" in env_vals
 
     @pytest.mark.asyncio
     async def test_standard_run_passes_env_vars(self, tmp_path: Path) -> None:
-        """Standard runs pass LOG_INTERVAL and MAX_STEPS (from epochs_total)."""
+        """Standard runs pass LOG_INTERVAL and EPOCHS_TOTAL (from epochs_total)."""
         worker, _ = _make_fake_worker_db(is_profiling_run=False)
         worker.host_root = str(tmp_path)
         worker.host_project_root = str(tmp_path)
@@ -440,8 +444,7 @@ class TestStatusTransitions:
         cmd = mock_popen.call_args[0][0]
         env_idx = [i for i, c in enumerate(cmd) if c == "-e"]
         env_vals = [cmd[i + 1] for i in env_idx]
-        assert "LOG_INTERVAL=50" in env_vals
-        assert "MAX_STEPS=10000" in env_vals
+        assert "EPOCHS_TOTAL=20" in env_vals
 
     @pytest.mark.asyncio
     async def test_profiling_run_uses_isolated_checkpoint_dir(self, tmp_path: Path) -> None:
@@ -958,7 +961,7 @@ class TestCheckAndReportProfiling:
             fake_conn,  # type: ignore[arg-type]
             "prof-job-id",
             datetime.now(UTC),
-            step_timestamps=[(50, 10.0), (100, 15.0), (150, 19.0)],
+            epoch_timestamps=[(50, 10.0), (100, 15.0), (150, 19.0)],
         )
 
         assert result is True
@@ -1020,7 +1023,7 @@ class TestPublishCompleted:
 class TestStopJob:
     @pytest.mark.asyncio
     async def test_stops_tracked_running_job(self) -> None:
-        """If job is tracked in running_jobs, stop via docker stop."""
+        """If job is tracked in running_jobs, kill via docker kill."""
         worker = JobWorker()
         job_id = "stop-tracked-12345678"
         worker.running_jobs[job_id] = MagicMock()
@@ -1086,7 +1089,7 @@ class TestStopJob:
             mock_run.return_value = MagicMock(stdout="", returncode=0)
             await worker._stop_job("done-job")
 
-        # No docker stop should have been issued
+        # No docker kill should have been issued
         mock_run.assert_not_called()
 
     @pytest.mark.asyncio

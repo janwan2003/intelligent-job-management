@@ -17,8 +17,8 @@ import type { ProfilingResult, GpuConfiguration } from "@/types/job";
 
 function formatDuration(seconds: number): string {
   const mins = Math.floor(seconds / 60);
-  const secs = Math.round(seconds % 60);
-  return mins > 0 ? `${mins}m ${secs}s` : `${secs}s`;
+  const secs = seconds % 60;
+  return mins > 0 ? `${mins}m ${secs.toFixed(2)}s` : `${secs.toFixed(2)}s`;
 }
 
 function configKey(config: Record<string, number>): string {

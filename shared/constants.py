@@ -27,8 +27,7 @@ NATS_SUBJECT_PROFILING_COMPLETE = "jobs.profiling_complete"
 NATS_SUBJECT_COMPLETED = "jobs.completed"
 
 # Defaults shared by both backend and worker
-DEFAULT_LOG_INTERVAL = 50
-DEFAULT_PROFILING_STEPS = 100
+DEFAULT_PROFILING_EPOCHS = 3
 
 # Data directories & file names
 RUNS_DIR = "runs"

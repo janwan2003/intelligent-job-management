@@ -26,8 +26,7 @@ from nats.js import JetStreamContext
 from nats.js.api import DeliverPolicy
 from psycopg.rows import dict_row
 from shared.constants import (
-    DEFAULT_LOG_INTERVAL,
-    DEFAULT_PROFILING_STEPS,
+    DEFAULT_PROFILING_EPOCHS,
     NATS_STREAM_NAME,
     NATS_SUBJECT_COMPLETED,
     NATS_SUBJECT_PROFILING_COMPLETE,
@@ -48,15 +47,14 @@ from constants import (
     CONTAINER_NAME_PREFIX,
     DEFAULT_NATS_URL,
     DOCKER_CMD_TIMEOUT_SECONDS,
-    DOCKER_STOP_GRACE_SECONDS,
     JOB_ID_DISPLAY_LENGTH,
     NATS_SUBJECT_RESUME_REQUESTED,
     RUNNABLE_STATUSES,
     RUNS_MOUNT_PATH,
 )
 
-# Regex to parse progress from training output, e.g. "Step 50/10000"
-PROGRESS_RE = re.compile(r"Step\s+(\d+)/(\d+)")
+# Regex to parse progress from training output, e.g. "Epoch 50/10000"
+PROGRESS_RE = re.compile(r"Epoch\s+(\d+)/(\d+)")
 
 # Maximum wall-clock time for a single job (default: 24 hours)
 JOB_TIMEOUT_SECONDS = int(os.getenv("JOB_TIMEOUT_SECONDS", str(24 * 3600)))
@@ -175,9 +173,9 @@ class JobWorker:
         )
         return set(result.stdout.strip().split("\n")) if result.stdout.strip() else set()
 
-    async def _stop_container(self, container_name: str) -> subprocess.CompletedProcess[str]:
-        """Send docker stop with grace period."""
-        return await self._docker_run("stop", "-t", str(DOCKER_STOP_GRACE_SECONDS), container_name)
+    async def _kill_container(self, container_name: str) -> subprocess.CompletedProcess[str]:
+        """Kill a container immediately (no grace period — checkpoints are saved per-epoch)."""
+        return await self._docker_run("kill", container_name)
 
     # ------------------------------------------------------------------
     # Startup
@@ -409,11 +407,12 @@ class JobWorker:
     def _build_env_vars(job: dict[str, Any]) -> dict[str, str]:
         """Build environment variables to pass into the container."""
         env: dict[str, str] = {}
-        env["LOG_INTERVAL"] = str(job.get("log_interval") or DEFAULT_LOG_INTERVAL)
         if job["is_profiling_run"]:
-            env["MAX_STEPS"] = str(job.get("profiling_epochs_no") or DEFAULT_PROFILING_STEPS)
+            env["EPOCHS_TOTAL"] = str(job.get("profiling_epochs_no") or DEFAULT_PROFILING_EPOCHS)
         elif job.get("epochs_total"):
-            env["MAX_STEPS"] = str(job["epochs_total"])
+            env["EPOCHS_TOTAL"] = str(job["epochs_total"])
+        if job.get("batch_size"):
+            env["BATCH_SIZE"] = str(job["batch_size"])
         return env
 
     async def _stream_output(
@@ -422,7 +421,7 @@ class JobWorker:
         conn: psycopg.AsyncConnection[Any],
         job_id: str,
         log_path: Path,
-        step_timestamps: list[tuple[int, float]],
+        epoch_timestamps: list[tuple[int, float]],
         *,
         is_profiling: bool,
     ) -> None:
@@ -443,11 +442,11 @@ class JobWorker:
                     log_file.flush()
                     match = PROGRESS_RE.search(stripped)
                     if match:
-                        step_num = int(match.group(1))
-                        progress = f"{step_num}/{match.group(2)}"
+                        epoch_num = int(match.group(1))
+                        progress = f"{epoch_num}/{match.group(2)}"
                         await self._update_job(conn, job_id, progress=progress)
                         if is_profiling:
-                            step_timestamps.append((step_num, time.monotonic()))
+                            epoch_timestamps.append((epoch_num, time.monotonic()))
         except Exception as e:
             logger.debug("Output streaming ended: %s", e)
 
@@ -470,7 +469,7 @@ class JobWorker:
         job_id: str,
         exit_code: int,
         run_start_time: datetime,
-        step_timestamps: list[tuple[int, float]],
+        epoch_timestamps: list[tuple[int, float]],
     ) -> None:
         """Update job status after container exits."""
         job = await self._fetch_job(conn, job_id, "status")
@@ -488,7 +487,7 @@ class JobWorker:
             return
 
         # exit_code == 0
-        is_profiling = await self._check_and_report_profiling(conn, job_id, run_start_time, step_timestamps)
+        is_profiling = await self._check_and_report_profiling(conn, job_id, run_start_time, epoch_timestamps)
         if is_profiling:
             logger.info("Profiling run for job %s complete, backend will re-schedule", job_id[:JOB_ID_DISPLAY_LENGTH])
         else:
@@ -515,8 +514,8 @@ class JobWorker:
                     "is_profiling_run",
                     "profiling_epochs_no",
                     "exit_code",
-                    "log_interval",
                     "epochs_total",
+                    "batch_size",
                     "assigned_node",
                 )
                 if not job:
@@ -547,6 +546,7 @@ class JobWorker:
                 await self._update_job(conn, job_id, container_name=container_name)
 
                 env_vars = self._build_env_vars(job)
+                logger.info("Job %s env: %s", job_id[:JOB_ID_DISPLAY_LENGTH], env_vars)
                 docker_cmd = self.build_docker_cmd(
                     container_name,
                     str(ckpt_host_mount),
@@ -563,11 +563,11 @@ class JobWorker:
                 self.running_jobs[job_id] = process
 
                 # Stream output
-                step_timestamps: list[tuple[int, float]] = []
+                epoch_timestamps: list[tuple[int, float]] = []
                 log_path = runs_local / OUTPUT_LOG_FILENAME
                 stream_task = asyncio.create_task(
                     self._stream_output(
-                        process, conn, job_id, log_path, step_timestamps, is_profiling=job["is_profiling_run"]
+                        process, conn, job_id, log_path, epoch_timestamps, is_profiling=job["is_profiling_run"]
                     )
                 )
 
@@ -575,7 +575,7 @@ class JobWorker:
                 await stream_task
 
                 self.running_jobs.pop(job_id, None)
-                await self._handle_job_completion(conn, job_id, exit_code, run_start_time, step_timestamps)
+                await self._handle_job_completion(conn, job_id, exit_code, run_start_time, epoch_timestamps)
 
         except Exception as e:
             logger.error("Failed to run job %s: %s", job_id, e, exc_info=True)
@@ -600,16 +600,16 @@ class JobWorker:
             logger.exception("Error stopping job %s", job_id[:JOB_ID_DISPLAY_LENGTH])
 
     async def _stop_job_inner(self, job_id: str) -> None:
-        # Fast path: process tracked locally (we set PREEMPTED, then docker stop;
-        # _run_job will see PREEMPTED and skip final status update).
+        # Fast path: process tracked locally — mark PREEMPTED then kill.
+        # Checkpoints are saved per-epoch so no graceful shutdown needed.
         process = self.running_jobs.get(job_id)
         if process:
-            logger.info("Stopping tracked job %s", job_id[:JOB_ID_DISPLAY_LENGTH])
+            logger.info("Killing tracked job %s", job_id[:JOB_ID_DISPLAY_LENGTH])
             async with self._db() as conn:
                 await self._update_job(conn, job_id, status=JobStatus.PREEMPTED)
             container_name = f"{CONTAINER_NAME_PREFIX}{job_id[:JOB_ID_DISPLAY_LENGTH]}"
-            result = await self._stop_container(container_name)
-            logger.debug("Docker stop rc=%s stderr=%s", result.returncode, result.stderr)
+            result = await self._kill_container(container_name)
+            logger.debug("Docker kill rc=%s stderr=%s", result.returncode, result.stderr)
             return
 
         # Slow path: not tracked locally — look up container from DB
@@ -630,13 +630,13 @@ class JobWorker:
                 logger.info("Job %s status is %s, no action needed", job_id[:JOB_ID_DISPLAY_LENGTH], job["status"])
                 return
 
-            # Container should be running — try to stop it
-            result = await self._stop_container(container_name)
+            # Container should be running — kill it
+            result = await self._kill_container(container_name)
             if result.returncode == 0:
-                logger.info("Container %s stopped", container_name)
+                logger.info("Container %s killed", container_name)
                 await self._update_job(conn, job_id, status=JobStatus.PREEMPTED)
             else:
-                logger.error("Failed to stop container %s: %s", container_name, result.stderr)
+                logger.error("Failed to kill container %s: %s", container_name, result.stderr)
 
     # ------------------------------------------------------------------
     # Profiling
@@ -644,24 +644,24 @@ class JobWorker:
 
     @staticmethod
     def _compute_profiling_duration(
-        step_timestamps: list[tuple[int, float]] | None,
+        epoch_timestamps: list[tuple[int, float]] | None,
         run_start_time: datetime,
     ) -> float:
         """Compute profiling duration, excluding the first interval as warmup.
 
         Falls back to wall-clock duration when fewer than 3 timestamps exist.
         """
-        if step_timestamps and len(step_timestamps) >= 3:
-            intervals = [step_timestamps[i + 1][1] - step_timestamps[i][1] for i in range(len(step_timestamps) - 1)]
+        if epoch_timestamps and len(epoch_timestamps) >= 3:
+            intervals = [epoch_timestamps[i + 1][1] - epoch_timestamps[i][1] for i in range(len(epoch_timestamps) - 1)]
             steady = intervals[1:]  # drop first interval (warmup)
-            mean_step_time = sum(steady) / len(steady)
-            total_steps = step_timestamps[-1][0]
+            mean_epoch_time = sum(steady) / len(steady)
+            total_epochs = epoch_timestamps[-1][0]
             logger.info(
-                "Profiling: dropped warmup interval (%.4fs), steady mean=%.4fs/step",
+                "Profiling: dropped warmup interval (%.4fs), steady mean=%.4fs/epoch",
                 intervals[0],
-                mean_step_time,
+                mean_epoch_time,
             )
-            return mean_step_time * total_steps
+            return mean_epoch_time * total_epochs
         return (datetime.now(UTC) - run_start_time).total_seconds()
 
     async def _check_and_report_profiling(
@@ -669,7 +669,7 @@ class JobWorker:
         conn: psycopg.AsyncConnection[Any],
         job_id: str,
         run_start_time: datetime,
-        step_timestamps: list[tuple[int, float]] | None = None,
+        epoch_timestamps: list[tuple[int, float]] | None = None,
     ) -> bool:
         """Check if this was a profiling run and report results via NATS.
 
@@ -679,8 +679,8 @@ class JobWorker:
         if not job or not job["is_profiling_run"]:
             return False
 
-        duration = self._compute_profiling_duration(step_timestamps, run_start_time)
-        total_steps = step_timestamps[-1][0] if step_timestamps else None
+        duration = self._compute_profiling_duration(epoch_timestamps, run_start_time)
+        total_epochs = epoch_timestamps[-1][0] if epoch_timestamps else None
         payload = {
             "job_id": job_id,
             "gpu_config": job["assigned_gpu_config"],
@@ -694,12 +694,12 @@ class JobWorker:
                 json.dumps(payload).encode(),
             )
             logger.info(
-                "Published profiling result for job %s: %s = %.1fs (steps=%s, warmup_excluded=%s)",
+                "Published profiling result for job %s: %s = %.1fs (epochs=%s, warmup_excluded=%s)",
                 job_id[:JOB_ID_DISPLAY_LENGTH],
                 job["assigned_gpu_config"],
                 duration,
-                total_steps,
-                bool(step_timestamps and len(step_timestamps) >= 3),
+                total_epochs,
+                bool(epoch_timestamps and len(epoch_timestamps) >= 3),
             )
         return True
 

@@ -10,8 +10,7 @@ import {
   DEFAULT_IMAGE,
   DEFAULT_JOB_PRIORITY,
   DEFAULT_EPOCHS_TOTAL,
-  DEFAULT_PROFILING_STEPS,
-  DEFAULT_LOG_INTERVAL,
+  DEFAULT_PROFILING_EPOCHS,
 } from "@/config/constants";
 import { toast } from "sonner";
 import { HelpCircle } from "lucide-react";
@@ -38,9 +37,9 @@ export default function SubmitJob() {
   const [priority, setPriority] = useState(DEFAULT_JOB_PRIORITY);
   const [deadlineDate, setDeadlineDate] = useState("");
   const [deadlineTime, setDeadlineTime] = useState("23:59");
-  const [profilingEpochsNo, setProfilingEpochsNo] = useState(DEFAULT_PROFILING_STEPS);
+  const [profilingEpochsNo, setProfilingEpochsNo] = useState(DEFAULT_PROFILING_EPOCHS);
   const [epochsTotal, setEpochsTotal] = useState(DEFAULT_EPOCHS_TOTAL);
-  const [logInterval, setLogInterval] = useState(DEFAULT_LOG_INTERVAL);
+  const [batchSize, setBatchSize] = useState<number | undefined>(undefined);
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
@@ -56,7 +55,7 @@ export default function SubmitJob() {
         Priority: priority,
         epochsTotal: epochsTotal,
         profilingEpochsNo: profilingEpochsNo,
-        logInterval: logInterval,
+        ...(batchSize !== undefined && { batchSize }),
         ...(deadlineDate && { deadline: `${deadlineDate}T${deadlineTime || "23:59"}:00` }),
       },
       {
@@ -111,8 +110,8 @@ export default function SubmitJob() {
                 {/* Epochs Total */}
                 <div className="space-y-1.5">
                   <Label htmlFor="epochsTotal" className="text-xs">
-                    Total Steps
-                    <FieldHint text="Passed as MAX_STEPS env var. Your training script should read os.environ.get('MAX_STEPS') to know when to stop." />
+                    Total Epochs
+                    <FieldHint text="Passed as EPOCHS_TOTAL env var. Your training script should read os.environ.get('EPOCHS_TOTAL') to know when to stop." />
                   </Label>
                   <Input
                     id="epochsTotal"
@@ -124,37 +123,39 @@ export default function SubmitJob() {
                   />
                 </div>
 
-                {/* Profiling Steps */}
+                {/* Profiling Epochs */}
                 <div className="space-y-1.5">
                   <Label htmlFor="profilingEpochsNo" className="text-xs">
-                    Profiling Steps
-                    <FieldHint text="Number of steps for each profiling run. Passed as MAX_STEPS during profiling. Short runs measure GPU throughput before the full training begins." />
+                    Profiling Epochs
+                    <FieldHint text="Number of epochs for each profiling run. The first epoch is treated as warmup (GPU caches, JIT) and excluded from timing. Minimum 3 for accurate results." />
                   </Label>
                   <Input
                     id="profilingEpochsNo"
                     type="number"
-                    min={1}
+                    min={3}
                     value={profilingEpochsNo}
                     onChange={(e) => setProfilingEpochsNo(Number(e.target.value))}
                     className="font-mono text-sm"
                   />
                 </div>
 
-                {/* Log Interval */}
+                {/* Batch Size */}
                 <div className="space-y-1.5">
-                  <Label htmlFor="logInterval" className="text-xs">
-                    Log Interval
-                    <FieldHint text="Steps between progress log lines. Passed as LOG_INTERVAL env var. Lower values give more frequent progress updates and better profiling accuracy." />
+                  <Label htmlFor="batchSize" className="text-xs">
+                    Batch Size
+                    <FieldHint text="Passed as BATCH_SIZE env var. Your training script should read os.environ.get('BATCH_SIZE') for the batch size." />
                   </Label>
                   <Input
-                    id="logInterval"
+                    id="batchSize"
                     type="number"
                     min={1}
-                    value={logInterval}
-                    onChange={(e) => setLogInterval(Number(e.target.value))}
+                    value={batchSize ?? ""}
+                    onChange={(e) => setBatchSize(e.target.value ? Number(e.target.value) : undefined)}
+                    placeholder="optional"
                     className="font-mono text-sm"
                   />
                 </div>
+
               </div>
             </div>
           )}

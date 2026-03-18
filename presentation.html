@@ -264,7 +264,7 @@ All scheduling goes through schedule_lock  →  reads GPU usage from DB  →  as
   </div>
 
   <h3>Profiling execution</h3>
-  <pre>MAX_STEPS = profiling_epochs_no   (default 100)
+  <pre>EPOCHS_TOTAL = profiling_epochs_no   (default 100)
 LOG_INTERVAL = per-job setting    (default 50 → 2 intervals, configurable lower)
 Checkpoint dir: data/checkpoints/{id}/.profiling/  (isolated, cleared each run)</pre>
 

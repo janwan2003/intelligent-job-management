@@ -4,16 +4,16 @@ Sample training containers that follow the IJM checkpoint contract:
 - Write checkpoints to `/checkpoints/latest.pt`
 - Load checkpoint on startup if it exists
 - Handle SIGTERM/SIGINT gracefully by checkpointing and exiting cleanly
-- Support `MAX_STEPS` and `BATCH_SIZE` environment variables
+- Support `EPOCHS_TOTAL` and `BATCH_SIZE` environment variables
 
 ## Available images
 
-| Image | Script | Architecture |
-|-------|--------|-------------|
-| `ijm-runtime:dev` | `train.py` | Simple 2-layer MLP |
-| `ijm-cnn:dev` | `train_cnn.py` | 3-layer ConvNet (32x32 images) |
-| `ijm-lstm:dev` | `train_lstm.py` | 2-layer LSTM (sequence classification) |
-| `ijm-efficientnet:dev` | `train_efficientnet.py` | MBConv-based EfficientNet-style network |
+| Image | Script | Architecture | Dataset |
+|-------|--------|-------------|---------|
+| `ijm-runtime:dev` | `train.py` | LSTM-small (1-layer, 128 hidden) | MNIST |
+| `ijm-lstm:dev` | `train_lstm.py` | LSTM-big (3-layer, 256 hidden) | MNIST |
+| `ijm-cnn:dev` | `train_cnn.py` | ConvNet (3-layer CNN) | CIFAR-10 |
+| `ijm-efficientnet:dev` | `train_efficientnet.py` | MBConv EfficientNet | CIFAR-10 |
 
 ---
 
@@ -96,7 +96,7 @@ docker run --name ijm-manual-test --rm \
 
 What to look for:
 
-* Early in stdout, it prints "Resumed from step X".
-* Steps continue from the last saved step (not restart from 0).
+* Early in stdout, it prints "Resumed from epoch X".
+* Epochs continue from the last saved epoch (not restart from 0).
 
 ---

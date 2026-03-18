@@ -1,27 +1,26 @@
 #!/usr/bin/env python3
 """
-Stoppable/resumable training script with checkpoint support.
+LSTM-small: 1-layer LSTM on MNIST (treated as 28-step sequences of 28 features).
 
-This script demonstrates a training loop that:
+Follows the IJM checkpoint contract:
 - Loads checkpoint from /checkpoints/latest.pt on startup if it exists
-- Periodically saves checkpoints during training
+- Saves checkpoint after every epoch
 - Handles SIGTERM/SIGINT gracefully by checkpointing and exiting cleanly
 - Logs progress to stdout for monitoring
 """
 
+import contextlib
 import logging
 import os
-import signal
-import sys
 import tempfile
 import time
 from pathlib import Path
-from types import FrameType
 
 import torch
 import torch.nn as nn
+from torch.utils.data import DataLoader
+from torchvision import datasets, transforms
 
-# Configure logging
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
@@ -30,22 +29,19 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
-class SimpleModel(nn.Module):
-    """Simple neural network for demonstration."""
+class LSTMSmall(nn.Module):
+    """Small LSTM for MNIST sequence classification."""
 
     def __init__(
-        self, input_size: int = 100, hidden_size: int = 50, output_size: int = 10
+        self, input_size: int = 28, hidden_size: int = 128, num_classes: int = 10
     ) -> None:
         super().__init__()
-        self.fc1 = nn.Linear(input_size, hidden_size)
-        self.relu = nn.ReLU()
-        self.fc2 = nn.Linear(hidden_size, output_size)
+        self.lstm = nn.LSTM(input_size, hidden_size, num_layers=1, batch_first=True)
+        self.fc = nn.Linear(hidden_size, num_classes)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        x = self.fc1(x)
-        x = self.relu(x)
-        x = self.fc2(x)
-        return x
+        out, _ = self.lstm(x)
+        return self.fc(out[:, -1, :])
 
 
 class Trainer:
@@ -54,122 +50,136 @@ class Trainer:
     def __init__(self, checkpoint_dir: str = "/checkpoints") -> None:
         self.checkpoint_dir = Path(checkpoint_dir)
         self.checkpoint_path = self.checkpoint_dir / "latest.pt"
-        self.should_stop = False
-
-        # Model and optimizer
-        self.model = SimpleModel()
+        self.model = LSTMSmall()
         self.optimizer = torch.optim.Adam(self.model.parameters(), lr=0.001)
-        self.criterion = nn.MSELoss()
+        self.criterion = nn.CrossEntropyLoss()
 
-        # Training state
-        self.current_step = 0
-        self.total_steps = int(os.environ.get("MAX_STEPS", "10000"))
-        self.checkpoint_interval = 200
-        self.log_interval = int(os.environ.get("LOG_INTERVAL", "50"))
+        self.current_epoch = 0
+        self.total_epochs = int(os.environ.get("EPOCHS_TOTAL", "20"))
+        self.batch_size = int(os.environ.get("BATCH_SIZE", "64"))
+        self.best_accuracy = 0.0
 
-        # Register signal handlers
-        signal.signal(signal.SIGTERM, self._handle_signal)
-        signal.signal(signal.SIGINT, self._handle_signal)
+        # Load data (suppress torchvision download progress bar)
+        transform = transforms.ToTensor()
+        data_root = "/runs/data"
+        with (
+            open(os.devnull, "w") as devnull,
+            contextlib.redirect_stdout(devnull),
+            contextlib.redirect_stderr(devnull),
+        ):
+            train_dataset = datasets.MNIST(
+                root=data_root, train=True, download=True, transform=transform
+            )
+            test_dataset = datasets.MNIST(
+                root=data_root, train=False, download=True, transform=transform
+            )
+        self.train_loader = DataLoader(
+            train_dataset, batch_size=self.batch_size, shuffle=True, drop_last=True
+        )
+        self.test_loader = DataLoader(test_dataset, batch_size=256, shuffle=False)
 
-        # Load checkpoint if exists
         self.load_checkpoint()
 
-    def _handle_signal(self, signum: int, frame: FrameType | None) -> None:
-        """Handle SIGTERM/SIGINT by checkpointing and stopping."""
-        logger.info("Received signal %s, saving checkpoint and exiting", signum)
-        self.should_stop = True
-
     def load_checkpoint(self) -> None:
-        """Load checkpoint if it exists."""
         if not self.checkpoint_path.exists():
             logger.info("No checkpoint found, starting from scratch")
             return
-
         logger.info("Loading checkpoint from %s", self.checkpoint_path)
         try:
             checkpoint = torch.load(self.checkpoint_path, weights_only=True)
-            for key in ("model_state_dict", "optimizer_state_dict", "step"):
-                if key not in checkpoint:
-                    logger.warning(
-                        "Checkpoint missing key '%s', starting from scratch", key
-                    )
-                    return
             self.model.load_state_dict(checkpoint["model_state_dict"])
             self.optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
-            self.current_step = checkpoint["step"]
-            logger.info("Resumed from step %d", self.current_step)
+            self.current_epoch = checkpoint["epoch"]
+            self.best_accuracy = checkpoint.get("best_accuracy", 0.0)
+            logger.info(
+                "Resumed from epoch %d (best acc: %.2f%%)",
+                self.current_epoch,
+                self.best_accuracy,
+            )
         except Exception as e:
             logger.warning("Failed to load checkpoint, starting from scratch: %s", e)
 
     def save_checkpoint(self) -> None:
-        """Save current training state atomically."""
         self.checkpoint_dir.mkdir(parents=True, exist_ok=True)
         checkpoint = {
-            "step": self.current_step,
+            "epoch": self.current_epoch,
             "model_state_dict": self.model.state_dict(),
             "optimizer_state_dict": self.optimizer.state_dict(),
+            "best_accuracy": self.best_accuracy,
         }
-        # Write to temp file then atomically rename to prevent corruption
         fd, tmp_path = tempfile.mkstemp(dir=self.checkpoint_dir, suffix=".pt.tmp")
         try:
             torch.save(checkpoint, tmp_path)
             Path(tmp_path).replace(self.checkpoint_path)
-            logger.info("Checkpoint saved at step %d", self.current_step)
+            logger.info("Checkpoint saved at epoch %d", self.current_epoch)
         except BaseException:
             Path(tmp_path).unlink(missing_ok=True)
             raise
 
-    def train(self) -> None:
-        """Main training loop."""
-        logger.info(
-            "Starting training from step %d to %d", self.current_step, self.total_steps
-        )
+    @torch.no_grad()
+    def _evaluate(self) -> float:
+        self.model.eval()
+        correct = total = 0
+        for images, labels in self.test_loader:
+            images = images.squeeze(1)
+            outputs = self.model(images)
+            correct += (outputs.argmax(1) == labels).sum().item()
+            total += labels.size(0)
+        self.model.train()
+        return 100.0 * correct / total
 
-        while self.current_step < self.total_steps:
-            if self.should_stop:
-                logger.info("Stopping requested, saving final checkpoint")
-                self.save_checkpoint()
-                logger.info("Exiting cleanly")
-                sys.exit(0)
-
-            # Simulate training step
-            batch_x = torch.randn(32, 100)
-            batch_y = torch.randn(32, 10)
-
+    def _train_one_epoch(self) -> float:
+        """Run one full pass over the training dataset. Returns average loss."""
+        total_loss = 0.0
+        num_batches = 0
+        for images, labels in self.train_loader:
+            images = images.squeeze(1)  # (B, 1, 28, 28) -> (B, 28, 28)
             self.optimizer.zero_grad()
-            outputs = self.model(batch_x)
-            loss = self.criterion(outputs, batch_y)
+            outputs = self.model(images)
+            loss = self.criterion(outputs, labels)
             loss.backward()
             self.optimizer.step()
+            total_loss += loss.item()
+            num_batches += 1
+        return total_loss / max(num_batches, 1)
 
-            self.current_step += 1
+    def train(self) -> None:
+        logger.info(
+            "Config: epochs_total=%d, batch_size=%d",
+            self.total_epochs,
+            self.batch_size,
+        )
+        logger.info(
+            "Starting training from epoch %d to %d",
+            self.current_epoch,
+            self.total_epochs,
+        )
+        self.model.train()
 
-            # Print progress
-            if self.current_step % self.log_interval == 0:
-                logger.info(
-                    "Step %d/%d - Loss: %.6f",
-                    self.current_step,
-                    self.total_steps,
-                    loss.item(),
-                )
+        while self.current_epoch < self.total_epochs:
+            t0 = time.monotonic()
+            avg_loss = self._train_one_epoch()
+            self.current_epoch += 1
 
-            # Periodic checkpoint
-            if self.current_step % self.checkpoint_interval == 0:
-                self.save_checkpoint()
+            acc = self._evaluate()
+            self.best_accuracy = max(self.best_accuracy, acc)
+            elapsed = time.monotonic() - t0
+            logger.info(
+                "Epoch %d/%d - Loss: %.6f - Acc: %.2f%% - %.2fs",
+                self.current_epoch,
+                self.total_epochs,
+                avg_loss,
+                acc,
+                elapsed,
+            )
+            self.save_checkpoint()
 
-            # Simulate computation time
-            time.sleep(0.1)
-
-        # Training complete
-        logger.info("Training completed! Final step: %d", self.current_step)
-        self.save_checkpoint()
+        logger.info("Training completed! Final epoch: %d", self.current_epoch)
         logger.info("Exiting successfully")
 
 
 if __name__ == "__main__":
     logger.info("=" * 60)
-    logger.info("Starting training job")
+    logger.info("Starting LSTM-small training (MNIST sequences)")
     logger.info("=" * 60)
-
-    trainer = Trainer()
-    trainer.train()
+    Trainer().train()

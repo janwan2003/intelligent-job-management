@@ -112,14 +112,14 @@ Training containers must:
 
 ### Sample Training Images
 
-| Image | Script | Architecture | Description |
-|-------|--------|-------------|-------------|
-| `ijm-runtime:dev` | `train.py` | Simple MLP | 2-layer feedforward network |
-| `ijm-cnn:dev` | `train_cnn.py` | ConvNet | 3-layer CNN for image classification |
-| `ijm-lstm:dev` | `train_lstm.py` | LSTM | 2-layer LSTM for sequence modelling |
-| `ijm-efficientnet:dev` | `train_efficientnet.py` | EfficientNet | MBConv-based image classifier |
+| Image | Script | Architecture | Dataset |
+|-------|--------|-------------|---------|
+| `ijm-runtime:dev` | `train.py` | LSTM-small (1-layer, 128 hidden) | MNIST |
+| `ijm-lstm:dev` | `train_lstm.py` | LSTM-big (3-layer, 256 hidden) | MNIST |
+| `ijm-cnn:dev` | `train_cnn.py` | ConvNet (3-layer CNN) | CIFAR-10 |
+| `ijm-efficientnet:dev` | `train_efficientnet.py` | MBConv EfficientNet | CIFAR-10 |
 
-All images follow the same checkpoint contract and support `MAX_STEPS` and `BATCH_SIZE` environment variables.
+All images follow the same checkpoint contract and support `EPOCHS_TOTAL` and `BATCH_SIZE` environment variables.
 
 ## Development
 

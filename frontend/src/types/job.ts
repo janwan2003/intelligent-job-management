@@ -22,18 +22,17 @@ export interface ApiJob {
   assigned_gpu_config?: Record<string, number>;
   estimated_duration?: number;
   is_profiling_run?: boolean;
-  log_interval?: number;
 }
 
 /** Payload for creating a new job */
 export interface CreateJobPayload {
   image: string;
-  command: string[];
+  command?: string[];
   Priority?: number;
   deadline?: string;
+  batchSize?: number;
   profilingEpochsNo: number;
   epochsTotal: number;
-  logInterval?: number;
 }
 
 /** Single profiling result as returned by GET /profiling-results/{job_id} */

@@ -55,8 +55,7 @@ export function formatGpuConfig(config: Record<string, number>): string {
 // ---------------------------------------------------------------------------
 
 export const DEFAULT_JOB_PRIORITY = 3;
-export const DEFAULT_EPOCHS_TOTAL = 10_000;
-export const DEFAULT_PROFILING_STEPS = 100;
-export const DEFAULT_LOG_INTERVAL = 50;
+export const DEFAULT_EPOCHS_TOTAL = 20;
+export const DEFAULT_PROFILING_EPOCHS = 3;
 export const DEFAULT_IMAGE = "ijm-runtime:dev";
 export const DEFAULT_COMMAND = "python -u train.py";

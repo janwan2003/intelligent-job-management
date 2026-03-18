@@ -65,8 +65,8 @@ async def create_job(job_request: JobCreate) -> Job:
             """
             INSERT INTO jobs (id, image, command, status, created_at, updated_at,
                               priority, deadline, batch_size, epochs_total,
-                              profiling_epochs_no, required_memory_gb, log_interval)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                              profiling_epochs_no, required_memory_gb)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             """,
             (
                 job_id,
@@ -81,7 +81,6 @@ async def create_job(job_request: JobCreate) -> Job:
                 job_request.epochs_total,
                 job_request.profiling_epochs_no,
                 job_request.required_memory_gb,
-                job_request.log_interval,
             ),
         )
 
@@ -114,7 +113,6 @@ async def create_job(job_request: JobCreate) -> Job:
         assigned_node=schedule_result.node_id,
         assigned_gpu_config=schedule_result.gpu_config,
         is_profiling_run=schedule_result.is_profiling_run,
-        log_interval=job_request.log_interval,
     )
 
 

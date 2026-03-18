@@ -159,8 +159,8 @@ export default function JobQueue() {
             const v = getValue() as number | null | undefined;
             if (v === null || v === undefined) return <span className="font-mono text-xs text-muted-foreground">—</span>;
             const mins = Math.floor(v / 60);
-            const secs = Math.round(v % 60);
-            return <span className="font-mono text-xs text-muted-foreground">{mins}m {secs}s</span>;
+            const secs = (v % 60).toFixed(2);
+            return <span className="font-mono text-xs text-muted-foreground">{mins > 0 ? `${mins}m ` : ""}{secs}s</span>;
           },
         },
       ]
