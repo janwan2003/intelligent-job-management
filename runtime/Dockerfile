@@ -5,9 +5,11 @@ WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-COPY train.py .
+# Copy shared base + specific training script
+ARG SCRIPT=lstm_small.py
+COPY base.py .
+COPY ${SCRIPT} ./train.py
 
-# Create directories for checkpoints and runs
 RUN mkdir -p /checkpoints /runs
 
 CMD ["python", "-u", "train.py"]
