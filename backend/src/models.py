@@ -26,7 +26,6 @@ class NodeResources(BaseModel):
 
     gpu_type: str
     gpu_count: int
-    memory_per_gpu_gb: int
 
 
 class NodeConfig(BaseModel):
@@ -71,18 +70,20 @@ class ScheduleResult(BaseModel):
 
 
 class JobCreate(BaseModel):
-    """Job creation request."""
+    """Job creation request (ANDREAS-compatible)."""
 
     model_config = ConfigDict(populate_by_name=True)
 
-    image: str
+    job_id: str = Field(alias="job_id")
+    image: str = Field(alias="dockerImage")
+    script_path: str | None = Field(default=None, alias="scriptPath")
+    directory_to_mount: str | None = Field(default=None, alias="directoryToMount")
     command: list[str] = Field(default_factory=list)
     priority: int = Field(default=DEFAULT_JOB_PRIORITY, alias="Priority", ge=PRIORITY_MIN, le=PRIORITY_MAX)
     deadline: datetime | None = None
     batch_size: int | None = Field(default=None, alias="batchSize")
     profiling_epochs_no: int = Field(default=DEFAULT_PROFILING_EPOCHS, alias="profilingEpochsNo", ge=1)
     epochs_total: int = Field(default=DEFAULT_EPOCHS_TOTAL, alias="epochsTotal", ge=1)
-    required_memory_gb: int | None = Field(default=None, alias="requiredMemoryGb")
 
 
 _DB_NULLABLE_DEFAULTS = ("priority", "epochs_total", "profiling_epochs_no")
@@ -92,8 +93,11 @@ class Job(BaseModel):
     """Job response model — also used to hydrate DB rows via model_validate()."""
 
     id: str
+    job_id: str = "unknown"
     image: str
     command: list[str]
+    script_path: str | None = None
+    directory_to_mount: str | None = None
     status: str
     created_at: datetime
     updated_at: datetime
@@ -106,7 +110,6 @@ class Job(BaseModel):
     epochs_total: int = DEFAULT_EPOCHS_TOTAL
     profiling_epochs_no: int = DEFAULT_PROFILING_EPOCHS
     assigned_node: str | None = None
-    required_memory_gb: int | None = None
     assigned_gpu_config: dict[str, int] | None = None
     is_profiling_run: bool = False
 

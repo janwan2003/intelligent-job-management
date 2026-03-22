@@ -4,7 +4,7 @@
     "isForProfiling": false,
     "cost": 0.15,
     "resources": [
-      { "gpu_type": "A40", "gpu_count": 4, "memory_per_gpu_gb": 48 }
+      { "gpu_type": "A40", "gpu_count": 4 }
     ]
   },
   {
@@ -12,8 +12,8 @@
     "isForProfiling": false,
     "cost": 0.20,
     "resources": [
-      { "gpu_type": "A40", "gpu_count": 2, "memory_per_gpu_gb": 48 },
-      { "gpu_type": "L40S", "gpu_count": 2, "memory_per_gpu_gb": 48 }
+      { "gpu_type": "A40", "gpu_count": 2 },
+      { "gpu_type": "L40S", "gpu_count": 2 }
     ]
   },
   {
@@ -21,8 +21,8 @@
     "isForProfiling": true,
     "cost": 0.25,
     "resources": [
-      { "gpu_type": "L40S", "gpu_count": 4, "memory_per_gpu_gb": 48 },
-      { "gpu_type": "A40", "gpu_count": 4, "memory_per_gpu_gb": 48 }
+      { "gpu_type": "L40S", "gpu_count": 4 },
+      { "gpu_type": "A40", "gpu_count": 4 }
     ]
   }
 ]

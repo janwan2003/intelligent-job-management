@@ -12,13 +12,11 @@ from typing import Any
 
 import psycopg  # type: ignore[import-not-found]
 from fastapi import HTTPException
-from nats.js import JetStreamContext  # type: ignore[import-not-found]
 from psycopg_pool import AsyncConnectionPool  # type: ignore[import-not-found]
 
 # Global state — initialised in app.lifespan()
 pool: AsyncConnectionPool | None = None
-nc: Any = None
-js: JetStreamContext | None = None
+job_runner: Any = None
 
 # Serialises all scheduling decisions so two coroutines cannot assign the same node
 schedule_lock: asyncio.Lock = asyncio.Lock()
@@ -33,8 +31,8 @@ async def get_conn() -> AsyncGenerator[psycopg.AsyncConnection[Any]]:
         yield conn
 
 
-def require_js() -> JetStreamContext:
-    """Return the JetStream context or raise 503 if not initialized."""
-    if js is None:
-        raise HTTPException(status_code=503, detail="NATS not initialized")
-    return js
+def require_runner() -> Any:
+    """Return the JobRunner or raise 503 if not initialized."""
+    if job_runner is None:
+        raise HTTPException(status_code=503, detail="Job runner not initialized")
+    return job_runner

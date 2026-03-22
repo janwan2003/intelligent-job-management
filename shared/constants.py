@@ -1,7 +1,6 @@
-"""Shared constants for the IJM event contract.
+"""Shared constants for the IJM project.
 
-Imported by both the API backend and the worker to ensure they agree on
-status values and NATS subject names.
+Imported by the backend to ensure consistent status values and defaults.
 """
 
 from enum import StrEnum
@@ -18,15 +17,7 @@ class JobStatus(StrEnum):
     PREEMPTED = "PREEMPTED"
 
 
-# NATS stream / subject names
-NATS_STREAM_NAME = "JOBS"
-NATS_SUBJECTS_PATTERN = "jobs.>"
-NATS_SUBJECT_SUBMITTED = "jobs.submitted"
-NATS_SUBJECT_STOP_REQUESTED = "jobs.stop_requested"
-NATS_SUBJECT_PROFILING_COMPLETE = "jobs.profiling_complete"
-NATS_SUBJECT_COMPLETED = "jobs.completed"
-
-# Defaults shared by both backend and worker
+# Defaults shared across modules
 DEFAULT_PROFILING_EPOCHS = 3
 
 # Data directories & file names

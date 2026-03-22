@@ -1,6 +1,5 @@
 """Constants for the IJM backend."""
 
-import json
 import os
 from enum import StrEnum
 
@@ -28,19 +27,6 @@ class NodeStatusEnum(StrEnum):
 
 
 # ---------------------------------------------------------------------------
-# NATS configuration (backend-specific)
-# ---------------------------------------------------------------------------
-
-NATS_CONSUMER_PROFILING = "api-profiling-complete"
-NATS_CONSUMER_COMPLETED = "api-completed"
-
-
-def nats_job_payload(job_id: str) -> bytes:
-    """Encode a job_id into the standard NATS message format."""
-    return json.dumps({"job_id": job_id}).encode()
-
-
-# ---------------------------------------------------------------------------
 # Defaults
 # ---------------------------------------------------------------------------
 
@@ -52,7 +38,6 @@ DEFAULT_EPOCHS_TOTAL = 20
 DEFAULT_PROFILING_CONFIGS_PER_JOB = 1
 
 DEFAULT_DATABASE_URL = "postgresql://postgres:postgres@localhost:5432/ijm"
-DEFAULT_NATS_URL = "nats://localhost:4222"
 
 # ---------------------------------------------------------------------------
 # CORS

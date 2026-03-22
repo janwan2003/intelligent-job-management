@@ -1,18 +1,17 @@
 """Comprehensive tests for job lifecycle: create, stop, resume, delete.
 
 Tests the state machine transitions and validates that invalid transitions
-are rejected with 409.  Uses mocked DB (via get_conn) and NATS (js).
+are rejected with 409.  Uses mocked DB (via get_conn) and job_runner.
 
 Also includes regression tests for multi-job concurrent execution and
 profiling-before-running enforcement.
 """
 
-import json
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime
 from typing import Any
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, patch
 
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
@@ -134,27 +133,26 @@ def _make_client(
     responses: dict[str, list[Any]] | None = None,
     default_rows: list[Any] | None = None,
 ) -> tuple[TestClient, FakeConn, AsyncMock]:
-    """Create a test client with mocked DB and NATS."""
+    """Create a test client with mocked DB and job runner."""
     app.router.lifespan_context = _noop_lifespan
 
     fake_conn = FakeConn(default_rows, responses)
-    fake_js = AsyncMock()
-    fake_js.publish.return_value = MagicMock(seq=1, duplicate=False)
+    fake_runner = AsyncMock()
 
     state_module.get_conn = _mock_get_conn(fake_conn)
-    state_module.js = fake_js
+    state_module.job_runner = fake_runner
 
     cluster.nodes = [
         {
             "id": "test-node",
             "isForProfiling": False,
             "cost": 0.1,
-            "resources": [{"gpu_type": "A40", "gpu_count": 1, "memory_per_gpu_gb": 48}],
+            "resources": [{"gpu_type": "A40", "gpu_count": 1}],
         },
     ]
 
     client = TestClient(app)
-    return client, fake_conn, fake_js
+    return client, fake_conn, fake_runner
 
 
 # ---------------------------------------------------------------------------
@@ -166,26 +164,24 @@ class TestStopJob:
     """Tests for POST /jobs/{job_id}/stop."""
 
     def test_stop_queued_job_sets_preempted_directly(self) -> None:
-        """Stopping a QUEUED job should set it to PREEMPTED without NATS."""
-        client, _conn, fake_js = _make_client(responses={"RETURNING": [("test-id-1",)]})
+        """Stopping a QUEUED job should set it to PREEMPTED without runner.stop."""
+        client, _conn, fake_runner = _make_client(responses={"RETURNING": [("test-id-1",)]})
 
         response = client.post("/jobs/test-id-1/stop")
         assert response.status_code == 202
         body = response.json()
         assert body["status"] == "stopped"
-        fake_js.publish.assert_not_called()
+        fake_runner.stop.assert_not_called()
 
-    def test_stop_running_job_publishes_nats(self) -> None:
-        """Stopping a RUNNING job should publish stop_requested to NATS."""
-        client, _conn, fake_js = _make_client(responses={"SELECT status": [("RUNNING",)]})
+    def test_stop_running_job_calls_runner_stop(self) -> None:
+        """Stopping a RUNNING job should call runner.stop."""
+        client, _conn, fake_runner = _make_client(responses={"SELECT status": [("RUNNING",)]})
 
         response = client.post("/jobs/test-id-2/stop")
         assert response.status_code == 202
         body = response.json()
         assert body["status"] == "stop_requested"
-        fake_js.publish.assert_called_once()
-        call_args = fake_js.publish.call_args
-        assert call_args[0][0] == "jobs.stop_requested"
+        fake_runner.stop.assert_called_once()
 
     def test_stop_nonexistent_job_returns_404(self) -> None:
         """Stopping a job that doesn't exist should return 404."""
@@ -209,17 +205,15 @@ class TestStopJob:
         response = client.post("/jobs/fail-id/stop")
         assert response.status_code == 409
 
-    def test_stop_profiling_job_publishes_nats(self) -> None:
-        """Stopping a PROFILING job should publish stop_requested to NATS."""
-        client, _conn, fake_js = _make_client(responses={"SELECT status": [("PROFILING",)]})
+    def test_stop_profiling_job_calls_runner_stop(self) -> None:
+        """Stopping a PROFILING job should call runner.stop."""
+        client, _conn, fake_runner = _make_client(responses={"SELECT status": [("PROFILING",)]})
 
         response = client.post("/jobs/prof-id/stop")
         assert response.status_code == 202
         body = response.json()
         assert body["status"] == "stop_requested"
-        fake_js.publish.assert_called_once()
-        call_args = fake_js.publish.call_args
-        assert call_args[0][0] == "jobs.stop_requested"
+        fake_runner.stop.assert_called_once()
 
     def test_stop_preempted_job_returns_409(self) -> None:
         """Cannot stop an already preempted job."""
@@ -238,21 +232,21 @@ class TestResumeJob:
     """Tests for POST /jobs/{job_id}/resume."""
 
     def test_resume_preempted_job_sets_queued(self) -> None:
-        """Resuming a PREEMPTED job should set it to QUEUED (no publish when no node available)."""
-        client, _conn, fake_js = _make_client(responses={"RETURNING": [("preempt-id",)]})
+        """Resuming a PREEMPTED job should set it to QUEUED (no enqueue when no node available)."""
+        client, _conn, fake_runner = _make_client(responses={"RETURNING": [("preempt-id",)]})
 
         response = client.post("/jobs/preempt-id/resume")
         assert response.status_code == 202
-        # No cluster nodes configured → schedule_job returns node_id=None → no NATS publish
-        fake_js.publish.assert_not_called()
+        # No cluster nodes configured → schedule_job returns node_id=None → no enqueue
+        fake_runner.enqueue.assert_not_called()
 
     def test_resume_failed_job_sets_queued(self) -> None:
-        """Resuming a FAILED job should set it to QUEUED (no publish when no node available)."""
-        client, _conn, fake_js = _make_client(responses={"RETURNING": [("fail-id",)]})
+        """Resuming a FAILED job should set it to QUEUED (no enqueue when no node available)."""
+        client, _conn, fake_runner = _make_client(responses={"RETURNING": [("fail-id",)]})
 
         response = client.post("/jobs/fail-id/resume")
         assert response.status_code == 202
-        fake_js.publish.assert_not_called()
+        fake_runner.enqueue.assert_not_called()
 
     def test_resume_nonexistent_job_returns_404(self) -> None:
         client, _conn, _ = _make_client()
@@ -320,16 +314,15 @@ class TestRapidStopResume:
         """Stopping an already stopped job returns 409."""
         conn = FakeConn(responses={"RETURNING": [("test",)]})
         app.router.lifespan_context = _noop_lifespan
-        fake_js = AsyncMock()
-        fake_js.publish.return_value = MagicMock(seq=1, duplicate=False)
+        fake_runner = AsyncMock()
         state_module.get_conn = _mock_get_conn(conn)
-        state_module.js = fake_js
+        state_module.job_runner = fake_runner
         cluster.nodes = [
             {
                 "id": "n",
                 "isForProfiling": False,
                 "cost": 0.1,
-                "resources": [{"gpu_type": "A40", "gpu_count": 1, "memory_per_gpu_gb": 48}],
+                "resources": [{"gpu_type": "A40", "gpu_count": 1}],
             }
         ]
         client = TestClient(app)
@@ -345,16 +338,15 @@ class TestRapidStopResume:
         """Resuming a QUEUED job (already resumed) returns 409."""
         conn = FakeConn(responses={"RETURNING": [("test",)]})
         app.router.lifespan_context = _noop_lifespan
-        fake_js = AsyncMock()
-        fake_js.publish.return_value = MagicMock(seq=1, duplicate=False)
+        fake_runner = AsyncMock()
         state_module.get_conn = _mock_get_conn(conn)
-        state_module.js = fake_js
+        state_module.job_runner = fake_runner
         cluster.nodes = [
             {
                 "id": "n",
                 "isForProfiling": False,
                 "cost": 0.1,
-                "resources": [{"gpu_type": "A40", "gpu_count": 1, "memory_per_gpu_gb": 48}],
+                "resources": [{"gpu_type": "A40", "gpu_count": 1}],
             }
         ]
         client = TestClient(app)
@@ -449,19 +441,20 @@ _CLUSTER_NODES = [
         "id": "node-a40-01",
         "isForProfiling": False,
         "cost": 0.15,
-        "resources": [{"gpu_type": "A40", "gpu_count": 4, "memory_per_gpu_gb": 48}],
+        "resources": [{"gpu_type": "A40", "gpu_count": 4}],
     },
     {
         "id": "node-a40-prof",
         "isForProfiling": True,
         "cost": 0.15,
-        "resources": [{"gpu_type": "A40", "gpu_count": 1, "memory_per_gpu_gb": 48}],
+        "resources": [{"gpu_type": "A40", "gpu_count": 1}],
     },
 ]
 
 
 def _job_row(
-    job_id: str = "job-001",
+    id: str = "job-001",
+    job_id: str = "test-job",
     image: str = "ijm-runtime:dev",
     command: list[str] | None = None,
     status: str = "QUEUED",
@@ -469,14 +462,16 @@ def _job_row(
     assigned_node: str | None = None,
     assigned_gpu_config: dict[str, int] | None = None,
     is_profiling_run: bool = False,
-    log_interval: int | None = None,
 ) -> dict[str, Any]:
     """Build a job row dict (matching dict_row format)."""
     now = datetime.now(UTC)
     return {
-        "id": job_id,
+        "id": id,
+        "job_id": job_id,
         "image": image,
         "command": command or ["python", "-u", "train.py"],
+        "script_path": None,
+        "directory_to_mount": None,
         "status": status,
         "created_at": now,
         "updated_at": now,
@@ -489,10 +484,8 @@ def _job_row(
         "epochs_total": None,
         "profiling_epochs_no": None,
         "assigned_node": assigned_node,
-        "required_memory_gb": None,
         "assigned_gpu_config": assigned_gpu_config,
         "is_profiling_run": is_profiling_run,
-        "log_interval": log_interval,
     }
 
 
@@ -505,15 +498,14 @@ def _make_rich_client(
     app.router.lifespan_context = _noop_lifespan
 
     fake_conn = FakeConn(db_rows, responses)
-    fake_js = AsyncMock()
-    fake_js.publish.return_value = MagicMock(seq=1, duplicate=False)
+    fake_runner = AsyncMock()
 
     state_module.get_conn = _mock_get_conn(fake_conn)
-    state_module.js = fake_js
+    state_module.job_runner = fake_runner
     cluster.nodes = cluster_nodes or list(_CLUSTER_NODES)
 
     client = TestClient(app)
-    return client, fake_conn, fake_js
+    return client, fake_conn, fake_runner
 
 
 # ---------------------------------------------------------------------------
@@ -526,9 +518,11 @@ class TestCreateJob:
 
     def test_create_job_minimal(self) -> None:
         """Create a job with just image and command."""
-        client, conn, fake_js = _make_rich_client()
+        client, conn, fake_runner = _make_rich_client()
 
-        response = client.post("/jobs", json={"image": "my-image:v1", "command": ["python", "run.py"]})
+        response = client.post(
+            "/jobs", json={"job_id": "test-job", "dockerImage": "my-image:v1", "command": ["python", "run.py"]}
+        )
         assert response.status_code == 201
         body = response.json()
         assert body["image"] == "my-image:v1"
@@ -537,7 +531,7 @@ class TestCreateJob:
         assert body["priority"] == 3
         assert body["is_profiling_run"] is True
         assert body["assigned_gpu_config"] is not None
-        fake_js.publish.assert_called_once()
+        fake_runner.enqueue.assert_called_once()
 
     def test_create_job_with_extended_fields(self) -> None:
         """Create a job with extended fields."""
@@ -546,7 +540,8 @@ class TestCreateJob:
         response = client.post(
             "/jobs",
             json={
-                "image": "train:latest",
+                "job_id": "test-train",
+                "dockerImage": "train:latest",
                 "command": ["python", "-u", "train.py"],
                 "Priority": 5,
                 "batchSize": 2048,
@@ -563,30 +558,32 @@ class TestCreateJob:
 
     def test_create_job_missing_image_returns_422(self) -> None:
         client, _conn, _ = _make_rich_client()
-        response = client.post("/jobs", json={"command": ["python", "run.py"]})
+        response = client.post("/jobs", json={"job_id": "test", "command": ["python", "run.py"]})
         assert response.status_code == 422
 
     def test_create_job_priority_out_of_range_returns_422(self) -> None:
         client, _conn, _ = _make_rich_client()
 
-        resp = client.post("/jobs", json={"image": "img", "command": ["cmd"], "Priority": 0})
+        resp = client.post("/jobs", json={"job_id": "t", "dockerImage": "img", "command": ["cmd"], "Priority": 0})
         assert resp.status_code == 422
 
-        resp = client.post("/jobs", json={"image": "img", "command": ["cmd"], "Priority": 6})
+        resp = client.post("/jobs", json={"job_id": "t", "dockerImage": "img", "command": ["cmd"], "Priority": 6})
         assert resp.status_code == 422
 
     def test_create_job_past_deadline_returns_422(self) -> None:
         client, _conn, _ = _make_rich_client()
         response = client.post(
             "/jobs",
-            json={"image": "img", "command": ["cmd"], "deadline": "2020-01-01T00:00:00Z"},
+            json={"job_id": "t", "dockerImage": "img", "command": ["cmd"], "deadline": "2020-01-01T00:00:00Z"},
         )
         assert response.status_code == 422
         assert "Deadline" in response.json()["detail"]
 
     def test_create_job_assigns_profiling_config(self) -> None:
         client, conn, _ = _make_rich_client()
-        response = client.post("/jobs", json={"image": "img:v1", "command": ["python", "train.py"]})
+        response = client.post(
+            "/jobs", json={"job_id": "test", "dockerImage": "img:v1", "command": ["python", "train.py"]}
+        )
         assert response.status_code == 201
         body = response.json()
         assert body["is_profiling_run"] is True
@@ -595,7 +592,7 @@ class TestCreateJob:
     def test_create_job_invalid_image_returns_422(self) -> None:
         """Invalid Docker image name returns 422."""
         client, _conn, _ = _make_rich_client()
-        response = client.post("/jobs", json={"image": "../evil", "command": ["cmd"]})
+        response = client.post("/jobs", json={"job_id": "t", "dockerImage": "../evil", "command": ["cmd"]})
         assert response.status_code == 422
         assert "Invalid Docker image" in response.json()["detail"]
 
@@ -609,7 +606,7 @@ class TestListJobs:
     """Tests for GET /jobs."""
 
     def test_list_jobs_returns_all(self) -> None:
-        rows = [_job_row(job_id="j1", status="QUEUED"), _job_row(job_id="j2", status="RUNNING")]
+        rows = [_job_row(id="j1", status="QUEUED"), _job_row(id="j2", status="RUNNING")]
         client, _conn, _ = _make_rich_client(db_rows=rows)
 
         response = client.get("/jobs")
@@ -637,7 +634,7 @@ class TestGetJob:
     """Tests for GET /jobs/{job_id}."""
 
     def test_get_job_found(self) -> None:
-        row = _job_row(job_id="j-abc", status="RUNNING", priority=4)
+        row = _job_row(id="j-abc", status="RUNNING", priority=4)
         client, _conn, _ = _make_rich_client(db_rows=[row])
 
         response = client.get("/jobs/j-abc")
@@ -694,7 +691,6 @@ class TestListNodes:
         assert len(a40["resources"]) == 1
         assert a40["resources"][0]["gpu_type"] == "A40"
         assert a40["resources"][0]["gpu_count"] == 4
-        assert a40["resources"][0]["memory_per_gpu_gb"] == 48
 
     def test_list_nodes_includes_profiling_flag(self) -> None:
         client, _conn, _ = _make_rich_client()
@@ -775,15 +771,14 @@ class TestComplexLifecycle:
     def test_create_then_stop_queued(self) -> None:
         """Create a job, then immediately stop it while still QUEUED."""
         conn = FakeConn(responses={"RETURNING": [("some-id",)]})
-        fake_js = AsyncMock()
-        fake_js.publish.return_value = MagicMock(seq=1, duplicate=False)
+        fake_runner = AsyncMock()
         app.router.lifespan_context = _noop_lifespan
         state_module.get_conn = _mock_get_conn(conn)
-        state_module.js = fake_js
+        state_module.job_runner = fake_runner
         cluster.nodes = list(_CLUSTER_NODES)
 
         client = TestClient(app)
-        resp = client.post("/jobs", json={"image": "img", "command": ["cmd"]})
+        resp = client.post("/jobs", json={"job_id": "test", "dockerImage": "img", "command": ["cmd"]})
         assert resp.status_code == 201
         job_id = resp.json()["id"]
 
@@ -792,32 +787,31 @@ class TestComplexLifecycle:
         assert resp.json()["status"] == "stopped"
 
     def test_create_stop_resume_full_cycle(self) -> None:
-        """Create → stop → resume → verify NATS calls."""
+        """Create -> stop -> resume -> verify runner calls."""
         conn = FakeConn(responses={"RETURNING": [("some-id",)]})
-        fake_js = AsyncMock()
-        fake_js.publish.return_value = MagicMock(seq=1, duplicate=False)
+        fake_runner = AsyncMock()
         app.router.lifespan_context = _noop_lifespan
         state_module.get_conn = _mock_get_conn(conn)
-        state_module.js = fake_js
+        state_module.job_runner = fake_runner
         cluster.nodes = list(_CLUSTER_NODES)
 
         client = TestClient(app)
-        resp = client.post("/jobs", json={"image": "img", "command": ["cmd"]})
+        resp = client.post("/jobs", json={"job_id": "test", "dockerImage": "img", "command": ["cmd"]})
         assert resp.status_code == 201
         job_id = resp.json()["id"]
-        assert fake_js.publish.call_count == 1
+        assert fake_runner.enqueue.call_count == 1
 
         resp = client.post(f"/jobs/{job_id}/stop")
         assert resp.status_code == 202
-        assert fake_js.publish.call_count == 1  # QUEUED→PREEMPTED, no NATS
+        assert fake_runner.enqueue.call_count == 1  # QUEUED->PREEMPTED, no enqueue
 
         resp = client.post(f"/jobs/{job_id}/resume")
         assert resp.status_code == 202
-        assert fake_js.publish.call_count == 2
+        assert fake_runner.enqueue.call_count == 2
 
     def test_resume_preserves_profiling_results(self) -> None:
         """Resume should NOT delete profiling results."""
-        client, conn, fake_js = _make_client(responses={"RETURNING": [("job-xyz",)]})
+        client, conn, _ = _make_client(responses={"RETURNING": [("job-xyz",)]})
 
         resp = client.post("/jobs/job-xyz/resume")
         assert resp.status_code == 202
@@ -850,59 +844,59 @@ class TestComplexLifecycle:
             resp = client.post("/jobs/test-id/resume")
             assert resp.status_code == 409, f"Expected 409 for status {status}, got {resp.status_code}"
 
-    def test_create_job_nats_payload_contains_job_id(self) -> None:
-        client, _conn, fake_js = _make_rich_client()
-        resp = client.post("/jobs", json={"image": "img", "command": ["cmd"]})
+    def test_create_job_enqueue_contains_job_id(self) -> None:
+        client, _conn, fake_runner = _make_rich_client()
+        resp = client.post("/jobs", json={"job_id": "test", "dockerImage": "img", "command": ["cmd"]})
         assert resp.status_code == 201
         job_id = resp.json()["id"]
 
-        publish_call = fake_js.publish.call_args
-        nats_data = json.loads(publish_call[0][1].decode())
-        assert nats_data["job_id"] == job_id
+        fake_runner.enqueue.assert_called_once()
+        enqueued_id = fake_runner.enqueue.call_args[0][0]
+        assert enqueued_id == job_id
 
-    def test_stop_running_nats_payload_contains_job_id(self) -> None:
-        client, _conn, fake_js = _make_client(responses={"SELECT status": [("RUNNING",)]})
+    def test_stop_running_calls_runner_stop_with_job_id(self) -> None:
+        client, _conn, fake_runner = _make_client(responses={"SELECT status": [("RUNNING",)]})
         resp = client.post("/jobs/run-job-123/stop")
         assert resp.status_code == 202
 
-        publish_call = fake_js.publish.call_args
-        nats_data = json.loads(publish_call[0][1].decode())
-        assert nats_data["job_id"] == "run-job-123"
+        fake_runner.stop.assert_called_once()
+        stopped_id = fake_runner.stop.call_args[0][0]
+        assert stopped_id == "run-job-123"
 
 
 # ---------------------------------------------------------------------------
-# _require_js edge case — DB is set but NATS is not
+# require_runner edge case — DB is set but runner is not
 # ---------------------------------------------------------------------------
 
 
-class TestRequireJs:
-    """Test that endpoints needing NATS return 503 when js is None."""
+class TestRequireRunner:
+    """Test that endpoints needing the job runner return 503 when job_runner is None."""
 
-    def test_create_job_returns_503_without_nats(self) -> None:
+    def test_create_job_returns_503_without_runner(self) -> None:
         app.router.lifespan_context = _noop_lifespan
         state_module.get_conn = _mock_get_conn(FakeConn())
-        state_module.js = None
+        state_module.job_runner = None
         cluster.nodes = list(_CLUSTER_NODES)
 
         client = TestClient(app)
-        resp = client.post("/jobs", json={"image": "img", "command": ["cmd"]})
+        resp = client.post("/jobs", json={"job_id": "test", "dockerImage": "img", "command": ["cmd"]})
         assert resp.status_code == 503
-        assert "NATS" in resp.json()["detail"]
+        assert "runner" in resp.json()["detail"].lower()
 
-    def test_stop_running_returns_503_without_nats(self) -> None:
+    def test_stop_running_returns_503_without_runner(self) -> None:
         app.router.lifespan_context = _noop_lifespan
         state_module.get_conn = _mock_get_conn(FakeConn(responses={"SELECT status": [("RUNNING",)]}))
-        state_module.js = None
+        state_module.job_runner = None
         cluster.nodes = list(_CLUSTER_NODES)
 
         client = TestClient(app)
         resp = client.post("/jobs/test/stop")
         assert resp.status_code == 503
 
-    def test_resume_returns_503_without_nats(self) -> None:
+    def test_resume_returns_503_without_runner(self) -> None:
         app.router.lifespan_context = _noop_lifespan
         state_module.get_conn = _mock_get_conn(FakeConn(responses={"RETURNING": [("test",)]}))
-        state_module.js = None
+        state_module.job_runner = None
         cluster.nodes = list(_CLUSTER_NODES)
 
         client = TestClient(app)
@@ -920,42 +914,42 @@ _REAL_CLUSTER_NODES = [
         "id": "node-a40-01",
         "isForProfiling": False,
         "cost": 0.15,
-        "resources": [{"gpu_type": "A40", "gpu_count": 4, "memory_per_gpu_gb": 48}],
+        "resources": [{"gpu_type": "A40", "gpu_count": 4}],
     },
     {
         "id": "node-mixed-01",
         "isForProfiling": False,
         "cost": 0.20,
         "resources": [
-            {"gpu_type": "A40", "gpu_count": 2, "memory_per_gpu_gb": 48},
-            {"gpu_type": "L40S", "gpu_count": 2, "memory_per_gpu_gb": 48},
+            {"gpu_type": "A40", "gpu_count": 2},
+            {"gpu_type": "L40S", "gpu_count": 2},
         ],
     },
     {
         "id": "node-l40s-01",
         "isForProfiling": False,
         "cost": 0.18,
-        "resources": [{"gpu_type": "L40S", "gpu_count": 2, "memory_per_gpu_gb": 48}],
+        "resources": [{"gpu_type": "L40S", "gpu_count": 2}],
     },
     {
         "id": "node-blackwell-01",
         "isForProfiling": False,
         "cost": 0.45,
-        "resources": [{"gpu_type": "Blackwell", "gpu_count": 2, "memory_per_gpu_gb": 192}],
+        "resources": [{"gpu_type": "Blackwell", "gpu_count": 2}],
     },
     {
         "id": "node-a40-prof",
         "isForProfiling": True,
         "cost": 0.15,
-        "resources": [{"gpu_type": "A40", "gpu_count": 1, "memory_per_gpu_gb": 48}],
+        "resources": [{"gpu_type": "A40", "gpu_count": 1}],
     },
     {
         "id": "node-mixed-prof",
         "isForProfiling": True,
         "cost": 0.25,
         "resources": [
-            {"gpu_type": "L40S", "gpu_count": 1, "memory_per_gpu_gb": 48},
-            {"gpu_type": "Blackwell", "gpu_count": 1, "memory_per_gpu_gb": 192},
+            {"gpu_type": "L40S", "gpu_count": 1},
+            {"gpu_type": "Blackwell", "gpu_count": 1},
         ],
     },
 ]
@@ -965,12 +959,16 @@ class TestMultiJobRegression:
     """Regression tests for multi-job submission."""
 
     def test_submit_many_jobs_all_get_profiling_assignment(self) -> None:
-        client, conn, fake_js = _make_rich_client(cluster_nodes=_REAL_CLUSTER_NODES)
+        client, conn, fake_runner = _make_rich_client(cluster_nodes=_REAL_CLUSTER_NODES)
 
         for i in range(6):
             resp = client.post(
                 "/jobs",
-                json={"image": f"train-img:v{i}", "command": ["python", "-u", "train.py"]},
+                json={
+                    "job_id": f"train-{i}",
+                    "dockerImage": f"train-img:v{i}",
+                    "command": ["python", "-u", "train.py"],
+                },
             )
             assert resp.status_code == 201, f"Job {i} creation failed: {resp.json()}"
             body = resp.json()
@@ -978,24 +976,25 @@ class TestMultiJobRegression:
             assert body["assigned_node"] is not None
             assert body["assigned_gpu_config"] is not None
 
-        assert fake_js.publish.call_count == 6
+        assert fake_runner.enqueue.call_count == 6
 
-    def test_all_nats_events_published_for_submitted_jobs(self) -> None:
-        client, _conn, fake_js = _make_rich_client(cluster_nodes=_REAL_CLUSTER_NODES)
+    def test_all_jobs_enqueued_after_submission(self) -> None:
+        client, _conn, fake_runner = _make_rich_client(cluster_nodes=_REAL_CLUSTER_NODES)
 
         job_ids: list[str] = []
         for _i in range(4):
-            resp = client.post("/jobs", json={"image": "img:latest", "command": ["python", "train.py"]})
+            resp = client.post(
+                "/jobs", json={"job_id": "test", "dockerImage": "img:latest", "command": ["python", "train.py"]}
+            )
             assert resp.status_code == 201
             job_ids.append(resp.json()["id"])
 
-        published_ids: set[str] = set()
-        for call in fake_js.publish.call_args_list:
-            payload = json.loads(call[0][1].decode())
-            published_ids.add(payload["job_id"])
+        enqueued_ids: set[str] = set()
+        for call in fake_runner.enqueue.call_args_list:
+            enqueued_ids.add(call[0][0])
 
         for jid in job_ids:
-            assert jid in published_ids
+            assert jid in enqueued_ids
 
     def test_profiling_before_running_invariant(self) -> None:
         sched = ProfilingScheduler()
@@ -1081,8 +1080,8 @@ class TestMultiJobRegression:
         assert result.gpu_config is not None
         profiled.append((result.gpu_config,))
 
-        # Post-profiling (profiled_this_round=1): round limit reached → standard run
-        result = await sched.schedule_job(conn, "job-limit", profiled_this_round=1)
+        # Post-profiling: round limit reached (1 claimed in profiling_results) → standard run
+        result = await sched.schedule_job(conn, "job-limit")
         assert result.is_profiling_run is False
         assert result.mode == "standard"
 
@@ -1098,13 +1097,13 @@ class TestMultiJobRegression:
                 "id": "n1",
                 "isForProfiling": False,
                 "cost": 0.1,
-                "resources": [{"gpu_type": "A40", "gpu_count": 1, "memory_per_gpu_gb": 48}],
+                "resources": [{"gpu_type": "A40", "gpu_count": 1}],
             },
             {
                 "id": "n-prof",
                 "isForProfiling": True,
                 "cost": 0.1,
-                "resources": [{"gpu_type": "A40", "gpu_count": 1, "memory_per_gpu_gb": 48}],
+                "resources": [{"gpu_type": "A40", "gpu_count": 1}],
             },
         ]
         sched = ProfilingScheduler()
@@ -1150,13 +1149,13 @@ class TestMultiJobRegression:
 
         assert JobStatus.PROFILING in STOPPABLE_STATUSES
 
-        client, _conn, fake_js = _make_client(responses={"SELECT status": [("PROFILING",)]})
+        client, _conn, fake_runner = _make_client(responses={"SELECT status": [("PROFILING",)]})
         resp = client.post("/jobs/prof-job/stop")
         assert resp.status_code == 202
-        fake_js.publish.assert_called_once()
+        fake_runner.stop.assert_called_once()
 
     def test_resume_preserves_profiling_and_profiles_next(self) -> None:
-        client, conn, fake_js = _make_rich_client(
+        client, conn, fake_runner = _make_rich_client(
             responses={"RETURNING": [("resume-job",)]},
             cluster_nodes=_REAL_CLUSTER_NODES,
         )
@@ -1167,5 +1166,4 @@ class TestMultiJobRegression:
         delete_queries = [q for q, _p in conn.queries if "DELETE" in q and "profiling_results" in q]
         assert len(delete_queries) == 0
 
-        nats_calls = [c for c in fake_js.publish.call_args_list if c[0][0] == "jobs.submitted"]
-        assert len(nats_calls) >= 1
+        assert fake_runner.enqueue.call_count >= 1

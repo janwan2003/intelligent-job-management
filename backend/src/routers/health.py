@@ -21,7 +21,7 @@ async def root() -> dict[str, str]:
 
 @router.get("/health")
 async def health_check() -> JSONResponse:
-    """Detailed health check — pings DB and NATS."""
+    """Detailed health check — pings DB and checks job runner."""
     checks: dict[str, Any] = {"version": "0.1.0"}
     healthy = True
 
@@ -34,11 +34,9 @@ async def health_check() -> JSONResponse:
         checks["database"] = "unavailable"
         healthy = False
 
-    # Check NATS
-    if state.nc and state.nc.is_connected:
-        checks["nats"] = "ok"
-    else:
-        checks["nats"] = "unavailable"
+    # Check job runner
+    checks["job_runner"] = "ok" if state.job_runner is not None else "unavailable"
+    if state.job_runner is None:
         healthy = False
 
     checks["status"] = "healthy" if healthy else "degraded"

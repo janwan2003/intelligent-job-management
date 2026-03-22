@@ -3,8 +3,11 @@
 
 CREATE TABLE IF NOT EXISTS jobs (
     id                 TEXT PRIMARY KEY,
+    job_id             TEXT NOT NULL,
     image              TEXT NOT NULL,
     command            JSONB NOT NULL,
+    script_path        TEXT,
+    directory_to_mount TEXT,
     status             TEXT NOT NULL,
     created_at         TIMESTAMPTZ NOT NULL,
     updated_at         TIMESTAMPTZ NOT NULL,
@@ -17,21 +20,20 @@ CREATE TABLE IF NOT EXISTS jobs (
     epochs_total       INT,
     profiling_epochs_no INT,
     assigned_node      TEXT,
-    required_memory_gb INT,
     assigned_gpu_config JSONB,
-    is_profiling_run   BOOLEAN DEFAULT FALSE,
-    log_interval       INT DEFAULT 50
+    is_profiling_run   BOOLEAN DEFAULT FALSE
 );
 
 CREATE INDEX IF NOT EXISTS idx_jobs_status     ON jobs(status);
 CREATE INDEX IF NOT EXISTS idx_jobs_created_at ON jobs(created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_jobs_job_id     ON jobs(job_id);
 
 CREATE TABLE IF NOT EXISTS profiling_results (
     id               TEXT PRIMARY KEY,
     job_id           TEXT NOT NULL,
     gpu_config       JSONB NOT NULL,
     node_id          TEXT NOT NULL,
-    duration_seconds FLOAT NOT NULL,
+    duration_seconds FLOAT,
     created_at       TIMESTAMPTZ NOT NULL
 );
 

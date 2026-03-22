@@ -23,7 +23,7 @@ _original_get_conn = state_module.get_conn
 
 @asynccontextmanager
 async def _noop_lifespan(_app: FastAPI) -> AsyncGenerator[None]:
-    """Test lifespan that skips database and NATS connections."""
+    """Test lifespan that skips database connections."""
     yield
 
 
@@ -31,10 +31,9 @@ async def _noop_lifespan(_app: FastAPI) -> AsyncGenerator[None]:
 def client() -> TestClient:
     """Create a test client with mocked lifespan."""
     app.router.lifespan_context = _noop_lifespan
-    # Reset global state so get_conn / require_js raise 503
+    # Reset global state so get_conn / require_runner raise 503
     state_module.pool = None
-    state_module.js = None
-    state_module.nc = None
+    state_module.job_runner = None
     state_module.get_conn = _original_get_conn
     return TestClient(app)
 
@@ -47,13 +46,13 @@ def test_root(client: TestClient) -> None:
 
 
 def test_health_check_degraded_when_not_connected(client: TestClient) -> None:
-    """Test health check returns degraded when DB and NATS are not connected."""
+    """Test health check returns degraded when DB and job runner are not connected."""
     response = client.get("/health")
     assert response.status_code == 503
     data = response.json()
     assert data["status"] == "degraded"
     assert data["database"] == "unavailable"
-    assert data["nats"] == "unavailable"
+    assert data["job_runner"] == "unavailable"
 
 
 def test_list_jobs_returns_503_when_db_not_initialized(client: TestClient) -> None:
@@ -70,9 +69,12 @@ def test_list_nodes_returns_503_when_db_not_initialized(client: TestClient) -> N
 
 def _make_row(
     *,
-    job_id: str = "id-123",
+    id: str = "id-123",
+    job_id: str = "test-job",
     image: str = "image:latest",
     command: list[str] | None = None,
+    script_path: str | None = None,
+    directory_to_mount: str | None = None,
     status: str = "QUEUED",
     progress: str | None = None,
     priority: int = 3,
@@ -81,17 +83,18 @@ def _make_row(
     epochs_total: int | None = None,
     profiling_epochs_no: int | None = None,
     assigned_node: str | None = None,
-    required_memory_gb: int | None = None,
     assigned_gpu_config: dict[str, int] | None = None,
     is_profiling_run: bool = False,
-    log_interval: int | None = None,
 ) -> dict[str, Any]:
     """Helper to build a job row dict (matching dict_row format)."""
     now = datetime.now(UTC)
     return {
-        "id": job_id,
+        "id": id,
+        "job_id": job_id,
         "image": image,
         "command": command or ["python", "train.py"],
+        "script_path": script_path,
+        "directory_to_mount": directory_to_mount,
         "status": status,
         "created_at": now,
         "updated_at": now,
@@ -104,10 +107,8 @@ def _make_row(
         "epochs_total": epochs_total,
         "profiling_epochs_no": profiling_epochs_no,
         "assigned_node": assigned_node,
-        "required_memory_gb": required_memory_gb,
         "assigned_gpu_config": assigned_gpu_config,
         "is_profiling_run": is_profiling_run,
-        "log_interval": log_interval,
     }
 
 
@@ -131,7 +132,7 @@ def test_job_model_validate() -> None:
 
 def test_job_model_validate_with_progress() -> None:
     """Test the row-to-Job conversion with progress field."""
-    row = _make_row(job_id="id-456", image="img:v1", status="RUNNING", progress="150/10000")
+    row = _make_row(id="id-456", image="img:v1", status="RUNNING", progress="150/10000")
     job = Job.model_validate(row)
     assert job.status == "RUNNING"
     assert job.progress == "150/10000"
@@ -215,13 +216,6 @@ def test_cluster_manager_get_energy_cost() -> None:
     assert cm.get_energy_cost("A40", 8) is None
 
 
-def test_job_model_validate_with_required_memory_gb() -> None:
-    """Test row-to-Job includes required_memory_gb field."""
-    row = _make_row(required_memory_gb=96)
-    job = Job.model_validate(row)
-    assert job.required_memory_gb == 96
-
-
 def test_job_model_validate_with_profiling_fields() -> None:
     """Test row-to-Job includes profiling scheduler fields."""
     row = _make_row(
@@ -246,37 +240,37 @@ def test_get_valid_configurations() -> None:
             "id": "node-a40-01",
             "isForProfiling": False,
             "cost": 0.15,
-            "resources": [{"gpu_type": "A40", "gpu_count": 4, "memory_per_gpu_gb": 48}],
+            "resources": [{"gpu_type": "A40", "gpu_count": 4}],
         },
         {
             "id": "node-a40-prof",
             "isForProfiling": True,
             "cost": 0.15,
-            "resources": [{"gpu_type": "A40", "gpu_count": 1, "memory_per_gpu_gb": 48}],
+            "resources": [{"gpu_type": "A40", "gpu_count": 1}],
         },
         {
             "id": "node-l40s-01",
             "isForProfiling": False,
             "cost": 0.18,
-            "resources": [{"gpu_type": "L40S", "gpu_count": 2, "memory_per_gpu_gb": 48}],
+            "resources": [{"gpu_type": "L40S", "gpu_count": 2}],
         },
         {
             "id": "node-l40s-prof",
             "isForProfiling": True,
             "cost": 0.18,
-            "resources": [{"gpu_type": "L40S", "gpu_count": 1, "memory_per_gpu_gb": 48}],
+            "resources": [{"gpu_type": "L40S", "gpu_count": 1}],
         },
         {
             "id": "node-blackwell-01",
             "isForProfiling": False,
             "cost": 0.45,
-            "resources": [{"gpu_type": "Blackwell", "gpu_count": 2, "memory_per_gpu_gb": 192}],
+            "resources": [{"gpu_type": "Blackwell", "gpu_count": 2}],
         },
         {
             "id": "node-blackwell-prof",
             "isForProfiling": True,
             "cost": 0.45,
-            "resources": [{"gpu_type": "Blackwell", "gpu_count": 1, "memory_per_gpu_gb": 192}],
+            "resources": [{"gpu_type": "Blackwell", "gpu_count": 1}],
         },
     ]
 
@@ -301,13 +295,13 @@ def test_get_valid_configurations_deduplicates() -> None:
             "id": "n1",
             "isForProfiling": False,
             "cost": 0.1,
-            "resources": [{"gpu_type": "A40", "gpu_count": 2, "memory_per_gpu_gb": 48}],
+            "resources": [{"gpu_type": "A40", "gpu_count": 2}],
         },
         {
             "id": "n2",
             "isForProfiling": True,
             "cost": 0.1,
-            "resources": [{"gpu_type": "A40", "gpu_count": 1, "memory_per_gpu_gb": 48}],
+            "resources": [{"gpu_type": "A40", "gpu_count": 1}],
         },
     ]
 
@@ -325,13 +319,13 @@ def test_find_node_for_config_exact_match() -> None:
             "id": "big",
             "isForProfiling": False,
             "cost": 0.15,
-            "resources": [{"gpu_type": "A40", "gpu_count": 4, "memory_per_gpu_gb": 48}],
+            "resources": [{"gpu_type": "A40", "gpu_count": 4}],
         },
         {
             "id": "small",
             "isForProfiling": True,
             "cost": 0.15,
-            "resources": [{"gpu_type": "A40", "gpu_count": 1, "memory_per_gpu_gb": 48}],
+            "resources": [{"gpu_type": "A40", "gpu_count": 1}],
         },
     ]
 
@@ -348,7 +342,7 @@ def test_find_node_for_config_larger_node() -> None:
             "id": "big",
             "isForProfiling": False,
             "cost": 0.15,
-            "resources": [{"gpu_type": "A40", "gpu_count": 4, "memory_per_gpu_gb": 48}],
+            "resources": [{"gpu_type": "A40", "gpu_count": 4}],
         },
     ]
 
@@ -365,7 +359,7 @@ def test_find_node_for_config_no_match() -> None:
             "id": "n1",
             "isForProfiling": False,
             "cost": 0.15,
-            "resources": [{"gpu_type": "L40S", "gpu_count": 2, "memory_per_gpu_gb": 48}],
+            "resources": [{"gpu_type": "L40S", "gpu_count": 2}],
         },
     ]
 
@@ -381,13 +375,13 @@ def test_configurations_endpoint(client: TestClient) -> None:
             "id": "n1",
             "isForProfiling": False,
             "cost": 0.1,
-            "resources": [{"gpu_type": "A40", "gpu_count": 2, "memory_per_gpu_gb": 48}],
+            "resources": [{"gpu_type": "A40", "gpu_count": 2}],
         },
         {
             "id": "n2",
             "isForProfiling": True,
             "cost": 0.1,
-            "resources": [{"gpu_type": "A40", "gpu_count": 1, "memory_per_gpu_gb": 48}],
+            "resources": [{"gpu_type": "A40", "gpu_count": 1}],
         },
     ]
 
@@ -431,19 +425,19 @@ def test_find_node_for_config_prefers_smallest_surplus() -> None:
             "id": "big",
             "isForProfiling": False,
             "cost": 0.1,
-            "resources": [{"gpu_type": "A40", "gpu_count": 8, "memory_per_gpu_gb": 48}],
+            "resources": [{"gpu_type": "A40", "gpu_count": 8}],
         },
         {
             "id": "medium",
             "isForProfiling": False,
             "cost": 0.1,
-            "resources": [{"gpu_type": "A40", "gpu_count": 4, "memory_per_gpu_gb": 48}],
+            "resources": [{"gpu_type": "A40", "gpu_count": 4}],
         },
         {
             "id": "small",
             "isForProfiling": False,
             "cost": 0.1,
-            "resources": [{"gpu_type": "A40", "gpu_count": 2, "memory_per_gpu_gb": 48}],
+            "resources": [{"gpu_type": "A40", "gpu_count": 2}],
         },
     ]
     sched = ProfilingScheduler()
@@ -487,8 +481,8 @@ def test_mixed_gpu_node_valid_configurations() -> None:
             "isForProfiling": True,
             "cost": 0.2,
             "resources": [
-                {"gpu_type": "A40", "gpu_count": 2, "memory_per_gpu_gb": 48},
-                {"gpu_type": "L40S", "gpu_count": 3, "memory_per_gpu_gb": 48},
+                {"gpu_type": "A40", "gpu_count": 2},
+                {"gpu_type": "L40S", "gpu_count": 3},
             ],
         },
         {
@@ -496,8 +490,8 @@ def test_mixed_gpu_node_valid_configurations() -> None:
             "isForProfiling": False,
             "cost": 0.3,
             "resources": [
-                {"gpu_type": "A40", "gpu_count": 2, "memory_per_gpu_gb": 48},
-                {"gpu_type": "L40S", "gpu_count": 3, "memory_per_gpu_gb": 48},
+                {"gpu_type": "A40", "gpu_count": 2},
+                {"gpu_type": "L40S", "gpu_count": 3},
             ],
         },
     ]
@@ -520,8 +514,8 @@ def test_find_node_for_config_mixed_gpu() -> None:
             "isForProfiling": False,
             "cost": 0.2,
             "resources": [
-                {"gpu_type": "A40", "gpu_count": 2, "memory_per_gpu_gb": 48},
-                {"gpu_type": "Blackwell", "gpu_count": 1, "memory_per_gpu_gb": 192},
+                {"gpu_type": "A40", "gpu_count": 2},
+                {"gpu_type": "Blackwell", "gpu_count": 1},
             ],
         },
     ]
@@ -547,8 +541,8 @@ def test_node_status_resources_is_list(client: TestClient) -> None:
             "isForProfiling": False,
             "cost": 0.2,
             "resources": [
-                {"gpu_type": "A40", "gpu_count": 2, "memory_per_gpu_gb": 48},
-                {"gpu_type": "Blackwell", "gpu_count": 1, "memory_per_gpu_gb": 192},
+                {"gpu_type": "A40", "gpu_count": 2},
+                {"gpu_type": "Blackwell", "gpu_count": 1},
             ],
         },
     ]
@@ -634,13 +628,13 @@ async def test_schedule_job_exploration_mode() -> None:
             "id": "prod",
             "isForProfiling": False,
             "cost": 0.1,
-            "resources": [{"gpu_type": "A40", "gpu_count": 2, "memory_per_gpu_gb": 48}],
+            "resources": [{"gpu_type": "A40", "gpu_count": 2}],
         },
         {
             "id": "prof",
             "isForProfiling": True,
             "cost": 0.1,
-            "resources": [{"gpu_type": "A40", "gpu_count": 1, "memory_per_gpu_gb": 48}],
+            "resources": [{"gpu_type": "A40", "gpu_count": 1}],
         },
     ]
 
@@ -660,7 +654,7 @@ async def test_schedule_job_standard_mode_after_all_profiled() -> None:
             "id": "n1",
             "isForProfiling": False,
             "cost": 0.1,
-            "resources": [{"gpu_type": "A40", "gpu_count": 1, "memory_per_gpu_gb": 48}],
+            "resources": [{"gpu_type": "A40", "gpu_count": 1}],
         },
     ]
     call_count = 0
@@ -705,7 +699,7 @@ async def test_schedule_job_standard_mode_no_available_node() -> None:
             "id": "prof-only",
             "isForProfiling": True,  # no production nodes in this cluster
             "cost": 0.1,
-            "resources": [{"gpu_type": "A40", "gpu_count": 1, "memory_per_gpu_gb": 48}],
+            "resources": [{"gpu_type": "A40", "gpu_count": 1}],
         },
     ]
 
@@ -744,13 +738,13 @@ async def test_schedule_job_skips_fully_allocated_nodes() -> None:
             "id": "full-node",
             "isForProfiling": False,
             "cost": 0.1,
-            "resources": [{"gpu_type": "A40", "gpu_count": 2, "memory_per_gpu_gb": 48}],
+            "resources": [{"gpu_type": "A40", "gpu_count": 2}],
         },
         {
             "id": "free-node",
             "isForProfiling": False,
             "cost": 0.1,
-            "resources": [{"gpu_type": "A40", "gpu_count": 2, "memory_per_gpu_gb": 48}],
+            "resources": [{"gpu_type": "A40", "gpu_count": 2}],
         },
     ]
 
@@ -788,7 +782,7 @@ async def test_schedule_job_packs_onto_partially_used_node() -> None:
             "id": "partial-node",
             "isForProfiling": False,
             "cost": 0.1,
-            "resources": [{"gpu_type": "A40", "gpu_count": 4, "memory_per_gpu_gb": 48}],
+            "resources": [{"gpu_type": "A40", "gpu_count": 4}],
         },
     ]
 
@@ -833,8 +827,8 @@ async def test_one_config_per_submit_then_standard() -> None:
             "isForProfiling": False,
             "cost": 0.1,
             "resources": [
-                {"gpu_type": "A40", "gpu_count": 2, "memory_per_gpu_gb": 48},
-                {"gpu_type": "L40S", "gpu_count": 2, "memory_per_gpu_gb": 48},
+                {"gpu_type": "A40", "gpu_count": 2},
+                {"gpu_type": "L40S", "gpu_count": 2},
             ],
         },
         {
@@ -842,8 +836,8 @@ async def test_one_config_per_submit_then_standard() -> None:
             "isForProfiling": True,
             "cost": 0.1,
             "resources": [
-                {"gpu_type": "A40", "gpu_count": 1, "memory_per_gpu_gb": 48},
-                {"gpu_type": "L40S", "gpu_count": 1, "memory_per_gpu_gb": 48},
+                {"gpu_type": "A40", "gpu_count": 1},
+                {"gpu_type": "L40S", "gpu_count": 1},
             ],
         },
     ]
@@ -901,7 +895,7 @@ async def test_profiling_skipped_when_all_configs_already_tested() -> None:
             "id": "n1",
             "isForProfiling": False,
             "cost": 0.1,
-            "resources": [{"gpu_type": "A40", "gpu_count": 1, "memory_per_gpu_gb": 48}],
+            "resources": [{"gpu_type": "A40", "gpu_count": 1}],
         },
     ]
 
@@ -939,8 +933,8 @@ async def test_profiling_explores_all_configs_exhaustively() -> None:
             "isForProfiling": False,
             "cost": 0.1,
             "resources": [
-                {"gpu_type": "A40", "gpu_count": 2, "memory_per_gpu_gb": 48},
-                {"gpu_type": "L40S", "gpu_count": 1, "memory_per_gpu_gb": 48},
+                {"gpu_type": "A40", "gpu_count": 2},
+                {"gpu_type": "L40S", "gpu_count": 1},
             ],
         },
     ]
@@ -977,7 +971,7 @@ async def test_profiling_explores_all_configs_exhaustively() -> None:
     assert len(profiled) == len(all_configs)
 
 
-def test_require_js_returns_503_when_not_initialized(client: TestClient) -> None:
-    """POST /jobs returns 503 when NATS is not initialized."""
-    response = client.post("/jobs", json={"image": "test", "command": ["python"]})
+def test_require_runner_returns_503_when_not_initialized(client: TestClient) -> None:
+    """POST /jobs returns 503 when job runner is not initialized."""
+    response = client.post("/jobs", json={"job_id": "test", "dockerImage": "test", "command": ["python"]})
     assert response.status_code == 503
