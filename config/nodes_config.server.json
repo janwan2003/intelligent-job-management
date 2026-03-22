@@ -1,0 +1,10 @@
+[
+  {
+    "id": "matemagician",
+    "isForProfiling": true,
+    "cost": 0.10,
+    "resources": [
+      { "gpu_type": "QuadroP600", "gpu_count": 2 }
+    ]
+  }
+]

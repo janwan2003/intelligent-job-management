@@ -1,0 +1,53 @@
+version: "2"
+
+services:
+  postgres:
+    image: postgres:16
+    container_name: wangrat-ijm-postgres
+    restart: unless-stopped
+    security_opt:
+      - seccomp=unconfined
+    environment:
+      POSTGRES_DB: ijm
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+    ports:
+      - "5433:5432"
+    volumes:
+      - ../data/pg:/var/lib/postgresql
+
+  api:
+    build:
+      context: ..
+      dockerfile: backend/Dockerfile.server
+    container_name: wangrat-ijm-api
+    restart: unless-stopped
+    security_opt:
+      - seccomp=unconfined
+    environment:
+      DATABASE_URL: postgresql://postgres:postgres@postgres:5432/ijm
+      HOST_ROOT: /host
+      HOST_PROJECT_ROOT: ${HOST_PROJECT_ROOT}
+      EXECUTOR: docker
+      NODES_CONFIG: config/nodes_config.server.json
+      CORS_ORIGINS: "http://localhost:5173,http://localhost:8080"
+    ports:
+      - "8000:8000"
+    depends_on:
+      - postgres
+    volumes:
+      - ../config:/app/config:ro
+      - ../data:/data:ro
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ..:/host
+
+  frontend:
+    build:
+      context: ../frontend
+      dockerfile: Dockerfile.server
+    container_name: wangrat-ijm-frontend
+    restart: unless-stopped
+    ports:
+      - "8080:80"
+    depends_on:
+      - api
