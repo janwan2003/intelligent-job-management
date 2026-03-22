@@ -11,7 +11,7 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
-import { JOB_ID_DISPLAY_LENGTH, formatGpuConfig } from "@/config/constants";
+import { formatGpuConfig } from "@/config/constants";
 import { cn } from "@/lib/utils";
 import type { ProfilingResult, GpuConfiguration } from "@/types/job";
 
@@ -48,7 +48,17 @@ export default function Profiling() {
     FAILED: 4,
     SUCCEEDED: 5,
   };
-  const sortedJobs = [...(jobs ?? [])].sort(
+  // Deduplicate by job_id (type) — keep the instance with the best (lowest) status order
+  const dedupedJobs = Object.values(
+    [...(jobs ?? [])].reduce<Record<string, (typeof jobs extends (infer T)[] | undefined ? T : never)>>((acc, job) => {
+      const existing = acc[job.job_id];
+      if (!existing || (statusOrder[job.status] ?? 9) < (statusOrder[existing.status] ?? 9)) {
+        acc[job.job_id] = job;
+      }
+      return acc;
+    }, {}),
+  );
+  const sortedJobs = dedupedJobs.sort(
     (a, b) => (statusOrder[a.status] ?? 9) - (statusOrder[b.status] ?? 9),
   );
 
@@ -80,17 +90,17 @@ export default function Profiling() {
                 <button
                   key={job.id}
                   type="button"
-                  onClick={() => setSelectedJobId(job.id)}
+                  onClick={() => setSelectedJobId(job.job_id)}
                   className={cn(
                     "w-full text-left rounded-md border px-3 py-2 transition-colors",
-                    selectedJobId === job.id
+                    selectedJobId === job.job_id
                       ? "border-primary bg-primary/5"
                       : "border-border bg-card hover:bg-muted/50",
                   )}
                 >
                   <div className="flex items-center justify-between gap-2">
                     <span className="font-mono text-xs font-medium">
-                      {job.id.slice(0, JOB_ID_DISPLAY_LENGTH)}
+                      {job.job_id}
                     </span>
                     <StatusBadge status={job.status} />
                   </div>

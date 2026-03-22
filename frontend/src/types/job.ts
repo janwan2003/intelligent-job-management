@@ -4,8 +4,11 @@ export type ApiJobStatus = "QUEUED" | "PROFILING" | "RUNNING" | "SUCCEEDED" | "F
 /** Job shape as returned by the API */
 export interface ApiJob {
   id: string;
+  job_id: string;
   image: string;
   command: string[];
+  script_path?: string;
+  directory_to_mount?: string;
   status: ApiJobStatus;
   created_at: string;
   updated_at: string;
@@ -18,15 +21,16 @@ export interface ApiJob {
   epochs_total: number;
   profiling_epochs_no: number;
   assigned_node?: string;
-  required_memory_gb?: number;
   assigned_gpu_config?: Record<string, number>;
-  estimated_duration?: number;
   is_profiling_run?: boolean;
 }
 
 /** Payload for creating a new job */
 export interface CreateJobPayload {
-  image: string;
+  job_id: string;
+  dockerImage: string;
+  scriptPath?: string;
+  directoryToMount?: string;
   command?: string[];
   Priority?: number;
   deadline?: string;
@@ -53,7 +57,6 @@ export interface GpuConfiguration {
 export interface NodeResources {
   gpu_type: string;
   gpu_count: number;
-  memory_per_gpu_gb: number;
 }
 
 /** Node shape as returned by the API */

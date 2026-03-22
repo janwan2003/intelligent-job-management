@@ -33,7 +33,10 @@ export default function SubmitJob() {
   const navigate = useNavigate();
   const createJob = useCreateJob();
 
+  const [jobId, setJobId] = useState("");
   const [image, setImage] = useState(DEFAULT_IMAGE);
+  const [scriptPath, setScriptPath] = useState("");
+  const [directoryToMount, setDirectoryToMount] = useState("");
   const [priority, setPriority] = useState(DEFAULT_JOB_PRIORITY);
   const [deadlineDate, setDeadlineDate] = useState("");
   const [deadlineTime, setDeadlineTime] = useState("23:59");
@@ -44,6 +47,10 @@ export default function SubmitJob() {
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
 
+    if (!jobId.trim()) {
+      toast.error("Job ID is required");
+      return;
+    }
     if (!image.trim()) {
       toast.error("Docker image is required");
       return;
@@ -51,11 +58,14 @@ export default function SubmitJob() {
 
     createJob.mutate(
       {
-        image: image.trim(),
-        Priority: priority,
+        job_id: jobId.trim(),
+        dockerImage: image.trim(),
         epochsTotal: epochsTotal,
         profilingEpochsNo: profilingEpochsNo,
+        Priority: priority,
         ...(batchSize !== undefined && { batchSize }),
+        ...(scriptPath.trim() && { scriptPath: scriptPath.trim() }),
+        ...(directoryToMount.trim() && { directoryToMount: directoryToMount.trim() }),
         ...(deadlineDate && { deadline: `${deadlineDate}T${deadlineTime || "23:59"}:00` }),
       },
       {
@@ -83,22 +93,71 @@ export default function SubmitJob() {
           <div className="rounded-lg border border-border bg-card p-5 space-y-4">
             <h2 className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">Container</h2>
 
-            {/* Docker Image */}
-            <div className="space-y-1.5">
-              <Label htmlFor="image" className="text-xs">
-                Docker Image <span className="text-destructive">*</span>
-                <FieldHint text="The Docker image to run. Must be pre-built and available on the host (e.g. via docker build)." />
-              </Label>
-              <Input
-                id="image"
-                value={image}
-                onChange={(e) => setImage(e.target.value)}
-                placeholder="e.g. ijm-runtime:dev"
-                className="font-mono text-sm"
-                required
-              />
+            <div className="grid grid-cols-2 gap-4">
+              {/* Job ID */}
+              <div className="space-y-1.5">
+                <Label htmlFor="jobId" className="text-xs">
+                  Job ID <span className="text-destructive">*</span>
+                  <FieldHint text="Type identifier for this job (e.g. 'LSTM-small'). Reusing the same ID across submissions correlates profiling results." />
+                </Label>
+                <Input
+                  id="jobId"
+                  value={jobId}
+                  onChange={(e) => setJobId(e.target.value)}
+                  placeholder="e.g. LSTM-small"
+                  className="font-mono text-sm"
+                  required
+                />
+              </div>
+
+              {/* Docker Image */}
+              <div className="space-y-1.5">
+                <Label htmlFor="image" className="text-xs">
+                  Docker Image <span className="text-destructive">*</span>
+                  <FieldHint text="The Docker image to run. Must be pre-built and available on the host (e.g. via docker build)." />
+                </Label>
+                <Input
+                  id="image"
+                  value={image}
+                  onChange={(e) => setImage(e.target.value)}
+                  placeholder="e.g. ijm-lstm-small:dev"
+                  className="font-mono text-sm"
+                  required
+                />
+              </div>
             </div>
 
+            <div className="grid grid-cols-2 gap-4">
+              {/* Script Path */}
+              <div className="space-y-1.5">
+                <Label htmlFor="scriptPath" className="text-xs">
+                  Script Path
+                  <FieldHint text="Path to the training script inside the container or mounted directory (e.g. 'train.py'). If set, overrides the Docker CMD." />
+                </Label>
+                <Input
+                  id="scriptPath"
+                  value={scriptPath}
+                  onChange={(e) => setScriptPath(e.target.value)}
+                  placeholder="optional"
+                  className="font-mono text-sm"
+                />
+              </div>
+
+              {/* Directory to Mount */}
+              <div className="space-y-1.5">
+                <Label htmlFor="directoryToMount" className="text-xs">
+                  Directory to Mount
+                  <FieldHint text="Host directory to mount into the container at /workspace (e.g. '/data/my-project'). Used for custom training scripts and data." />
+                </Label>
+                <Input
+                  id="directoryToMount"
+                  value={directoryToMount}
+                  onChange={(e) => setDirectoryToMount(e.target.value)}
+                  placeholder="optional"
+                  className="font-mono text-sm"
+                />
+              </div>
+            </div>
           </div>
 
           {/* Training Parameters */}

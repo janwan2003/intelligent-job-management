@@ -1,0 +1,159 @@
+This section describes the system configuration files and the job submission API.
+
+\subsection{Cluster Configuration}
+
+Cluster topology is defined in two JSON files loaded at startup (paths configurable via environment variables).
+
+\subsubsection{Node Configuration (\texttt{nodes\_config.json})}
+
+Each entry describes a compute node with its GPU resources.
+
+\begin{lstlisting}[language={}, numbers=none]
+[
+  {
+    "id": "node-a40-01",
+    "isForProfiling": false,
+    "cost": 0.15,
+    "resources": [
+      { "gpu_type": "A40", "gpu_count": 4 }
+    ]
+  }
+]
+\end{lstlisting}
+
+\begin{table}[H]
+\centering
+\begin{tabularx}{\textwidth}{l l X}
+\hline
+\textbf{Field} & \textbf{Type} & \textbf{Description} \\
+\hline
+\texttt{id} & string & Unique node identifier \\
+\texttt{isForProfiling} & bool & If \texttt{true}, the node is reserved exclusively for profiling runs \\
+\texttt{cost} & float & Idle cost of the node (EUR/h) \\
+\texttt{resources} & array & GPU resources attached to the node \\
+\texttt{resources[].gpu\_type} & string & GPU model name (e.g.\ \texttt{A40}, \texttt{L40S}) \\
+\texttt{resources[].gpu\_count} & int & Number of GPUs of this type \\
+\hline
+\end{tabularx}
+\caption{Node configuration fields.}
+\label{tab:node-config}
+\end{table}
+
+GPU type and count are declared explicitly in the configuration rather than auto-detected at runtime.
+This allows mixed-GPU nodes (e.g.\ a node with both A40 and L40S GPUs), which ANDREAS did not support.
+
+\subsubsection{GPU Energy Costs (\texttt{gpu\_energy\_costs.json})}
+
+Maps GPU type and count to hourly energy cost (EUR/h), used by the scheduler.
+
+\begin{lstlisting}[language={}, numbers=none]
+{
+  "A40":  { "1": 0.15, "2": 0.28, "4": 0.54 },
+  "L40S": { "1": 0.18, "2": 0.34, "4": 0.65 }
+}
+\end{lstlisting}
+
+\subsection{Job Submission}
+
+\textbf{Endpoint:} \texttt{POST /jobs}
+
+\subsubsection{Request Body}
+
+\begin{lstlisting}[language={}, numbers=none]
+{
+  "job_id": "LSTM-small",
+  "dockerImage": "ijm-lstm-small:dev",
+  "scriptPath": "train.py",
+  "directoryToMount": "/data/my-project",
+  "Priority": 3,
+  "deadline": "2026-03-20T18:00:00",
+  "batchSize": 64,
+  "profilingEpochsNo": 3,
+  "epochsTotal": 20
+}
+\end{lstlisting}
+
+\begin{table}[H]
+\centering
+\begin{tabularx}{\textwidth}{l l l X}
+\hline
+\textbf{Field} & \textbf{Type} & \textbf{Required} & \textbf{Description} \\
+\hline
+\texttt{job\_id} & string & yes & Reusable job type identifier; profiling results are correlated across submissions sharing the same \texttt{job\_id} \\
+\texttt{dockerImage} & string & yes & Docker image to execute \\
+\texttt{scriptPath} & string & no & Path to training script (overrides Docker CMD with \texttt{python3 <scriptPath>}) \\
+\texttt{directoryToMount} & string & no & Host directory mounted into the container at \texttt{/workspace} \\
+\texttt{command} & string[] & no & Command and arguments (defaults to image entrypoint; overridden by \texttt{scriptPath}) \\
+\texttt{Priority} & int 1--5 & no & Job priority (default 3) \\
+\texttt{deadline} & datetime & no & Job deadline (ISO 8601) \\
+\texttt{batchSize} & int & no & Batch size passed as \texttt{BATCH\_SIZE} env var \\
+\texttt{profilingEpochsNo} & int $\geq 1$ & no & Epochs for profiling runs (default 3) \\
+\texttt{epochsTotal} & int $\geq 1$ & no & Total training epochs (default 20) \\
+\hline
+\end{tabularx}
+\caption{Job creation request fields.}
+\label{tab:job-create}
+\end{table}
+
+Each submission receives a unique UUID instance ID (\texttt{id}) for lifecycle tracking, separate from the \texttt{job\_id} type identifier.
+When \texttt{scriptPath} is provided, the container runs \texttt{python3 <scriptPath>}; otherwise the Docker image's default CMD is used.
+Unlike ANDREAS, \texttt{Priority} and \texttt{deadline} are optional, and an additional \texttt{command} field provides flexibility for non-standard workloads.
+
+\subsubsection{Response (201 Created)}
+
+Returns the full job object including scheduler decisions:
+
+\begin{lstlisting}[language={}, numbers=none]
+{
+  "id": "a1b2c3d4-...",
+  "job_id": "LSTM-small",
+  "image": "ijm-lstm-small:dev",
+  "command": ["python3", "train.py"],
+  "status": "QUEUED",
+  "is_profiling_run": true,
+  "assigned_node": "node-mixed-prof",
+  "assigned_gpu_config": { "A40": 1 },
+  "priority": 3,
+  "epochs_total": 20,
+  "profiling_epochs_no": 3,
+  "created_at": "2026-03-18T10:00:00Z",
+  "updated_at": "2026-03-18T10:00:00Z",
+  ...
+}
+\end{lstlisting}
+
+The response immediately shows the scheduling decision: assigned node, GPU configuration, and whether this is a profiling run.
+
+\subsection{Full API Overview}
+
+Table~\ref{tab:api-endpoints} lists all endpoints.
+Interactive documentation is available at \texttt{/docs} (Swagger~UI) and \texttt{/redoc} when the API is running.
+
+\begin{table}[H]
+\centering
+\begin{tabularx}{\textwidth}{l l X}
+\hline
+\textbf{Method} & \textbf{Path} & \textbf{Description} \\
+\hline
+\texttt{GET}    & \texttt{/}                            & Health check (basic) \\
+\texttt{GET}    & \texttt{/health}                      & Detailed health (DB + job runner) \\
+\texttt{GET}    & \texttt{/nodes}                       & List cluster nodes with status \\
+\texttt{GET}    & \texttt{/gpu-costs}                   & GPU energy cost table \\
+\texttt{GET}    & \texttt{/configurations}              & Valid GPU configurations \\
+\texttt{POST}   & \texttt{/jobs}                        & Submit a new job \\
+\texttt{GET}    & \texttt{/jobs}                        & List all jobs (paginated) \\
+\texttt{GET}    & \texttt{/jobs/\{id\}}                 & Get job by ID \\
+\texttt{DELETE} & \texttt{/jobs/\{id\}}                 & Delete a job \\
+\texttt{DELETE} & \texttt{/jobs}                        & Delete all jobs \\
+\texttt{POST}   & \texttt{/jobs/\{id\}/stop}            & Stop a running job \\
+\texttt{POST}   & \texttt{/jobs/\{id\}/resume}          & Resume a stopped/failed job \\
+\texttt{GET}    & \texttt{/jobs/\{id\}/logs}            & Retrieve job output log \\
+\texttt{GET}    & \texttt{/profiling-results/\{id\}}    & Profiling results for a job type \\
+\hline
+\end{tabularx}
+\caption{API endpoints.}
+\label{tab:api-endpoints}
+\end{table}
+
+All scheduling, profiling, and job execution are consolidated into a single FastAPI service, in contrast to ANDREAS which split these across a Java Jobs Manager and a C++ Jobs Optimizer.
+IJM exposes explicit \texttt{stop}, \texttt{resume}, \texttt{logs}, and \texttt{delete} endpoints, as well as \texttt{/profiling-results} and \texttt{/configurations} to give users visibility into the scheduler's state.

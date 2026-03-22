@@ -83,9 +83,9 @@ export default function ClusterStatus() {
                       </span>
                     </div>
                     <div className="flex justify-between">
-                      <span className="text-muted-foreground">VRAM</span>
+                      <span className="text-muted-foreground">Total GPUs</span>
                       <span className="text-card-foreground font-mono">
-                        {node.resources.reduce((sum, r) => sum + r.gpu_count * r.memory_per_gpu_gb, 0)} GB
+                        {node.resources.reduce((sum, r) => sum + r.gpu_count, 0)}
                       </span>
                     </div>
                   </>

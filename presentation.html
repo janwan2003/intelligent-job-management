@@ -7,9 +7,9 @@
 <style>
   * { box-sizing: border-box; margin: 0; padding: 0; }
   body {
-    font-family: 'Courier New', monospace;
-    background: #0d0d0d;
-    color: #e0e0e0;
+    font-family: -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+    background: #ffffff;
+    color: #1a1a1a;
     display: flex;
     flex-direction: column;
     align-items: center;
@@ -24,31 +24,33 @@
     justify-content: flex-start;
   }
   .slide.active { display: flex; }
-  h1 { font-size: 2rem; color: #ffffff; margin-bottom: 8px; }
-  h2 { font-size: 1.4rem; color: #aaffaa; margin-bottom: 24px; border-bottom: 1px solid #333; padding-bottom: 8px; }
-  h3 { font-size: 1rem; color: #ffcc66; margin: 18px 0 8px; }
-  p, li { font-size: 0.92rem; line-height: 1.65; color: #cccccc; }
+  h1 { font-size: 2rem; color: #1a1a1a; margin-bottom: 8px; }
+  h2 { font-size: 1.4rem; color: #0066cc; margin-bottom: 24px; border-bottom: 2px solid #e0e0e0; padding-bottom: 8px; }
+  h3 { font-size: 1rem; color: #333; margin: 18px 0 8px; }
+  p, li { font-size: 0.92rem; line-height: 1.65; color: #444; }
   ul { padding-left: 20px; }
   li { margin-bottom: 5px; }
-  .sub { color: #888; font-size: 0.85rem; }
-  .tag { background: #1e3a1e; color: #aaffaa; padding: 1px 7px; border-radius: 3px; font-size: 0.78rem; }
-  .tag.red { background: #3a1e1e; color: #ff9999; }
-  .tag.yellow { background: #3a3a1e; color: #ffdd99; }
+  .sub { color: #777; font-size: 0.85rem; }
+  .tag { background: #e6f4ea; color: #1a7f37; padding: 1px 7px; border-radius: 3px; font-size: 0.78rem; }
+  .tag.red { background: #fde8e8; color: #c53030; }
+  .tag.yellow { background: #fef3cd; color: #856404; }
   pre {
-    background: #111;
-    border: 1px solid #2a2a2a;
+    background: #f6f8fa;
+    border: 1px solid #e1e4e8;
     padding: 14px 18px;
+    font-family: 'Courier New', monospace;
     font-size: 0.82rem;
     line-height: 1.6;
     overflow-x: auto;
     margin: 12px 0;
-    border-radius: 4px;
+    border-radius: 6px;
+    color: #24292e;
   }
   .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; margin-top: 8px; }
   .grid3 { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 18px; margin-top: 8px; }
-  .box { border: 1px solid #2a2a2a; background: #111; padding: 14px 16px; border-radius: 4px; }
+  .box { border: 1px solid #e1e4e8; background: #fafbfc; padding: 14px 16px; border-radius: 6px; }
   .box h3 { margin-top: 0; }
-  .arrow { color: #555; }
+  .arrow { color: #999; }
   .flow {
     display: flex;
     align-items: center;
@@ -58,15 +60,15 @@
     font-size: 0.88rem;
   }
   .state {
-    border: 1px solid #444;
+    border: 1px solid #ccc;
     padding: 4px 12px;
     border-radius: 3px;
     white-space: nowrap;
   }
-  .state.green { border-color: #3a7a3a; color: #aaffaa; }
-  .state.blue  { border-color: #3a5a7a; color: #99ccff; }
-  .state.yellow{ border-color: #7a7a3a; color: #ffdd99; }
-  .state.red   { border-color: #7a3a3a; color: #ff9999; }
+  .state.green { border-color: #2da44e; color: #1a7f37; background: #e6f4ea; }
+  .state.blue  { border-color: #0066cc; color: #0550ae; background: #ddf4ff; }
+  .state.yellow{ border-color: #bf8700; color: #856404; background: #fef3cd; }
+  .state.red   { border-color: #cf222e; color: #c53030; background: #fde8e8; }
   .nav {
     position: fixed;
     bottom: 28px;
@@ -75,21 +77,21 @@
     align-items: center;
   }
   button {
-    background: #1a1a1a;
-    border: 1px solid #333;
-    color: #ccc;
+    background: #f6f8fa;
+    border: 1px solid #d0d7de;
+    color: #24292e;
     padding: 7px 22px;
     font-family: inherit;
     font-size: 0.85rem;
     cursor: pointer;
-    border-radius: 3px;
+    border-radius: 6px;
   }
-  button:hover { border-color: #aaffaa; color: #aaffaa; }
-  .counter { color: #555; font-size: 0.82rem; min-width: 60px; text-align: center; }
+  button:hover { border-color: #0066cc; color: #0066cc; }
+  .counter { color: #999; font-size: 0.82rem; min-width: 60px; text-align: center; }
   .title-card { margin-top: 80px; }
   .title-card h1 { font-size: 2.6rem; }
-  .highlight { color: #aaffaa; }
-  .note { color: #666; font-size: 0.8rem; margin-top: 8px; font-style: italic; }
+  .highlight { color: #0066cc; }
+  .note { color: #888; font-size: 0.8rem; margin-top: 8px; font-style: italic; }
 </style>
 </head>
 <body>
@@ -98,7 +100,7 @@
 <div class="slide active">
   <div class="title-card">
     <h1>Intelligent Job Management</h1>
-    <p style="color:#aaffaa; margin-top:6px; font-size:1.1rem;">v0.1.0 Prototype</p>
+    <p style="color:#0066cc; margin-top:6px; font-size:1.1rem;">v0.1.0 Prototype</p>
     <p class="sub" style="margin-top:24px;">
       GPU cluster job scheduler with automatic hardware profiling,<br>
       stoppable/resumable execution, and checkpoint-based recovery.
@@ -114,27 +116,26 @@
   <h2>Architecture</h2>
   <div class="grid3">
     <div class="box">
-      <h3>Application Programming Interface (API) <span class="tag">:8000</span></h3>
+      <h3>API + JobRunner <span class="tag">:8000</span></h3>
       <ul>
         <li>FastAPI + psycopg3 connection pool</li>
-        <li>Job Create, Read, Update, Delete (CRUD) + state machine</li>
+        <li>Job CRUD + state machine</li>
         <li>Profiling scheduler</li>
-        <li>Publishes + subscribes to NATS</li>
+        <li>Runs containers via Executor interface</li>
       </ul>
     </div>
     <div class="box">
-      <h3>Worker</h3>
+      <h3>Executor Abstraction</h3>
       <ul>
-        <li>Publishes + subscribes to NATS (Neural Autonomic Transport System)</li>
-        <li>Runs Docker containers</li>
-        <li>Streams logs, parses progress</li>
-        <li>Reconciles state on startup</li>
+        <li>DockerExecutor (prototype)</li>
+        <li>MockSlurmExecutor (testing)</li>
+        <li>SlurmExecutor (Polimi cluster)</li>
       </ul>
     </div>
     <div class="box">
       <h3>Frontend <span class="tag">:5173</span></h3>
       <ul>
-        <li>React 19 + TanStack Query (Single-Page Application)</li>
+        <li>React 19 + TanStack Query (SPA)</li>
         <li>Dashboard, Queue, Submit</li>
         <li>Cluster Status, Profiling</li>
       </ul>
@@ -142,19 +143,18 @@
   </div>
   <div class="grid2" style="margin-top:18px;">
     <div class="box">
-      <h3>PostgreSQL (SQL = Structured Query Language)</h3>
+      <h3>PostgreSQL</h3>
       <ul>
         <li><code>jobs</code> — metadata + scheduling decisions</li>
-        <li><code>profiling_results</code> — per-config durations</li>
+        <li><code>profiling_results</code> — per-config durations (keyed by job type)</li>
       </ul>
     </div>
     <div class="box">
-      <h3>NATS JetStream</h3>
+      <h3>ANDREAS-compatible API</h3>
       <ul>
-        <li><code>jobs.submitted</code> — job ready to run</li>
-        <li><code>jobs.stop_requested</code> — stop/preempt</li>
-        <li><code>jobs.profiling_complete</code> — result</li>
-        <li><code>jobs.completed</code> — node freed up</li>
+        <li><code>job_id</code> — reusable type identifier for profiling correlation</li>
+        <li><code>dockerImage</code>, <code>scriptPath</code>, <code>directoryToMount</code></li>
+        <li><code>epochsTotal</code>, <code>batchSize</code>, <code>profilingEpochsNo</code></li>
       </ul>
     </div>
   </div>
@@ -163,35 +163,34 @@
 <!-- Slide 3: Async Processes & Communication -->
 <div class="slide">
   <h2>Async Processes &amp; Communication</h2>
-  <p>Both API and Worker are <span class="highlight">single-threaded asyncio</span> processes — concurrency via coroutines, not threads.</p>
+  <p>Single-process, <span class="highlight">single-threaded asyncio</span> — concurrency via coroutines, not threads. No message bus needed.</p>
 
   <div class="grid2" style="margin-top:14px;">
     <div class="box">
-      <h3 style="color:#99ccff;">API (FastAPI)</h3>
+      <h3 style="color:#0550ae;">HTTP Layer (FastAPI)</h3>
       <ul>
-        <li>HTTP handlers — create, stop, resume, list</li>
-        <li><code>_profiling_listener</code> — awaits <code>jobs.profiling_complete</code>, stores result, re-schedules</li>
-        <li><code>_completed_listener</code> — awaits <code>jobs.completed</code>, schedules waiting jobs</li>
-        <li><code>_queue_watcher</code> — 60 s poll safety net</li>
+        <li>Job CRUD — create, stop, resume, list, delete</li>
+        <li>Profiling scheduler — type-based correlation</li>
+        <li><code>schedule_lock</code> serialises scheduling decisions</li>
+        <li><code>_queue_watcher</code> — periodic retry for unscheduled jobs</li>
       </ul>
-      <p class="note" style="margin-top:8px;"><code>schedule_lock</code> (asyncio.Lock) serialises all scheduling decisions across coroutines.</p>
     </div>
     <div class="box">
-      <h3 style="color:#ffcc66;">Worker</h3>
+      <h3 style="color:#856404;">JobRunner</h3>
       <ul>
-        <li><code>_handle_job_submitted</code> — awaits <code>jobs.submitted</code>, enqueues job</li>
-        <li><code>_handle_stop_requested</code> — awaits <code>jobs.stop_requested</code>, sends SIGTERM</li>
-        <li><code>_handle_resume_requested</code> — awaits <code>jobs.resume_requested</code></li>
-        <li><code>_job_runner</code> — dequeues and runs Docker containers concurrently</li>
-        <li><code>_run_job</code> — one task per container: exec, stream logs, report completion</li>
+        <li><code>asyncio.Queue</code> dispatch loop</li>
+        <li>Concurrent container execution via Executor</li>
+        <li>Progress parsing (<code>Epoch X/Y</code>)</li>
+        <li>Profiling result callback &rarr; re-schedule</li>
+        <li>Kill-based preemption (no SIGTERM)</li>
       </ul>
     </div>
   </div>
 
-  <h3>Inter-process flow</h3>
-  <pre>Hypertext Transfer Protocol (HTTP) request  →  API publishes NATS event  →  Worker picks up
-Worker finishes →  publishes completed/profiling_complete  →  API listener reacts
-All scheduling goes through schedule_lock  →  reads GPU usage from DB  →  assigns node</pre>
+  <h3>Request flow</h3>
+  <pre>HTTP POST /jobs  →  INSERT + schedule_job()  →  enqueue(instance_id)
+JobRunner dequeues  →  Executor.run()  →  stream logs, parse progress
+Container exits  →  on_profiling_complete() or on_job_completed()  →  re-schedule waiting jobs</pre>
 </div>
 
 <!-- Slide 4: State Machine -->
@@ -244,7 +243,7 @@ All scheduling goes through schedule_lock  →  reads GPU usage from DB  →  as
 
   <div class="grid2" style="margin-top:14px;">
     <div class="box">
-      <h3 style="color:#99ccff;">Exploration</h3>
+      <h3 style="color:#0550ae;">Exploration</h3>
       <ul>
         <li>Enumerate configs as cartesian product of profiling-node GPU counts</li>
         <li>Intersect with configs production nodes can run</li>
@@ -254,7 +253,7 @@ All scheduling goes through schedule_lock  →  reads GPU usage from DB  →  as
       </ul>
     </div>
     <div class="box">
-      <h3 style="color:#aaffaa;">Exploitation</h3>
+      <h3 style="color:#0066cc;">Exploitation</h3>
       <ul>
         <li>All configs profiled → pick first with available production node</li>
         <li>Duration recorded but not yet used for config ranking</li>

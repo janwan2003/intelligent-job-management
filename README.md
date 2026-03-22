@@ -14,10 +14,10 @@ A minimal end-to-end job management system for GPU-accelerated deep learning clu
 ### 1. Build the runtime containers
 
 ```bash
-docker build -t ijm-runtime:dev runtime/                                        # Simple MLP
-docker build -t ijm-cnn:dev -f runtime/Dockerfile.cnn runtime/                  # CNN
-docker build -t ijm-lstm:dev -f runtime/Dockerfile.lstm runtime/                # LSTM
-docker build -t ijm-efficientnet:dev -f runtime/Dockerfile.efficientnet runtime/ # EfficientNet
+docker build -t ijm-lstm-small:dev --build-arg SCRIPT=lstm_small.py runtime/
+docker build -t ijm-lstm-big:dev --build-arg SCRIPT=lstm_big.py runtime/
+docker build -t ijm-convnet:dev --build-arg SCRIPT=convnet.py runtime/
+docker build -t ijm-efficientnet:dev --build-arg SCRIPT=efficientnet.py runtime/
 ```
 
 ### 2. Create data directories
@@ -35,9 +35,7 @@ docker compose up --build
 
 This starts:
 - **Postgres** (port 5432) - Job state database
-- **NATS** (ports 4222, 8222) - Event bus with JetStream
-- **API** (port 8000) - FastAPI backend with profiling scheduler
-- **Worker** - Job executor with Docker container management
+- **API** (port 8000) - FastAPI backend with job runner + profiling scheduler
 - **Frontend** (port 5173) - React UI
 
 ### 4. Access the UI
@@ -51,26 +49,23 @@ Test the complete workflow:
 1. **Submit a job**:
    - Open the UI at http://localhost:5173
    - Use the Submit Job form with:
-     - Image: `ijm-runtime:dev` (or `ijm-cnn:dev`, `ijm-lstm:dev`, `ijm-efficientnet:dev`)
-     - Command: `python -u train.py` (or `train_cnn.py`, `train_lstm.py`, `train_efficientnet.py`)
+     - Image: `ijm-lstm-small:dev` (or `ijm-lstm-big:dev`, `ijm-convnet:dev`, `ijm-efficientnet:dev`)
    - Job is assigned a GPU configuration and enters `PROFILING` mode first
    - After profiling, it runs on the best configuration in `RUNNING` mode
 
 2. **Stop the job**:
    - Click "Stop" button on the running job
-   - Container receives SIGTERM and exits cleanly
-   - Checkpoint file is created at `data/checkpoints/<job_id>/latest.pt`
+   - Container is killed immediately (checkpoint saved after last completed epoch)
    - Job status changes to `PREEMPTED`
 
 3. **Resume the job**:
    - Click "Resume" button on the preempted job
    - Container starts again with same checkpoint mount
-   - Runtime loads checkpoint and continues from previous step
-   - Job profiles the next untested GPU configuration
+   - Loads checkpoint and continues from last completed epoch
 
 4. **Verify checkpoint persistence**:
-   - Check that training continues from the step where it was stopped
-   - Look at console output to see step numbers resume correctly
+   - Check that training continues from the epoch where it was killed
+   - Look at console output: `Resumed from epoch N`
 
 ## Architecture
 
@@ -114,10 +109,10 @@ Training containers must:
 
 | Image | Script | Architecture | Dataset |
 |-------|--------|-------------|---------|
-| `ijm-runtime:dev` | `train.py` | LSTM-small (1-layer, 128 hidden) | MNIST |
-| `ijm-lstm:dev` | `train_lstm.py` | LSTM-big (3-layer, 256 hidden) | MNIST |
-| `ijm-cnn:dev` | `train_cnn.py` | ConvNet (3-layer CNN) | CIFAR-10 |
-| `ijm-efficientnet:dev` | `train_efficientnet.py` | MBConv EfficientNet | CIFAR-10 |
+| `ijm-lstm-small:dev` | `lstm_small.py` | LSTM (1-layer, 128 hidden) | MNIST |
+| `ijm-lstm-big:dev` | `lstm_big.py` | LSTM (3-layer, 256 hidden) | MNIST |
+| `ijm-convnet:dev` | `convnet.py` | ConvNet (3-layer CNN + BN) | CIFAR-10 |
+| `ijm-efficientnet:dev` | `efficientnet.py` | MBConv EfficientNet | CIFAR-10 |
 
 All images follow the same checkpoint contract and support `EPOCHS_TOTAL` and `BATCH_SIZE` environment variables.
 
@@ -256,11 +251,3 @@ documentation/    # ANDREAS project deliverables (D1, D2, D3)
 **Frontend**: TypeScript, React 19, Vite, TanStack React Query, Tailwind, shadcn/ui
 **Infrastructure**: Docker, Postgres 16, NATS 2.12 with JetStream
 **Worker**: Python 3.13, asyncio, Docker CLI, pip
-
-## Non-Goals (v0)
-
-- Authentication/authorization
-- API gateway
-- Kubernetes deployment
-- Multi-tenancy
-- Resource quotas/limits

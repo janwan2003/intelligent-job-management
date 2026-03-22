@@ -1,34 +1,103 @@
-\subsection{Overview}
-% TODO: High-level description of the system architecture.
+\subsection{Profiling}
+
+The profiling subsystem incrementally benchmarks GPU configurations before committing to a full training run.
+Each time a job is submitted, the \texttt{ProfilingScheduler} selects one untested configuration (fewest total GPUs first), runs the training script for a small number of epochs on a dedicated profiling node, and records the measured duration.
+Profiling results are keyed by the user-provided \texttt{job\_id} (a reusable type identifier, e.g.\ \texttt{LSTM-small}), not the per-submission instance UUID.
+This means submitting the same \texttt{job\_id} multiple times incrementally builds profiling data across submissions.
+Once enough configurations have been profiled (controlled by the \texttt{PROFILING\_CONFIGS\_PER\_JOB} environment variable, default~1), the job is re-queued as a standard run on the best available production node.
+
+Figure~\ref{fig:seq-submit} shows what happens when a user submits a job.
+Figure~\ref{fig:seq-profiling-loop} shows the profiling cycle that follows when the scheduler decides to profile.
 
 \begin{figure}[H]
 \centering
-% TODO: Place diagram PNG in Images/ and update filename
-% \includegraphics[width=\textwidth]{Images/architecture}
-\fbox{\parbox{0.85\textwidth}{\centering\vspace{2cm}Architecture diagram placeholder\vspace{2cm}}}
-\caption{System architecture.}
-\label{fig:arch}
+\footnotesize
+\setlength{\unitlength}{0.9cm}
+\begin{sequencediagram}
+  \newthread{user}{User}
+  \newinst[2]{api}{API + Scheduler}
+  \newinst[2]{db}{PostgreSQL}
+  \newinst[2]{runner}{JobRunner}
+
+  \begin{call}{user}{\textsc{post} /jobs \{job\_id, dockerImage, \ldots\}}{api}{instance\_id}
+    \begin{call}{api}{INSERT INTO jobs}{db}{}
+    \end{call}
+    \begin{call}{api}{SELECT profiling\_results WHERE job\_id}{db}{profiled configs}
+    \end{call}
+    \begin{call}{api}{SELECT running jobs (node usage)}{db}{busy nodes}
+    \end{call}
+    \begin{callself}{api}{decide: profile or standard run}{}
+    \end{callself}
+    \begin{call}{api}{UPDATE jobs SET assignment}{db}{}
+    \end{call}
+    \begin{messcall}{api}{enqueue(instance\_id)}{runner}
+    \end{messcall}
+  \end{call}
+\end{sequencediagram}
+\caption{Job submission and scheduling.  The API inserts the job, queries existing profiling results and current node usage from PostgreSQL, then decides the mode: if untested GPU configurations remain and the per-submission profiling budget is not exhausted, the job is assigned to a profiling node; otherwise it is assigned to a production node for a standard run.  The decision is persisted and the job is enqueued for execution.}
+\label{fig:seq-submit}
 \end{figure}
-
-\subsection{Components}
-% TODO: Describe each component.
-
-\subsection{Job State Machine}
-% TODO: Describe state transitions.
 
 \begin{figure}[H]
 \centering
-\begin{minipage}{0.85\textwidth}
-\begin{lstlisting}[numbers=none]
-STATE_A --> STATE_B --> STATE_C
-\end{lstlisting}
-\end{minipage}
-\caption{Job state machine.}
-\label{fig:state-machine}
+\footnotesize
+\setlength{\unitlength}{0.9cm}
+\begin{sequencediagram}
+  \newthread{runner}{JobRunner}
+  \newinst[1]{exec}{Executor}
+  \newinst[1]{api}{API + Scheduler}
+  \newinst[1]{db}{PostgreSQL}
+
+  \begin{sdblock}{loop}{while profiled this round $<$ \texttt{CONFIGS\_PER\_JOB} and untested configs remain}
+    \begin{call}{runner}{UPDATE status = PROFILING}{db}{}
+    \end{call}
+    \begin{call}{runner}{run(container, image, env)}{exec}{exit code}
+    \end{call}
+    \begin{call}{runner}{on\_profiling\_complete(duration)}{api}{}
+      \begin{call}{api}{INSERT profiling\_results}{db}{}
+      \end{call}
+      \begin{call}{api}{SELECT profiled count since submission}{db}{count}
+      \end{call}
+      \begin{call}{api}{SELECT node usage}{db}{busy nodes}
+      \end{call}
+      \begin{callself}{api}{decide: profile next config or standard run}{}
+      \end{callself}
+      \begin{call}{api}{UPDATE jobs SET QUEUED + new assignment}{db}{}
+      \end{call}
+    \end{call}
+    \begin{messcall}{api}{enqueue(instance\_id)}{runner}
+    \end{messcall}
+  \end{sdblock}
+\end{sequencediagram}
+\caption[Profiling cycle.]{Profiling cycle.  After each profiling container exits, the \texttt{JobRunner} reports the measured duration to the API.  The API records the result, then re-runs the same scheduling logic as Figure~\ref{fig:seq-submit}: it checks the profiled count for this submission against \texttt{CONFIGS\_PER\_JOB} and whether untested configurations remain.  If the budget allows, the next untested config is assigned and the loop repeats; otherwise the job transitions to a standard run on the best profiled configuration.}
+\label{fig:seq-profiling-loop}
 \end{figure}
 
-\subsection{Data Persistence}
-% TODO: Describe storage layers.
+Figure~\ref{fig:seq-standard-run} shows the standard run execution, which follows once profiling is complete (or is skipped entirely if all configurations are already profiled).
 
-\subsection{Communication}
-% TODO: Describe inter-component communication.
+\begin{figure}[H]
+\centering
+\footnotesize
+\setlength{\unitlength}{0.9cm}
+\begin{sequencediagram}
+  \newthread{runner}{JobRunner}
+  \newinst[1]{exec}{Executor}
+  \newinst[1]{api}{API + Scheduler}
+  \newinst[1]{db}{PostgreSQL}
+
+  \begin{call}{runner}{UPDATE status = RUNNING}{db}{}
+  \end{call}
+  \begin{call}{runner}{run(container, image, env)}{exec}{exit code}
+  \end{call}
+  \begin{call}{runner}{on\_job\_completed(exit\_code)}{api}{}
+    \begin{call}{api}{UPDATE jobs SET SUCCEEDED/FAILED}{db}{}
+    \end{call}
+    \begin{call}{api}{SELECT QUEUED jobs}{db}{waiting jobs}
+    \end{call}
+    \begin{callself}{api}{schedule waiting jobs on freed node}{}
+    \end{callself}
+  \end{call}
+\end{sequencediagram}
+\caption{Standard run execution.  The \texttt{JobRunner} launches the training container via the \texttt{Executor} and waits for it to exit.  On completion, the API sets the final status (SUCCEEDED or FAILED) and attempts to schedule any waiting QUEUED jobs onto the now-free node.}
+\label{fig:seq-standard-run}
+\end{figure}
