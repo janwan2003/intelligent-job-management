@@ -8,16 +8,18 @@ from contextlib import asynccontextmanager
 from datetime import UTC, datetime
 from pathlib import Path
 
+import psycopg
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from psycopg.types.json import Json
 from psycopg_pool import AsyncConnectionPool
-from shared.constants import JobStatus
+from shared.constants import PG_NOTIFY_SCHEDULE, JobStatus
 
 import src.state as state
 from src.cluster import cluster
 from src.constants import CORS_ALLOWED_ORIGINS, DEFAULT_DATABASE_URL
 from src.executors import create_executor
+from src.job_dispatcher import JobDispatcher
 from src.job_runner import JobRunner
 from src.profiling import scheduler
 from src.routers import router
@@ -101,13 +103,14 @@ async def lifespan(_app: FastAPI) -> AsyncGenerator[None]:
         """When any job finishes, try to schedule waiting QUEUED jobs."""
         await _schedule_waiting_jobs()
 
-    state.job_runner = JobRunner(
+    local_runner = JobRunner(
         executor=executor,
         get_conn=state.get_conn,
         schedule_lock=state.schedule_lock,
         on_profiling_complete=_on_profiling_complete,
         on_job_completed=_on_job_completed,
     )
+    state.job_runner = JobDispatcher(local_runner, state.get_conn, cluster)
     await state.job_runner.start()
 
     # ------------------------------------------------------------------
@@ -124,6 +127,7 @@ async def lifespan(_app: FastAPI) -> AsyncGenerator[None]:
                 )
                 unassigned = [(row[0], row[1]) for row in await cur.fetchall()]
 
+            to_enqueue: list[tuple[str, str]] = []
             for instance_id, type_id in unassigned:
                 async with state.get_conn() as conn:
                     result = await scheduler.schedule_job(conn, instance_id, job_type_id=type_id)
@@ -133,8 +137,10 @@ async def lifespan(_app: FastAPI) -> AsyncGenerator[None]:
                             "UPDATE jobs SET status = %s, updated_at = %s WHERE id = %s",
                             (JobStatus.QUEUED, now, instance_id),
                         )
-                        await state.job_runner.enqueue(instance_id)
-                        logger.info("Scheduled waiting job %s on node %s", instance_id[:8], result.node_id)
+                        to_enqueue.append((instance_id, result.node_id))
+            for instance_id, node_id in to_enqueue:
+                await state.job_runner.enqueue(instance_id)
+                logger.info("Scheduled waiting job %s on node %s", instance_id[:8], node_id)
 
     async def _queue_watcher() -> None:
         """Safety net: retry scheduling every 60 s in case something was missed."""
@@ -145,12 +151,27 @@ async def lifespan(_app: FastAPI) -> AsyncGenerator[None]:
             except Exception:
                 logger.exception("Queue watcher error")
 
+    async def _notify_listener() -> None:
+        """Wake the scheduler immediately when a worker sends NOTIFY after profiling."""
+        while True:
+            try:
+                async with await psycopg.AsyncConnection.connect(database_url, autocommit=True) as conn:
+                    await conn.execute(f"LISTEN {PG_NOTIFY_SCHEDULE}")
+                    async for _ in conn.notifies():
+                        logger.debug("Received schedule notification — running scheduler")
+                        asyncio.create_task(_schedule_waiting_jobs())
+            except Exception:
+                logger.warning("Notify listener lost connection, reconnecting in 5s")
+                await asyncio.sleep(5)
+
     watcher_task = asyncio.create_task(_queue_watcher())
+    listener_task = asyncio.create_task(_notify_listener())
 
     yield
 
     # Cleanup
     watcher_task.cancel()
+    listener_task.cancel()
     await state.job_runner.shutdown()
     if state.pool:
         await state.pool.close()

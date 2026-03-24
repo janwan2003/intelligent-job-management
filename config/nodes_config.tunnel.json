@@ -2,7 +2,7 @@
   {
     "id": "matemagician",
     "isForProfiling": true,
-    "workerUrl": "http://worker:8001",
+    "workerUrl": "http://localhost:8001",
     "cost": 0.10,
     "resources": [
       { "gpu_type": "QuadroP600", "gpu_count": 2 }

@@ -23,3 +23,6 @@ DEFAULT_PROFILING_EPOCHS = 3
 # Data directories & file names
 RUNS_DIR = "runs"
 OUTPUT_LOG_FILENAME = "output.log"
+
+# PostgreSQL NOTIFY channel used by workers to wake the API scheduler immediately
+PG_NOTIFY_SCHEDULE = "ijm_schedule"

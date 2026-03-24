@@ -19,7 +19,7 @@ repos:
       - id: mypy
         name: mypy (worker)
         files: ^worker/
-        additional_dependencies: [nats-py>=2.14.0, psycopg>=3.3.0, psycopg-pool>=3.2.0, pytest>=9.0.0]
+        additional_dependencies: [fastapi>=0.115.0, uvicorn>=0.30.0, psycopg>=3.3.0, psycopg-pool>=3.2.0, pytest>=9.0.0]
         args: [--config-file=worker/pyproject.toml]
 
   - repo: local

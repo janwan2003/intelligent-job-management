@@ -1,0 +1,17 @@
+FROM python:3.13-slim
+
+WORKDIR /app
+
+# Install Docker CLI (static binary — docker install script fails on this server)
+ADD https://download.docker.com/linux/static/stable/x86_64/docker-24.0.9.tgz /tmp/docker.tgz
+RUN tar -xzf /tmp/docker.tgz -C /tmp && mv /tmp/docker/docker /usr/local/bin/ && rm -rf /tmp/docker /tmp/docker.tgz
+
+# Install dependencies with pip
+RUN pip install --progress-bar off fastapi "uvicorn[standard]" "psycopg[binary]"
+
+COPY worker/app.py worker/constants.py ./
+COPY shared/ ./shared/
+
+EXPOSE 8001
+
+CMD ["uvicorn", "app:app", "--host", "0.0.0.0", "--port", "8001"]

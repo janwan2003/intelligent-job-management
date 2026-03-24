@@ -2,6 +2,7 @@
   {
     "id": "node-a40-01",
     "isForProfiling": false,
+    "workerUrl": null,
     "cost": 0.15,
     "resources": [
       { "gpu_type": "A40", "gpu_count": 4 }
@@ -10,6 +11,7 @@
   {
     "id": "node-mixed-01",
     "isForProfiling": false,
+    "workerUrl": null,
     "cost": 0.20,
     "resources": [
       { "gpu_type": "A40", "gpu_count": 2 },
@@ -19,6 +21,7 @@
   {
     "id": "node-mixed-prof",
     "isForProfiling": true,
+    "workerUrl": null,
     "cost": 0.25,
     "resources": [
       { "gpu_type": "L40S", "gpu_count": 4 },

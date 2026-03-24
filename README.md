@@ -1,22 +1,21 @@
 # Intelligent Job Management System
 
-A minimal end-to-end job management system for GPU-accelerated deep learning clusters with profiling-based scheduling, stoppable/resumable jobs, and mixed-GPU support.
+A job management system for GPU deep learning clusters with profiling-based scheduling, stoppable/resumable jobs, and multi-node support. Modelled after the ANDREAS project (Polimi).
 
 ## Prerequisites
 
-- Node.js 24+
-- [pnpm](https://pnpm.io/) - `curl -fsSL https://get.pnpm.io/install.sh | sh -`
 - Docker & Docker Compose
-- Python 3.13+
+- Python 3.13+ with [uv](https://docs.astral.sh/uv/)
+- Node.js 24+ with [pnpm](https://pnpm.io/)
 
-## Quick Start
+## Quick Start (local)
 
-### 1. Build the runtime containers
+### 1. Build the runtime images
 
 ```bash
 docker build -t ijm-lstm-small:dev --build-arg SCRIPT=lstm_small.py runtime/
-docker build -t ijm-lstm-big:dev --build-arg SCRIPT=lstm_big.py runtime/
-docker build -t ijm-convnet:dev --build-arg SCRIPT=convnet.py runtime/
+docker build -t ijm-lstm-big:dev   --build-arg SCRIPT=lstm_big.py   runtime/
+docker build -t ijm-convnet:dev    --build-arg SCRIPT=convnet.py    runtime/
 docker build -t ijm-efficientnet:dev --build-arg SCRIPT=efficientnet.py runtime/
 ```
 
@@ -29,225 +28,203 @@ mkdir -p data/pg data/checkpoints data/runs
 ### 3. Start all services
 
 ```bash
-cd infra
-docker compose up --build
+cd infra && docker compose up --build
 ```
 
-This starts:
-- **Postgres** (port 5432) - Job state database
-- **API** (port 8000) - FastAPI backend with job runner + profiling scheduler
-- **Frontend** (port 5173) - React UI
+Opens:
+- **Frontend** → http://localhost:5173
+- **API** → http://localhost:8000
+- **Postgres** → localhost:5432
 
-### 4. Access the UI
+The API runs jobs directly via its embedded `JobRunner` + `DockerExecutor` — no separate worker process needed for local dev.
 
-Open [http://localhost:5173](http://localhost:5173) in your browser.
+---
 
-## Acceptance Test
+## Cluster Deployment (Polimi server)
 
-Test the complete workflow:
+The production setup splits responsibilities: the **worker** runs on the GPU node, the **API** runs anywhere (laptop, CI server) and connects via SSH tunnel.
 
-1. **Submit a job**:
-   - Open the UI at http://localhost:5173
-   - Use the Submit Job form with:
-     - Image: `ijm-lstm-small:dev` (or `ijm-lstm-big:dev`, `ijm-convnet:dev`, `ijm-efficientnet:dev`)
-   - Job is assigned a GPU configuration and enters `PROFILING` mode first
-   - After profiling, it runs on the best configuration in `RUNNING` mode
+### Server side — deploy once
 
-2. **Stop the job**:
-   - Click "Stop" button on the running job
-   - Container is killed immediately (checkpoint saved after last completed epoch)
-   - Job status changes to `PREEMPTED`
+```bash
+# On the server
+cd ~/ijm/infra
+docker-compose -f docker-compose.server.yml up -d   # starts postgres + worker only
+```
 
-3. **Resume the job**:
-   - Click "Resume" button on the preempted job
-   - Container starts again with same checkpoint mount
-   - Loads checkpoint and continues from last completed epoch
+The server runs two containers:
+- **postgres** (port 5433) — shared job state database
+- **worker** (port 8001) — executes Docker training containers on the GPU node
 
-4. **Verify checkpoint persistence**:
-   - Check that training continues from the epoch where it was killed
-   - Look at console output: `Resumed from epoch N`
+### Client side — run API locally against the cluster
+
+```bash
+# Terminal 1: open SSH tunnels (keeps running)
+./infra/tunnel.sh          # forwards localhost:5433 and localhost:8001 to server
+
+# Terminal 2: start the API
+cd backend
+DATABASE_URL=postgresql://postgres:postgres@localhost:5433/ijm \
+NODES_CONFIG=config/nodes_config.tunnel.json \
+HOST_PROJECT_ROOT=/home/wangrat/ijm \
+uv run uvicorn src.app:app --port 8000
+```
+
+Then open the frontend normally (`cd frontend && pnpm dev` or point `VITE_API_URL` at the API).
+
+The tunnel forwards the server's ports since the Polimi network does not expose them directly. Close Terminal 1 to disconnect.
+
+### Building the runtime image on the server
+
+```bash
+ssh polimi
+docker build -t wangrat/ijm-lstm-small:latest \
+  --build-arg SCRIPT=lstm_small.py ~/ijm/runtime/
+```
+
+---
 
 ## Architecture
 
-### Services
+```
+User / Frontend
+      │  REST
+      ▼
+Central API  (FastAPI — scheduler + state + dispatch)
+      │  POST /jobs/{id}/run          ← HTTP dispatch
+      │  POST /jobs/{id}/stop
+      ▼
+Worker  (FastAPI — per GPU node, port 8001)
+      ├── runs Docker training containers
+      ├── streams logs + progress to DB
+      └── on profiling done: writes duration to DB,
+          sends NOTIFY ijm_schedule,
+          API re-schedules immediately
+```
 
-- **Frontend (React)**: Job submission, queue management, cluster status, and profiling results UI
-- **API (FastAPI)**: REST endpoints for job management, profiling scheduler, persists to Postgres, publishes to NATS
-- **Worker (Python)**: Consumes NATS events, executes jobs in Docker containers with concurrent execution
-- **Postgres**: Stores job metadata, state, and profiling results
-- **NATS JetStream**: Event bus for job lifecycle and profiling events
+**Local dev**: nodes without `workerUrl` in config use the embedded `JobRunner + DockerExecutor` — no worker server needed.
 
-### Data Flow
+**Multi-node**: each GPU node runs a worker container; set `"workerUrl": "http://<host>:8001"` in nodes_config.
 
-1. User submits job via React UI → POST `/jobs`
-2. API creates job record in Postgres with status `QUEUED`
-3. Profiling scheduler assigns a GPU configuration to profile
-4. API publishes `jobs.submitted` event to NATS
-5. Worker runs job in Docker container with checkpoint/log mounts
-6. Worker reports profiling duration back to API via `jobs.profiling_complete`
-7. API schedules next profiling run or standard run on best config
-8. Job can be stopped (SIGTERM) or resumed (restart with same mounts)
+### Job lifecycle
 
-### Job States
+```
+QUEUED → PROFILING → QUEUED → RUNNING → SUCCEEDED
+                       ↑          ↘ PREEMPTED → QUEUED (resume)
+                       └──────────── FAILED    → QUEUED (resume)
+```
 
-- `QUEUED` - Job submitted, waiting for execution
-- `PROFILING` - Job running a profiling pass on a GPU configuration
-- `RUNNING` - Job executing in standard mode on best configuration
-- `PREEMPTED` - Job was stopped by user request
-- `SUCCEEDED` - Job completed successfully (exit code 0)
-- `FAILED` - Job failed (non-zero exit code)
+Each new job type runs a short profiling pass first to measure GPU throughput. After profiling, the job is immediately re-scheduled (via PostgreSQL `NOTIFY`) onto the best available configuration.
 
-### Runtime Contract
+### Sample training images
 
-Training containers must:
-- Write checkpoints to `/checkpoints/latest.pt`
-- Load checkpoint on startup if it exists
-- Handle SIGTERM gracefully by checkpointing and exiting with code 0
-- Periodically checkpoint during training
-
-### Sample Training Images
-
-| Image | Script | Architecture | Dataset |
-|-------|--------|-------------|---------|
+| Image | Script | Model | Dataset |
+|-------|--------|-------|---------|
 | `ijm-lstm-small:dev` | `lstm_small.py` | LSTM (1-layer, 128 hidden) | MNIST |
-| `ijm-lstm-big:dev` | `lstm_big.py` | LSTM (3-layer, 256 hidden) | MNIST |
-| `ijm-convnet:dev` | `convnet.py` | ConvNet (3-layer CNN + BN) | CIFAR-10 |
-| `ijm-efficientnet:dev` | `efficientnet.py` | MBConv EfficientNet | CIFAR-10 |
+| `ijm-lstm-big:dev`   | `lstm_big.py`   | LSTM (3-layer, 256 hidden) | MNIST |
+| `ijm-convnet:dev`    | `convnet.py`    | ConvNet (3-layer CNN + BN) | CIFAR-10 |
+| `ijm-efficientnet:dev` | `efficientnet.py` | EfficientNet (MBConv) | CIFAR-10 |
 
-All images follow the same checkpoint contract and support `EPOCHS_TOTAL` and `BATCH_SIZE` environment variables.
+---
 
 ## Development
 
-All services depend on PostgreSQL and NATS. Start them first, then run whichever service(s) you need natively:
-
-### 1. Start infrastructure (required)
-
-```bash
-cd infra && docker compose up postgres nats
-```
-
-### 2. Backend
+### Backend
 
 ```bash
 cd backend
 uv sync
 DATABASE_URL=postgresql://postgres:postgres@localhost:5432/ijm \
-NATS_URL=nats://localhost:4222 \
-DATA_DIR=../data \
-uv run uvicorn src.main:app --host 0.0.0.0 --port 8000 --reload
+HOST_PROJECT_ROOT=$(cd .. && pwd) \
+uv run uvicorn src.app:app --port 8000 --reload
 ```
 
-### 3. Frontend
+Requires a running Postgres: `cd infra && docker compose up postgres`
+
+### Frontend
 
 ```bash
 cd frontend
 pnpm install
-pnpm dev
+pnpm dev        # dev server on :5173
 ```
 
-### 4. Worker
+### Worker (standalone)
 
 ```bash
 cd worker
-pip install -r requirements.txt
 DATABASE_URL=postgresql://postgres:postgres@localhost:5432/ijm \
-NATS_URL=nats://localhost:4222 \
-HOST_ROOT=.. \
 HOST_PROJECT_ROOT=$(cd .. && pwd) \
-python worker.py
+NODE_ID=local-worker \
+uvicorn app:app --port 8001
+```
+
+### Tests
+
+```bash
+cd backend && uv run pytest          # unit tests + infra config validation
+cd frontend && pnpm lint && pnpm build   # lint + type-check
+cd infra && ./smoke_test.sh          # full-stack smoke test
 ```
 
 ### Pre-commit hooks
 
-Install [pre-commit](https://pre-commit.com/) and set up the git hooks:
-
 ```bash
-pip install pre-commit   # or: uv tool install pre-commit
-pre-commit install       # installs the git hook
+pip install pre-commit
+pre-commit install
 ```
-
-Hooks run automatically on `git commit` for changed files. To run all hooks manually:
-
-```bash
-pre-commit run --all-files
-```
-
-The following checks run on commit:
 
 | Hook | Scope | What it does |
-|---|---|---|
-| **ruff** (lint + fix) | Python files | Linting with auto-fix (isort, pyflakes, bugbear, etc.) |
-| **ruff-format** | Python files | Code formatting |
+|------|-------|-------------|
+| **ruff** (lint + fix) | Python | Linting with auto-fix |
+| **ruff-format** | Python | Code formatting |
 | **mypy** (backend) | shared/, backend/ | Static type checking |
-| **mypy** (worker) | worker/ | Static type checking (strict mode) |
-| **deptry** | backend/ | Detects missing/unused dependencies |
+| **mypy** (worker) | worker/ | Static type checking |
+| **deptry** | backend/ | Unused/missing deps |
 | **eslint** | frontend/src/ | TypeScript/React linting |
 | **tsc** | frontend/src/ | TypeScript type checking |
 
-### Running tests
+---
 
-```bash
-cd backend && uv run pytest          # Backend unit tests + infra config validation
-cd backend && uv run deptry .        # Check for unused/missing dependencies
-cd worker  && python -m pytest       # Worker tests
-cd frontend && pnpm lint && pnpm build   # Frontend lint + type-check
-cd infra && ./smoke_test.sh          # Full-stack smoke test (starts Docker Compose)
-```
-
-The backend suite includes `tests/test_infra.py` which validates `infra/docker-compose.yml` for known version-specific requirements (e.g., postgres 18+ volume mount path). This catches config/version incompatibilities before running the stack.
-
-## API Endpoints
+## API Reference
 
 ### Jobs
-- `POST /jobs` - Submit new job (requires `image` and `command`)
-- `GET /jobs` - List all jobs (newest first)
-- `GET /jobs/{id}` - Get specific job
-- `POST /jobs/{id}/stop` - Stop a QUEUED, PROFILING, or RUNNING job
-- `POST /jobs/{id}/resume` - Resume a PREEMPTED or FAILED job
-- `DELETE /jobs/{id}` - Delete a job and its profiling results
-- `GET /jobs/{id}/logs` - Get container output logs
+| Method | Path | Description |
+|--------|------|-------------|
+| `POST` | `/jobs` | Submit a job |
+| `GET`  | `/jobs` | List all jobs |
+| `GET`  | `/jobs/{id}` | Get job details |
+| `POST` | `/jobs/{id}/stop` | Stop a running job |
+| `POST` | `/jobs/{id}/resume` | Resume a preempted/failed job |
+| `DELETE` | `/jobs/{id}` | Delete job and profiling results |
+| `GET`  | `/jobs/{id}/logs` | Stream container output |
 
 ### Cluster
-- `GET /nodes` - List all cluster nodes with status
-- `GET /configurations` - List all valid GPU configurations
-- `GET /gpu-costs` - Get GPU energy cost weights
+| Method | Path | Description |
+|--------|------|-------------|
+| `GET` | `/nodes` | List nodes with status |
+| `GET` | `/configurations` | List valid GPU configurations |
+| `GET` | `/gpu-costs` | GPU energy cost weights |
+| `GET` | `/profiling-results/{job_id}` | Profiling results for a job type |
 
-### Profiling
-- `GET /profiling-results/{job_id}` - Get profiling results for a job (sorted by duration)
-
-### Images
-- `POST /images/upload` - Upload a Docker image (.tar/.tar.gz)
-
-## NATS Subjects
-
-- `jobs.submitted` - New job created (or resumed)
-- `jobs.stop_requested` - User requested stop for a RUNNING job
-- `jobs.profiling_complete` - Worker completed a profiling run
+---
 
 ## Project Structure
 
 ```
-backend/          # FastAPI application + profiling scheduler (modular: app, cluster, profiling, routers/)
-shared/           # Shared constants (JobStatus enum, NATS subjects) — imported by both backend and worker
-frontend/         # React UI (Dashboard, Job Queue, Submit, Cluster, Profiling)
-worker/           # Job execution worker
-runtime/          # Training containers with checkpoint support
-  train.py        # Simple MLP
-  train_cnn.py    # CNN image classifier
-  train_lstm.py   # LSTM sequence model
-  train_efficientnet.py  # EfficientNet-style classifier
-infra/            # Docker Compose configuration
-config/           # Cluster configuration (nodes, GPU energy costs)
-data/             # Local persistent data
-  pg/             # Postgres data
-  checkpoints/    # Job checkpoints
-  runs/           # Job outputs
-documentation/    # ANDREAS project deliverables (D1, D2, D3)
+backend/    FastAPI API — scheduler, job dispatcher, profiling, routers
+shared/     Shared constants (JobStatus, pg notify channel) — backend + worker
+frontend/   React 19 SPA — Dashboard, Job Queue, Submit, Cluster, Profiling
+worker/     HTTP worker server — executes Docker containers on GPU nodes
+runtime/    Training container images (LSTM, ConvNet, EfficientNet)
+infra/      Docker Compose configs + smoke test + tunnel.sh
+config/     Cluster node configs (local, server, tunnel)
+data/       Persistent data (pg/, checkpoints/, runs/)
 ```
 
 ## Tech Stack
 
-**Backend**: Python 3.13, FastAPI, psycopg (Postgres), nats-py, uv
-**Frontend**: TypeScript, React 19, Vite, TanStack React Query, Tailwind, shadcn/ui
-**Infrastructure**: Docker, Postgres 16, NATS 2.12 with JetStream
-**Worker**: Python 3.13, asyncio, Docker CLI, pip
+**Backend**: Python 3.13, FastAPI, psycopg3, psycopg-pool, uv
+**Frontend**: TypeScript, React 19, Vite, TanStack Query, Tailwind, shadcn/ui
+**Worker**: Python 3.13, FastAPI, asyncio, Docker CLI
+**Infrastructure**: Docker, PostgreSQL 16

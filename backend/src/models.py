@@ -37,6 +37,7 @@ class NodeConfig(BaseModel):
     is_for_profiling: bool = Field(default=False, alias="isForProfiling")
     cost: float = 0.0
     resources: list[NodeResources] = Field(default_factory=list)
+    worker_url: str | None = Field(default=None, alias="workerUrl")
 
 
 class NodeStatus(BaseModel):

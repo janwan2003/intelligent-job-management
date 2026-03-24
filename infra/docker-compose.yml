@@ -56,6 +56,34 @@ services:
         limits:
           memory: 512M
 
+  # Optional worker service for multi-node simulation.
+  # To activate: set "workerUrl": "http://worker:8001" in config/nodes_config.json
+  # and add `--profile worker` to docker compose up.
+  worker:
+    profiles: [worker]
+    build:
+      context: ..
+      dockerfile: worker/Dockerfile
+    container_name: ijm-worker
+    restart: unless-stopped
+    environment:
+      DATABASE_URL: postgresql://postgres:postgres@postgres:5432/ijm
+      HOST_ROOT: /host
+      HOST_PROJECT_ROOT: ${HOST_PROJECT_ROOT:-${PWD}/..}
+      NODE_ID: local-worker
+    ports:
+      - "8001:8001"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ..:/host
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+
   frontend:
     build:
       context: ../frontend

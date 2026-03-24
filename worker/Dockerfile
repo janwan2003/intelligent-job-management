@@ -13,7 +13,9 @@ RUN apt-get update && \
 COPY worker/requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-COPY worker/worker.py worker/constants.py ./
+COPY worker/app.py worker/constants.py ./
 COPY shared/ ./shared/
 
-CMD ["python", "-u", "worker.py"]
+EXPOSE 8001
+
+CMD ["uvicorn", "app:app", "--host", "0.0.0.0", "--port", "8001"]
