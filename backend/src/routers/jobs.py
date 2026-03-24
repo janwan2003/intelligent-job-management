@@ -11,7 +11,7 @@ from uuid import uuid4
 
 from fastapi import APIRouter, HTTPException, Query
 from fastapi.responses import PlainTextResponse
-from psycopg.rows import dict_row  # type: ignore[import-not-found]
+from psycopg.rows import dict_row
 from shared.constants import OUTPUT_LOG_FILENAME, RUNS_DIR, JobStatus
 
 import src.state as state
@@ -191,21 +191,23 @@ async def resume_job(job_id: str) -> dict[str, str]:
         # Atomic: try to mark PREEMPTED/FAILED → QUEUED
         now = datetime.now(UTC)
         cur = await conn.execute(
-            "UPDATE jobs SET status = %s, updated_at = %s WHERE id = %s AND status = ANY(%s) RETURNING id",
+            "UPDATE jobs SET status = %s, updated_at = %s WHERE id = %s AND status = ANY(%s) RETURNING id, job_id",
             (JobStatus.QUEUED, now, job_id, list(RESUMABLE_STATUSES)),
         )
-        if not await cur.fetchone():
+        row = await cur.fetchone()
+        if not row:
             cur = await conn.execute("SELECT status FROM jobs WHERE id = %s", (job_id,))
-            row = await cur.fetchone()
-            if not row:
+            status_row = await cur.fetchone()
+            if not status_row:
                 raise HTTPException(status_code=404, detail="Job not found")
             raise HTTPException(
                 status_code=409,
-                detail=f"Cannot resume job with status {row[0]}",
+                detail=f"Cannot resume job with status {status_row[0]}",
             )
 
-        # Re-schedule
-        schedule_result = await scheduler.schedule_job(conn, job_id)
+        # Re-schedule with correct type_id for profiling lookup
+        job_type_id = row[1]
+        schedule_result = await scheduler.schedule_job(conn, job_id, job_type_id=job_type_id)
 
     if schedule_result.node_id is not None:
         await runner.enqueue(job_id)

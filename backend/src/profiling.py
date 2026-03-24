@@ -10,8 +10,8 @@ from datetime import UTC, datetime
 from typing import Any
 from uuid import uuid4
 
-import psycopg  # type: ignore[import-not-found]
-from psycopg.types.json import Json  # type: ignore[import-not-found]
+import psycopg
+from psycopg.types.json import Json
 from shared.constants import JobStatus
 
 from src.cluster import cluster
@@ -176,12 +176,18 @@ class ProfilingScheduler:
         return None
 
     async def _persist_assignment(
-        self, conn: psycopg.AsyncConnection[Any], job_id: str, result: ScheduleResult, type_id: str = ""
+        self,
+        conn: psycopg.AsyncConnection[Any],
+        job_id: str,
+        result: ScheduleResult,
+        type_id: str = "",
+        instance_id: str = "",
     ) -> None:
         """Write the scheduling decision to the jobs table.
 
         For profiling runs, also claim the config in profiling_results
-        (duration_seconds = NULL marks it as in-flight).
+        (duration_seconds = NULL marks it as in-flight, instance_id tracks
+        which job instance claimed it).
         """
         now = datetime.now(UTC)
         async with conn.cursor() as cur:
@@ -200,10 +206,17 @@ class ProfilingScheduler:
             )
             if result.is_profiling_run and result.gpu_config and result.node_id:
                 await cur.execute(
-                    """INSERT INTO profiling_results (id, job_id, gpu_config, node_id, duration_seconds, created_at)
-                       VALUES (%s, %s, %s, %s, NULL, %s)
+                    """INSERT INTO profiling_results (id, job_id, instance_id, gpu_config, node_id, duration_seconds, created_at)
+                       VALUES (%s, %s, %s, %s, %s, NULL, %s)
                        ON CONFLICT (job_id, gpu_config) DO NOTHING""",
-                    (str(uuid4()), type_id or job_id, Json(result.gpu_config), result.node_id, now),
+                    (
+                        str(uuid4()),
+                        type_id or job_id,
+                        instance_id or job_id,
+                        Json(result.gpu_config),
+                        result.node_id,
+                        now,
+                    ),
                 )
 
     async def schedule_standard_run(self, conn: psycopg.AsyncConnection[Any], job_id: str) -> ScheduleResult:
@@ -236,14 +249,12 @@ class ProfilingScheduler:
         )
         return result
 
-    async def _count_profiled_this_round(self, conn: psycopg.AsyncConnection[Any], job_id: str, type_id: str) -> int:
-        """Count how many profiling results were created since this job instance was submitted."""
+    async def _count_profiled_this_round(self, conn: psycopg.AsyncConnection[Any], instance_id: str) -> int:
+        """Count how many profiling configs this specific job instance has claimed."""
         async with conn.cursor() as cur:
             await cur.execute(
-                """SELECT COUNT(*) FROM profiling_results pr
-                   JOIN jobs j ON j.id = %s
-                   WHERE pr.job_id = %s AND pr.created_at >= j.created_at""",
-                (job_id, type_id),
+                "SELECT COUNT(*) FROM profiling_results WHERE instance_id = %s",
+                (instance_id,),
             )
             row = await cur.fetchone()
         return row[0] if row else 0
@@ -270,7 +281,7 @@ class ProfilingScheduler:
         profiled = await self.get_profiled_configs(conn, type_id)
         profiled_keys = {config_key(c) for c in profiled}
         remaining = [c for c in all_configs if config_key(c) not in profiled_keys]
-        profiled_this_round = await self._count_profiled_this_round(conn, job_id, type_id)
+        profiled_this_round = await self._count_profiled_this_round(conn, job_id)
 
         logger.info(
             "Scheduling job %s (type=%s): %d total configs, %d profiled, %d remaining, %d this round (limit %d)",
@@ -316,7 +327,7 @@ class ProfilingScheduler:
                 is_profiling_run=False,
             )
 
-        await self._persist_assignment(conn, job_id, result, type_id=type_id)
+        await self._persist_assignment(conn, job_id, result, type_id=type_id, instance_id=job_id)
 
         logger.info(
             "Scheduled job %s: mode=%s, config=%s, node=%s",

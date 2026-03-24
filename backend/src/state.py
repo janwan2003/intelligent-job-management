@@ -10,9 +10,9 @@ from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 from typing import Any
 
-import psycopg  # type: ignore[import-not-found]
+import psycopg
 from fastapi import HTTPException
-from psycopg_pool import AsyncConnectionPool  # type: ignore[import-not-found]
+from psycopg_pool import AsyncConnectionPool
 
 # Global state — initialised in app.lifespan()
 pool: AsyncConnectionPool | None = None

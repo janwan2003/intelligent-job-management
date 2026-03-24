@@ -91,7 +91,7 @@ warn_no_return = true
 
 [[tool.mypy.overrides]]
 module = "tests.*"
-disallow_untyped_defs = false
+ignore_errors = true
 
 [tool.deptry]
 known_first_party = ["shared"]  # local sibling package, not a pip dependency

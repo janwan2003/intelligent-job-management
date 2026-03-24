@@ -10,8 +10,8 @@ from pathlib import Path
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from psycopg.types.json import Json  # type: ignore[import-not-found]
-from psycopg_pool import AsyncConnectionPool  # type: ignore[import-not-found]
+from psycopg.types.json import Json
+from psycopg_pool import AsyncConnectionPool
 from shared.constants import JobStatus
 
 import src.state as state
@@ -73,7 +73,7 @@ async def lifespan(_app: FastAPI) -> AsyncGenerator[None]:
             await pconn.execute(
                 """UPDATE profiling_results
                    SET duration_seconds = %s, node_id = %s
-                   WHERE job_id = %s AND gpu_config = %s AND duration_seconds IS NULL""",
+                   WHERE job_id = %s AND gpu_config = %s::jsonb AND duration_seconds IS NULL""",
                 (duration, node_id, type_id, Json(gpu_config)),
             )
             schedule_result = await scheduler.schedule_job(
@@ -119,22 +119,22 @@ async def lifespan(_app: FastAPI) -> AsyncGenerator[None]:
         async with state.schedule_lock:
             async with state.get_conn() as conn:
                 cur = await conn.execute(
-                    "SELECT id FROM jobs WHERE status = %s AND assigned_node IS NULL ORDER BY created_at ASC",
+                    "SELECT id, job_id FROM jobs WHERE status = %s AND assigned_node IS NULL ORDER BY created_at ASC",
                     (JobStatus.QUEUED,),
                 )
-                unassigned = [row[0] for row in await cur.fetchall()]
+                unassigned = [(row[0], row[1]) for row in await cur.fetchall()]
 
-            for job_id in unassigned:
+            for instance_id, type_id in unassigned:
                 async with state.get_conn() as conn:
-                    result = await scheduler.schedule_job(conn, job_id)
+                    result = await scheduler.schedule_job(conn, instance_id, job_type_id=type_id)
                     if result.node_id is not None:
                         now = datetime.now(UTC)
                         await conn.execute(
                             "UPDATE jobs SET status = %s, updated_at = %s WHERE id = %s",
-                            (JobStatus.QUEUED, now, job_id),
+                            (JobStatus.QUEUED, now, instance_id),
                         )
-                        await state.job_runner.enqueue(job_id)
-                        logger.info("Scheduled waiting job %s on node %s", job_id[:8], result.node_id)
+                        await state.job_runner.enqueue(instance_id)
+                        logger.info("Scheduled waiting job %s on node %s", instance_id[:8], result.node_id)
 
     async def _queue_watcher() -> None:
         """Safety net: retry scheduling every 60 s in case something was missed."""

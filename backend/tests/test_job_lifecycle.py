@@ -165,7 +165,7 @@ class TestStopJob:
 
     def test_stop_queued_job_sets_preempted_directly(self) -> None:
         """Stopping a QUEUED job should set it to PREEMPTED without runner.stop."""
-        client, _conn, fake_runner = _make_client(responses={"RETURNING": [("test-id-1",)]})
+        client, _conn, fake_runner = _make_client(responses={"RETURNING": [("test-id-1", "test-type")]})
 
         response = client.post("/jobs/test-id-1/stop")
         assert response.status_code == 202
@@ -233,7 +233,7 @@ class TestResumeJob:
 
     def test_resume_preempted_job_sets_queued(self) -> None:
         """Resuming a PREEMPTED job should set it to QUEUED (no enqueue when no node available)."""
-        client, _conn, fake_runner = _make_client(responses={"RETURNING": [("preempt-id",)]})
+        client, _conn, fake_runner = _make_client(responses={"RETURNING": [("preempt-id", "some-type")]})
 
         response = client.post("/jobs/preempt-id/resume")
         assert response.status_code == 202
@@ -242,7 +242,7 @@ class TestResumeJob:
 
     def test_resume_failed_job_sets_queued(self) -> None:
         """Resuming a FAILED job should set it to QUEUED (no enqueue when no node available)."""
-        client, _conn, fake_runner = _make_client(responses={"RETURNING": [("fail-id",)]})
+        client, _conn, fake_runner = _make_client(responses={"RETURNING": [("fail-id", "some-type")]})
 
         response = client.post("/jobs/fail-id/resume")
         assert response.status_code == 202
@@ -287,7 +287,7 @@ class TestRapidStopResume:
 
     def test_stop_then_resume_queued(self) -> None:
         """Stop a QUEUED job, then resume it."""
-        client, _conn, _ = _make_client(responses={"RETURNING": [("test",)]})
+        client, _conn, _ = _make_client(responses={"RETURNING": [("test", "test-type")]})
         resp = client.post("/jobs/test/stop")
         assert resp.status_code == 202
 
@@ -296,7 +296,7 @@ class TestRapidStopResume:
 
     def test_stop_resume_stop_resume(self) -> None:
         """Multiple stop/resume cycles should all succeed."""
-        client, _conn, _ = _make_client(responses={"RETURNING": [("test",)]})
+        client, _conn, _ = _make_client(responses={"RETURNING": [("test", "test-type")]})
 
         resp = client.post("/jobs/test/stop")
         assert resp.status_code == 202
@@ -312,7 +312,7 @@ class TestRapidStopResume:
 
     def test_double_stop_returns_409(self) -> None:
         """Stopping an already stopped job returns 409."""
-        conn = FakeConn(responses={"RETURNING": [("test",)]})
+        conn = FakeConn(responses={"RETURNING": [("test", "test-type")]})
         app.router.lifespan_context = _noop_lifespan
         fake_runner = AsyncMock()
         state_module.get_conn = _mock_get_conn(conn)
@@ -336,7 +336,7 @@ class TestRapidStopResume:
 
     def test_double_resume_returns_409(self) -> None:
         """Resuming a QUEUED job (already resumed) returns 409."""
-        conn = FakeConn(responses={"RETURNING": [("test",)]})
+        conn = FakeConn(responses={"RETURNING": [("test", "test-type")]})
         app.router.lifespan_context = _noop_lifespan
         fake_runner = AsyncMock()
         state_module.get_conn = _mock_get_conn(conn)
@@ -360,7 +360,7 @@ class TestRapidStopResume:
 
     def test_ten_stop_resume_cycles(self) -> None:
         """Ten rapid stop/resume cycles should all work."""
-        client, _conn, _ = _make_client(responses={"RETURNING": [("test",)]})
+        client, _conn, _ = _make_client(responses={"RETURNING": [("test", "test-type")]})
 
         for i in range(10):
             resp = client.post("/jobs/test/stop")
@@ -770,7 +770,7 @@ class TestComplexLifecycle:
 
     def test_create_then_stop_queued(self) -> None:
         """Create a job, then immediately stop it while still QUEUED."""
-        conn = FakeConn(responses={"RETURNING": [("some-id",)]})
+        conn = FakeConn(responses={"RETURNING": [("some-id", "some-type")]})
         fake_runner = AsyncMock()
         app.router.lifespan_context = _noop_lifespan
         state_module.get_conn = _mock_get_conn(conn)
@@ -788,7 +788,7 @@ class TestComplexLifecycle:
 
     def test_create_stop_resume_full_cycle(self) -> None:
         """Create -> stop -> resume -> verify runner calls."""
-        conn = FakeConn(responses={"RETURNING": [("some-id",)]})
+        conn = FakeConn(responses={"RETURNING": [("some-id", "some-type")]})
         fake_runner = AsyncMock()
         app.router.lifespan_context = _noop_lifespan
         state_module.get_conn = _mock_get_conn(conn)
@@ -811,7 +811,7 @@ class TestComplexLifecycle:
 
     def test_resume_preserves_profiling_results(self) -> None:
         """Resume should NOT delete profiling results."""
-        client, conn, _ = _make_client(responses={"RETURNING": [("job-xyz",)]})
+        client, conn, _ = _make_client(responses={"RETURNING": [("job-xyz", "lstm-type")]})
 
         resp = client.post("/jobs/job-xyz/resume")
         assert resp.status_code == 202
@@ -895,7 +895,7 @@ class TestRequireRunner:
 
     def test_resume_returns_503_without_runner(self) -> None:
         app.router.lifespan_context = _noop_lifespan
-        state_module.get_conn = _mock_get_conn(FakeConn(responses={"RETURNING": [("test",)]}))
+        state_module.get_conn = _mock_get_conn(FakeConn(responses={"RETURNING": [("test", "test-type")]}))
         state_module.job_runner = None
         cluster.nodes = list(_CLUSTER_NODES)
 
@@ -1056,6 +1056,7 @@ class TestMultiJobRegression:
         assert sched.configs_per_job == 1
 
         profiled: list[tuple[dict[str, int]]] = []
+        instance_claims: dict[str, int] = {}  # instance_id → count of claims
 
         class CycleCursor(FakeCursor):
             def _resolve(self) -> list[Any]:
@@ -1063,9 +1064,20 @@ class TestMultiJobRegression:
                     return list(profiled)
                 if "ORDER BY duration_seconds" in self._last_query:
                     return [(config, 30.0) for (config,) in profiled]
+                if "instance_id" in self._last_query and "COUNT" in self._last_query:
+                    # _count_profiled_this_round: return count for instance
+                    instance_id = self.queries[-1][1][0] if self.queries else ""
+                    return [(instance_claims.get(instance_id, 0),)]
                 if "duration_seconds" in self._last_query:
                     return [(30.0,)] if profiled else []
                 return []
+
+            async def execute(self, query: str, params: tuple[Any, ...] = ()) -> None:
+                await super().execute(query, params)
+                # Track INSERT into profiling_results to count per-instance claims
+                if "INSERT INTO profiling_results" in query and params:
+                    instance_id = params[2]  # (id, job_id, instance_id, ...)
+                    instance_claims[instance_id] = instance_claims.get(instance_id, 0) + 1
 
         class CycleConn(FakeConn):
             def __init__(self) -> None:
@@ -1080,13 +1092,13 @@ class TestMultiJobRegression:
         assert result.gpu_config is not None
         profiled.append((result.gpu_config,))
 
-        # Post-profiling: round limit reached (1 claimed in profiling_results) → standard run
+        # Same instance, post-profiling: round limit reached → standard run
         result = await sched.schedule_job(conn, "job-limit")
         assert result.is_profiling_run is False
         assert result.mode == "standard"
 
-        # Next round (profiled_this_round=0): should profile the next config
-        result = await sched.schedule_job(conn, "job-limit")
+        # Different instance: should profile next config (independent round)
+        result = await sched.schedule_job(conn, "job-limit-2", job_type_id="job-limit")
         assert result.is_profiling_run is True
         assert result.gpu_config is not None
 
@@ -1156,7 +1168,7 @@ class TestMultiJobRegression:
 
     def test_resume_preserves_profiling_and_profiles_next(self) -> None:
         client, conn, fake_runner = _make_rich_client(
-            responses={"RETURNING": [("resume-job",)]},
+            responses={"RETURNING": [("resume-job", "lstm-type")]},
             cluster_nodes=_REAL_CLUSTER_NODES,
         )
 

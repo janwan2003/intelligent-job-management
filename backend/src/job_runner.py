@@ -13,9 +13,9 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-import psycopg  # type: ignore[import-not-found]
-from psycopg.rows import dict_row  # type: ignore[import-not-found]
-from psycopg.types.json import Json  # type: ignore[import-not-found]
+import psycopg
+from psycopg.rows import dict_row
+from psycopg.types.json import Json
 from shared.constants import DEFAULT_PROFILING_EPOCHS, OUTPUT_LOG_FILENAME, RUNS_DIR, JobStatus
 
 from src.executors import Executor, JobHandle
@@ -122,7 +122,7 @@ class JobRunner:
         cols = ", ".join(columns) if columns else "*"
         async with conn.cursor(row_factory=dict_row) as cur:
             await cur.execute(f"SELECT {cols} FROM jobs WHERE id = %(id)s", {"id": job_id})  # noqa: S608
-            return await cur.fetchone()  # type: ignore[no-any-return]
+            return await cur.fetchone()
 
     # ------------------------------------------------------------------
     # Startup recovery
@@ -395,7 +395,7 @@ class JobRunner:
             # Release in-flight profiling claim so the config can be retried
             if job.get("is_profiling_run") and job.get("assigned_gpu_config"):
                 await conn.execute(
-                    "DELETE FROM profiling_results WHERE job_id = %s AND gpu_config = %s AND duration_seconds IS NULL",
+                    "DELETE FROM profiling_results WHERE job_id = %s AND gpu_config = %s::jsonb AND duration_seconds IS NULL",
                     (job.get("job_id", job_id), Json(job["assigned_gpu_config"])),
                 )
             return

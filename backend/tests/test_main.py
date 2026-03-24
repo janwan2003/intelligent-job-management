@@ -688,25 +688,23 @@ async def test_schedule_job_standard_mode_after_all_profiled() -> None:
     assert result.node_id == "n1"
 
 
-async def test_schedule_job_standard_mode_no_available_node() -> None:
-    """Standard mode yields no assignment when all profiled configs have no production node.
+async def test_schedule_job_standard_mode_profiling_node_can_run_standard() -> None:
+    """With only a profiling-designated node, standard runs still land on it.
 
-    Cluster has only a profiling-designated node, so valid configs exist but
-    _find_node_for_config(is_for_profiling=False) always returns None.
+    All nodes can run standard jobs (isForProfiling only gates profiling runs).
     """
     cluster.nodes = [
         {
             "id": "prof-only",
-            "isForProfiling": True,  # no production nodes in this cluster
+            "isForProfiling": True,
             "cost": 0.1,
             "resources": [{"gpu_type": "A40", "gpu_count": 1}],
         },
     ]
 
-    class NoProductionNodeCursor(FakeAsyncCursor):
+    class ProfiledCursor(FakeAsyncCursor):
         async def fetchall(self) -> list[tuple[Any, ...]]:
             if "SELECT DISTINCT" in self._last_query:
-                # Mark the only valid config as already profiled
                 return [({"A40": 1},)]
             if "ORDER BY duration_seconds" in self._last_query:
                 return [({"A40": 1}, 30.0)]
@@ -715,20 +713,20 @@ async def test_schedule_job_standard_mode_no_available_node() -> None:
         async def fetchone(self) -> tuple[Any, ...] | None:
             return None
 
-    class NoProductionNodeConn(FakeAsyncConn):
+    class ProfiledConn(FakeAsyncConn):
         def __init__(self) -> None:
-            self._cursor = NoProductionNodeCursor()
+            self._cursor = ProfiledCursor()
 
         def cursor(self) -> FakeAsyncCursor:
             return self._cursor
 
-    conn = NoProductionNodeConn()
+    conn = ProfiledConn()
     sched = ProfilingScheduler()
     result = await sched.schedule_job(conn, "job-fb")
     assert result.mode == "standard"
     assert result.is_profiling_run is False
-    assert result.node_id is None
-    assert result.gpu_config is None
+    assert result.node_id == "prof-only"
+    assert result.gpu_config == {"A40": 1}
 
 
 async def test_schedule_job_skips_fully_allocated_nodes() -> None:

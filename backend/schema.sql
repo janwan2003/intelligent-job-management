@@ -31,11 +31,15 @@ CREATE INDEX IF NOT EXISTS idx_jobs_job_id     ON jobs(job_id);
 CREATE TABLE IF NOT EXISTS profiling_results (
     id               TEXT PRIMARY KEY,
     job_id           TEXT NOT NULL,
+    instance_id      TEXT,
     gpu_config       JSONB NOT NULL,
     node_id          TEXT NOT NULL,
     duration_seconds FLOAT,
     created_at       TIMESTAMPTZ NOT NULL
 );
+
+-- Migration for existing databases
+ALTER TABLE profiling_results ADD COLUMN IF NOT EXISTS instance_id TEXT;
 
 CREATE INDEX  IF NOT EXISTS idx_profiling_results_job_id ON profiling_results(job_id);
 CREATE UNIQUE INDEX IF NOT EXISTS uq_profiling_job_config ON profiling_results(job_id, gpu_config);
