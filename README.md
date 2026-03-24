@@ -58,21 +58,19 @@ The server runs two containers:
 - **postgres** (port 5433) — shared job state database
 - **worker** (port 8001) — executes Docker training containers on the GPU node
 
-### Client side — run API locally against the cluster
+### Client side — run API + frontend locally against the cluster
 
 ```bash
-# Terminal 1: open SSH tunnels (keeps running)
-./infra/tunnel.sh          # forwards localhost:5433 and localhost:8001 to server
+# Terminal 1: open SSH tunnels (keep running)
+./infra/tunnel.sh
 
-# Terminal 2: start the API
-cd backend
-DATABASE_URL=postgresql://postgres:postgres@localhost:5433/ijm \
-NODES_CONFIG=config/nodes_config.tunnel.json \
-HOST_PROJECT_ROOT=/home/wangrat/ijm \
-uv run uvicorn src.app:app --port 8000
+# Terminal 2: start API + frontend
+cd infra && docker compose -f docker-compose.tunnel.yml up --build
 ```
 
-Then open the frontend normally (`cd frontend && pnpm dev` or point `VITE_API_URL` at the API).
+Opens:
+- **Frontend** → http://localhost:5173
+- **API** → http://localhost:8000
 
 The tunnel forwards the server's ports since the Polimi network does not expose them directly. Close Terminal 1 to disconnect.
 
