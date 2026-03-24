@@ -46,11 +46,13 @@ The production setup splits responsibilities: the **worker** runs on the GPU nod
 
 ### Server side — deploy once
 
+Run from your local machine:
+
 ```bash
-# On the server
-cd ~/ijm/infra
-docker-compose -f docker-compose.server.yml up -d   # starts postgres + worker only
+./infra/deploy.sh          # rsyncs worker source + starts postgres + worker on server
 ```
+
+`deploy.sh` pushes only the worker source, shared module, Dockerfile, and compose file to `~/ijm/` on the server, then runs `docker-compose up --build -d`. The server needs no other files from the repo.
 
 The server runs two containers:
 - **postgres** (port 5433) — shared job state database
@@ -76,10 +78,11 @@ The tunnel forwards the server's ports since the Polimi network does not expose 
 
 ### Building the runtime image on the server
 
+The `runtime/` directory is not deployed to the server. Copy the runtime directory separately and build there:
+
 ```bash
-ssh polimi
-docker build -t wangrat/ijm-lstm-small:latest \
-  --build-arg SCRIPT=lstm_small.py ~/ijm/runtime/
+rsync -av runtime/ polimi:~/ijm-runtime/
+ssh polimi "docker build -t wangrat/ijm-lstm-small:latest --build-arg SCRIPT=lstm_small.py ~/ijm-runtime/"
 ```
 
 ---

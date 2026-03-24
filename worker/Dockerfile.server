@@ -9,7 +9,7 @@ RUN tar -xzf /tmp/docker.tgz -C /tmp && mv /tmp/docker/docker /usr/local/bin/ &&
 # Install dependencies with pip
 RUN pip install --progress-bar off fastapi "uvicorn[standard]" "psycopg[binary]"
 
-COPY worker/app.py worker/constants.py ./
+COPY app.py constants.py ./
 COPY shared/ ./shared/
 
 EXPOSE 8001

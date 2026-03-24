@@ -14,12 +14,12 @@ services:
     ports:
       - "5433:5432"
     volumes:
-      - ../data/pg:/var/lib/postgresql
+      - ./data/pg:/var/lib/postgresql
 
   worker:
     build:
-      context: ..
-      dockerfile: worker/Dockerfile.server
+      context: .
+      dockerfile: Dockerfile
     container_name: wangrat-ijm-worker
     restart: unless-stopped
     security_opt:
@@ -35,4 +35,4 @@ services:
       - postgres
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
-      - ..:/host
+      - .:/host
