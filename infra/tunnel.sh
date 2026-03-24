@@ -19,6 +19,6 @@ set -euo pipefail
 HOST="${1:-polimi}"
 echo "Opening tunnels to $HOST (ctrl-c to close)..."
 exec ssh -N \
-  -L 5433:localhost:5433 \
-  -L 8001:localhost:8001 \
+  -L 127.0.0.1:5433:localhost:5433 \
+  -L 127.0.0.1:8001:localhost:8001 \
   "$HOST"
