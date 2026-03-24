@@ -9,6 +9,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from uuid import uuid4
 
+import httpx
 from fastapi import APIRouter, HTTPException, Query
 from fastapi.responses import PlainTextResponse
 from psycopg.rows import dict_row
@@ -191,7 +192,8 @@ async def resume_job(job_id: str) -> dict[str, str]:
         # Atomic: try to mark PREEMPTED/FAILED → QUEUED
         now = datetime.now(UTC)
         cur = await conn.execute(
-            "UPDATE jobs SET status = %s, updated_at = %s WHERE id = %s AND status = ANY(%s) RETURNING id, job_id",
+            """UPDATE jobs SET status = %s, assigned_node = NULL, assigned_gpu_config = NULL,
+               updated_at = %s WHERE id = %s AND status = ANY(%s) RETURNING id, job_id""",
             (JobStatus.QUEUED, now, job_id, list(RESUMABLE_STATUSES)),
         )
         row = await cur.fetchone()
@@ -261,10 +263,26 @@ async def get_job_logs(job_id: str) -> PlainTextResponse:
         raise HTTPException(status_code=400, detail="Invalid job ID format")
 
     async with state.get_conn() as conn:
-        cur = await conn.execute("SELECT id FROM jobs WHERE id = %s", (job_id,))
-        if not await cur.fetchone():
+        cur = await conn.execute("SELECT id, assigned_node FROM jobs WHERE id = %s", (job_id,))
+        row = await cur.fetchone()
+        if not row:
             raise HTTPException(status_code=404, detail="Job not found")
+        assigned_node = row[1]
 
+    # Proxy to remote worker if this job's node has a workerUrl
+    runner = state.job_runner
+    if assigned_node and hasattr(runner, "get_worker_url"):
+        worker_url = runner.get_worker_url(assigned_node)
+        if worker_url:
+            try:
+                async with httpx.AsyncClient(timeout=10.0) as client:
+                    resp = await client.get(f"{worker_url}/jobs/{job_id}/logs")
+                    resp.raise_for_status()
+                    return PlainTextResponse(resp.text)
+            except Exception as exc:
+                logger.warning("Failed to fetch logs from worker %s: %s", worker_url, exc)
+
+    # Fall through to local filesystem (local dev / embedded runner)
     log_path = DATA_DIR / RUNS_DIR / job_id / OUTPUT_LOG_FILENAME
 
     try:

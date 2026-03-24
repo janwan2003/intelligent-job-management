@@ -20,6 +20,7 @@ from typing import Any
 
 import psycopg
 from fastapi import FastAPI, HTTPException
+from fastapi.responses import PlainTextResponse
 from psycopg.rows import dict_row
 from psycopg.types.json import Json
 from shared.constants import DEFAULT_PROFILING_EPOCHS, OUTPUT_LOG_FILENAME, PG_NOTIFY_SCHEDULE, RUNS_DIR, JobStatus
@@ -38,6 +39,7 @@ from constants import (
 
 # Regex to parse progress from training output, e.g. "Epoch 50/10000"
 PROGRESS_RE = re.compile(r"Epoch\s+(\d+)/(\d+)")
+_UUID_RE = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$", re.IGNORECASE)
 
 JOB_TIMEOUT_SECONDS = int(os.getenv("JOB_TIMEOUT_SECONDS", str(24 * 3600)))
 
@@ -406,6 +408,8 @@ async def _run_job(job_id: str) -> None:
             if current and current["status"] == JobStatus.PREEMPTED:
                 logger.info("Job %s was preempted, keeping status", job_id[:JOB_ID_DISPLAY_LENGTH])
                 await _update_job(conn, job_id, exit_code=exit_code)
+                await conn.execute(f"NOTIFY {PG_NOTIFY_SCHEDULE}")  # wake scheduler to fill freed slot
+                await conn.commit()
                 return
 
             if exit_code != 0:
@@ -499,6 +503,17 @@ async def stop_job(job_id: str) -> dict[str, str]:
     result = await _kill_container(container_name)
     logger.info("Killed container %s (rc=%d)", container_name, result.returncode)
     return {"status": "stopped"}
+
+
+@app.get("/jobs/{job_id}/logs")
+async def get_job_logs(job_id: str) -> PlainTextResponse:
+    if not _UUID_RE.match(job_id):
+        raise HTTPException(status_code=400, detail="Invalid job ID format")
+    log_path = Path(HOST_ROOT) / "data" / RUNS_DIR / job_id / OUTPUT_LOG_FILENAME
+    if not log_path.is_file():
+        return PlainTextResponse("No logs available yet.\n", status_code=200)
+    content = await asyncio.to_thread(log_path.read_text)
+    return PlainTextResponse(content)
 
 
 if __name__ == "__main__":

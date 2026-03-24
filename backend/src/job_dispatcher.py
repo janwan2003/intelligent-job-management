@@ -34,7 +34,7 @@ class JobDispatcher:
         self._get_conn = get_conn
         self._cluster = cluster
 
-    def _get_worker_url(self, node_id: str | None) -> str | None:
+    def get_worker_url(self, node_id: str | None) -> str | None:
         """Return the workerUrl for *node_id*, or None if local execution."""
         if node_id is None:
             return None
@@ -58,7 +58,7 @@ class JobDispatcher:
     async def enqueue(self, job_id: str) -> None:
         """Dispatch a job to run — remote worker or local runner."""
         node_id = await self._fetch_assigned_node(job_id)
-        worker_url = self._get_worker_url(node_id)
+        worker_url = self.get_worker_url(node_id)
         if worker_url:
             asyncio.create_task(self._remote_run(worker_url, job_id), name=f"remote-run-{job_id[:8]}")
         else:
@@ -67,7 +67,7 @@ class JobDispatcher:
     async def stop(self, job_id: str) -> None:
         """Stop a job — remote worker or local runner."""
         node_id = await self._fetch_assigned_node(job_id)
-        worker_url = self._get_worker_url(node_id)
+        worker_url = self.get_worker_url(node_id)
         if worker_url:
             asyncio.create_task(self._remote_stop(worker_url, job_id), name=f"remote-stop-{job_id[:8]}")
         else:
@@ -93,8 +93,15 @@ class JobDispatcher:
         except Exception as exc:
             logger.warning("Failed to stop job %s on %s: %s", job_id[:8], worker_url, exc)
 
+    def _local_node_ids(self) -> frozenset[str]:
+        """IDs of nodes that use the local runner (no workerUrl configured)."""
+        return frozenset(raw["id"] for raw in self._cluster.nodes if not raw.get("workerUrl"))
+
     async def start(self) -> None:
-        await self._local.start()
+        local_ids = self._local_node_ids()
+        await self._local._reconcile_job_states(local_ids)
+        await self._local._pickup_queued_jobs(local_ids)
+        await self._local._start_dispatch_loop()
 
     async def shutdown(self) -> None:
         await self._local.shutdown()

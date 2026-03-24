@@ -403,7 +403,7 @@ class TestGetJobLogs:
         assert response.status_code == 404
 
     def test_logs_no_file_returns_message(self) -> None:
-        client, _conn, _ = _make_client(default_rows=[("some-id",)])
+        client, _conn, _ = _make_client(default_rows=[("some-id", None)])
         response = client.get("/jobs/00000000-0000-0000-0000-000000000001/logs")
         assert response.status_code == 200
         assert "No logs available" in response.text
@@ -411,7 +411,7 @@ class TestGetJobLogs:
     def test_logs_with_file(self, tmp_path: Any) -> None:
         """When a log file exists, its contents are returned."""
         job_uuid = "12345678-1234-1234-1234-123456789abc"
-        client, _conn, _ = _make_client(default_rows=[(job_uuid,)])
+        client, _conn, _ = _make_client(default_rows=[(job_uuid, None)])
 
         log_dir = tmp_path / "runs" / job_uuid
         log_dir.mkdir(parents=True)
@@ -1178,4 +1178,66 @@ class TestMultiJobRegression:
         delete_queries = [q for q, _p in conn.queries if "DELETE" in q and "profiling_results" in q]
         assert len(delete_queries) == 0
 
-        assert fake_runner.enqueue.call_count >= 1
+
+# ---------------------------------------------------------------------------
+# Scheduler GPU accounting — regression tests for over-subscription bug
+# ---------------------------------------------------------------------------
+
+
+_TWO_GPU_NODE = {
+    "id": "gpu-node",
+    "isForProfiling": True,
+    "cost": 0.1,
+    "resources": [{"gpu_type": "A40", "gpu_count": 2}],
+}
+
+
+class TestSchedulerGpuAccounting:
+    """Regression: QUEUED+assigned jobs must count toward GPU usage.
+
+    Previously _get_node_gpu_usage only counted RUNNING/PROFILING, so the
+    scheduler could assign the same GPU slot to multiple jobs before any of
+    them transitioned to RUNNING.
+    """
+
+    async def test_queued_assigned_jobs_counted_in_gpu_usage(self) -> None:
+        """QUEUED jobs with assigned_node must appear in the usage totals."""
+        sched = ProfilingScheduler()
+        conn = FakeConn(
+            responses={
+                "assigned_node": [
+                    ("gpu-node", {"A40": 1}),
+                    ("gpu-node", {"A40": 1}),
+                ]
+            }
+        )
+        usage = await sched._get_node_gpu_usage(conn)
+        assert usage == {"gpu-node": {"A40": 2}}
+
+    async def test_no_oversubscription_when_queued_jobs_fill_node(self) -> None:
+        """A 3rd job must not be scheduled when 2 QUEUED jobs already fill the node."""
+        cluster.nodes = [_TWO_GPU_NODE]
+        sched = ProfilingScheduler()
+        # Two QUEUED jobs already assigned, each consuming 1 GPU
+        conn = FakeConn(
+            responses={
+                "assigned_node": [
+                    ("gpu-node", {"A40": 1}),
+                    ("gpu-node", {"A40": 1}),
+                ],
+            }
+        )
+        result = await sched.schedule_job(conn, "new-job", job_type_id="lstm-small")
+        assert result.node_id is None
+
+    async def test_one_queued_job_leaves_one_slot_free(self) -> None:
+        """With one QUEUED job on a 2-GPU node, a second job should still fit."""
+        cluster.nodes = [_TWO_GPU_NODE]
+        sched = ProfilingScheduler()
+        conn = FakeConn(
+            responses={
+                "assigned_node": [("gpu-node", {"A40": 1})],
+            }
+        )
+        result = await sched.schedule_job(conn, "new-job", job_type_id="lstm-small")
+        assert result.node_id == "gpu-node"

@@ -95,6 +95,9 @@ class JobRunner:
         """Start the job runner background tasks."""
         await self._reconcile_job_states()
         await self._pickup_queued_jobs()
+        await self._start_dispatch_loop()
+
+    async def _start_dispatch_loop(self) -> None:
         self._runner_task = asyncio.create_task(self._dispatch_loop())
         logger.info("Job runner started")
 
@@ -128,18 +131,29 @@ class JobRunner:
     # Startup recovery
     # ------------------------------------------------------------------
 
-    async def _reconcile_job_states(self) -> None:
-        """Mark RUNNING/PROFILING jobs as FAILED if their container is gone."""
+    async def _reconcile_job_states(self, local_node_ids: frozenset[str] | None = None) -> None:
+        """Mark RUNNING/PROFILING jobs as FAILED if their container is gone.
+
+        When *local_node_ids* is provided only jobs assigned to those nodes
+        (or unassigned) are checked — remote-worker jobs are left alone.
+        """
         logger.info("Reconciling job states")
         try:
             running_containers = await self.executor.list_running(CONTAINER_NAME_PREFIX)
 
             async with self.get_conn() as conn:
                 cur = conn.cursor(row_factory=dict_row)
-                await cur.execute(
-                    "SELECT id, container_name, status FROM jobs WHERE status IN (%s, %s, %s)",
-                    (JobStatus.RUNNING, JobStatus.PROFILING, JobStatus.QUEUED),
-                )
+                if local_node_ids is not None:
+                    await cur.execute(
+                        "SELECT id, container_name, status FROM jobs WHERE status IN (%s, %s, %s)"
+                        " AND (assigned_node IS NULL OR assigned_node = ANY(%s))",
+                        (JobStatus.RUNNING, JobStatus.PROFILING, JobStatus.QUEUED, list(local_node_ids)),
+                    )
+                else:
+                    await cur.execute(
+                        "SELECT id, container_name, status FROM jobs WHERE status IN (%s, %s, %s)",
+                        (JobStatus.RUNNING, JobStatus.PROFILING, JobStatus.QUEUED),
+                    )
                 jobs = await cur.fetchall()
 
                 reconciled = 0
@@ -162,14 +176,26 @@ class JobRunner:
         except Exception as e:
             logger.error("Failed to reconcile: %s", e, exc_info=True)
 
-    async def _pickup_queued_jobs(self) -> None:
-        """Enqueue QUEUED jobs that were missed (e.g. after restart)."""
+    async def _pickup_queued_jobs(self, local_node_ids: frozenset[str] | None = None) -> None:
+        """Enqueue QUEUED jobs that were missed (e.g. after restart).
+
+        When *local_node_ids* is provided only jobs assigned to those nodes
+        (or unassigned) are picked up — remote-worker jobs are left alone.
+        """
         try:
             async with self.get_conn() as conn:
-                cur = await conn.execute(
-                    "SELECT id FROM jobs WHERE status = %s ORDER BY created_at ASC",
-                    (JobStatus.QUEUED,),
-                )
+                if local_node_ids is not None:
+                    cur = await conn.execute(
+                        "SELECT id FROM jobs WHERE status = %s"
+                        " AND (assigned_node IS NULL OR assigned_node = ANY(%s))"
+                        " ORDER BY created_at ASC",
+                        (JobStatus.QUEUED, list(local_node_ids)),
+                    )
+                else:
+                    cur = await conn.execute(
+                        "SELECT id FROM jobs WHERE status = %s ORDER BY created_at ASC",
+                        (JobStatus.QUEUED,),
+                    )
                 rows = await cur.fetchall()
 
             if rows:

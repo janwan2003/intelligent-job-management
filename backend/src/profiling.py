@@ -78,8 +78,8 @@ class ProfilingScheduler:
         async with conn.cursor() as cur:
             await cur.execute(
                 "SELECT assigned_node, assigned_gpu_config FROM jobs "
-                "WHERE status IN (%s, %s) AND assigned_node IS NOT NULL AND assigned_gpu_config IS NOT NULL",
-                (JobStatus.RUNNING, JobStatus.PROFILING),
+                "WHERE status IN (%s, %s, %s) AND assigned_node IS NOT NULL AND assigned_gpu_config IS NOT NULL",
+                (JobStatus.RUNNING, JobStatus.PROFILING, JobStatus.QUEUED),
             )
             rows = await cur.fetchall()
 
