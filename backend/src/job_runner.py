@@ -1,7 +1,7 @@
 """Job execution engine — runs training containers and manages their lifecycle.
 
-Merged from the standalone worker service. Uses an Executor interface to
-decouple container management (Docker, SLURM, mock) from orchestration logic.
+Uses an Executor interface to decouple container management
+(Docker, SLURM, mock) from orchestration logic.
 """
 
 import asyncio

@@ -53,7 +53,7 @@ async def lifespan(_app: FastAPI) -> AsyncGenerator[None]:
     logger.info("Database initialized")
 
     # ------------------------------------------------------------------
-    # Job runner (replaces the old worker service + NATS)
+    # Job runner
     # ------------------------------------------------------------------
 
     executor_name = os.getenv("EXECUTOR", "docker")
