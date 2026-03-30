@@ -40,7 +40,7 @@ pnpm lint                      # ESLint
 
 **Async-first, single-process** — the API handles both HTTP requests and job execution:
 
-1. **API** (`backend/src/`) — FastAPI app. Manages job records in PostgreSQL. Contains the `JobRunner` (`job_runner.py`) which executes training containers concurrently via an `Executor` interface. Includes a `ProfilingScheduler` (`profiling.py`) that incrementally profiles ONE untested GPU configuration per submission. Modular layout: `app.py` (factory + lifespan), `job_runner.py` (container execution), `executors/` (Docker/SLURM backends), `cluster.py` (ClusterManager), `profiling.py` (ProfilingScheduler), `state.py` (shared mutable state), `models.py`, `routers/`.
+1. **API** (`backend/src/`) — FastAPI app. Manages job records in PostgreSQL. Contains the `JobRunner` (`job_runner.py`) which executes training containers concurrently via an `Executor` interface. Includes a `ProfilingScheduler` (`profiling.py`) that incrementally profiles ONE untested GPU configuration per submission. Optional integration with the GPUspb optimizer (`optimizer.py`) for cost-aware batch scheduling. Modular layout: `app.py` (factory + lifespan), `job_runner.py` (container execution), `executors/` (Docker/SLURM backends), `cluster.py` (ClusterManager), `profiling.py` (ProfilingScheduler), `optimizer.py` (GPUspb client), `state.py` (shared mutable state), `models.py`, `routers/`.
 
 2. **Frontend** (`frontend/`) — React 19 SPA with Tailwind CSS + shadcn/ui components, React Router for multi-page navigation (Dashboard, Job Queue, Submit Job, Cluster Status, Profiling), TanStack React Query for data fetching (polls every 3-5s). API base URL configurable via `VITE_API_URL` env var (defaults to `http://localhost:8000`).
    - Path alias: `@/` maps to `src/`
@@ -83,7 +83,8 @@ QUEUED → PROFILING → QUEUED (re-queued as standard run) → RUNNING → SUCC
 | `HOST_ROOT` | API | `/host` (maps to repo root) |
 | `HOST_PROJECT_ROOT` | API | `${PWD}/..` (host-resolvable path for Docker volumes) |
 | `EXECUTOR` | API | `docker` (or `mock-slurm`) |
+| `OPTIMIZER_URL` | API | unset (greedy scheduler); set to `http://optimizer:8080` for batch optimizer |
 
 ## Ports
 
-5173 (frontend), 8000 (API), 5432 (PostgreSQL)
+5173 (frontend), 8000 (API), 5432 (PostgreSQL), 8080 (optimizer, optional)

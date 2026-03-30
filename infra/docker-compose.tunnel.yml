@@ -14,6 +14,7 @@ services:
       NODES_CONFIG: config/nodes_config.tunnel.json
       HOST_PROJECT_ROOT: /home/wangrat/ijm
       EXECUTOR: docker
+      OPTIMIZER_URL: ${OPTIMIZER_URL:-}
     volumes:
       - ../backend/src:/app/src
       - ../config:/app/config:ro

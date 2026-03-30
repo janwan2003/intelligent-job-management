@@ -1,0 +1,12 @@
+# directories
+build/data/
+build/results/
+build/output*
+build/calls
+build/logs
+
+# files
+.DS_Store
+build/*.o
+build/main
+build/make.dep

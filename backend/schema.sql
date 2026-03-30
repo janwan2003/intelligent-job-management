@@ -38,8 +38,9 @@ CREATE TABLE IF NOT EXISTS profiling_results (
     created_at       TIMESTAMPTZ NOT NULL
 );
 
--- Migration for existing databases
+-- Migrations for existing databases
 ALTER TABLE profiling_results ADD COLUMN IF NOT EXISTS instance_id TEXT;
+ALTER TABLE profiling_results ALTER COLUMN duration_seconds DROP NOT NULL;
 
 CREATE INDEX  IF NOT EXISTS idx_profiling_results_job_id ON profiling_results(job_id);
 CREATE UNIQUE INDEX IF NOT EXISTS uq_profiling_job_config ON profiling_results(job_id, gpu_config);

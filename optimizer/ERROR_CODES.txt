@@ -1,0 +1,18 @@
+
+------------------------------------- WEB SERVICE --------------------------------------
+
+414: mandatory field "jobs" missing in data
+424: mandatory field "nodes" missing in data
+434: mandatory field "currentTime" missing in data
+474: mandatory field "GPUcosts" missing in data
+
+444: deadline or tardiness weight equal to zero for at least one job
+454: missing data in the profiling section
+484: missing data in the GPU costs section
+
+464: optimizer failure
+
+-------------------------------------- OPTIMIZER ---------------------------------------
+
+1: missing or corrupted parameters
+2: non registered method

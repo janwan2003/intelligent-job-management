@@ -21,6 +21,7 @@ from src.constants import CORS_ALLOWED_ORIGINS, DEFAULT_DATABASE_URL
 from src.executors import create_executor
 from src.job_dispatcher import JobDispatcher
 from src.job_runner import JobRunner
+from src.optimizer import optimize
 from src.profiling import scheduler
 from src.routers import router
 
@@ -118,8 +119,35 @@ async def lifespan(_app: FastAPI) -> AsyncGenerator[None]:
     # ------------------------------------------------------------------
 
     async def _schedule_waiting_jobs() -> None:
-        """Try to assign nodes to QUEUED jobs with assigned_node IS NULL."""
+        """Try to assign nodes to QUEUED jobs with assigned_node IS NULL.
+
+        If an external optimizer is configured (OPTIMIZER_URL), batch-optimize
+        all standard-ready jobs first.  Any remaining jobs (needing profiling,
+        or not handled by the optimizer) fall through to the greedy scheduler.
+        """
         async with state.schedule_lock:
+            # --- Phase 1: try external optimizer for batch assignment ---
+            optimizer_assigned: set[str] = set()
+            async with state.get_conn() as conn:
+                node_gpu_usage = await scheduler._get_node_gpu_usage(conn)
+                assignments = await optimize(conn, node_gpu_usage)
+
+            to_enqueue: list[tuple[str, str]] = []
+            for a in assignments:
+                async with state.get_conn() as conn:
+                    now = datetime.now(UTC)
+                    await conn.execute(
+                        """UPDATE jobs
+                           SET assigned_node = %s, assigned_gpu_config = %s,
+                               is_profiling_run = FALSE, updated_at = %s
+                           WHERE id = %s AND status = %s AND assigned_node IS NULL""",
+                        (a.node_id, Json(a.gpu_config), now, a.instance_id, JobStatus.QUEUED),
+                    )
+                optimizer_assigned.add(a.instance_id)
+                to_enqueue.append((a.instance_id, a.node_id))
+                logger.info("Optimizer assigned job %s → node %s %s", a.instance_id[:8], a.node_id, a.gpu_config)
+
+            # --- Phase 2: greedy fallback for remaining jobs ---
             async with state.get_conn() as conn:
                 cur = await conn.execute(
                     "SELECT id, job_id FROM jobs WHERE status = %s AND assigned_node IS NULL ORDER BY created_at ASC",
@@ -127,8 +155,9 @@ async def lifespan(_app: FastAPI) -> AsyncGenerator[None]:
                 )
                 unassigned = [(row[0], row[1]) for row in await cur.fetchall()]
 
-            to_enqueue: list[tuple[str, str]] = []
             for instance_id, type_id in unassigned:
+                if instance_id in optimizer_assigned:
+                    continue
                 async with state.get_conn() as conn:
                     result = await scheduler.schedule_job(conn, instance_id, job_type_id=type_id)
                     if result.node_id is not None:
@@ -138,6 +167,7 @@ async def lifespan(_app: FastAPI) -> AsyncGenerator[None]:
                             (JobStatus.QUEUED, now, instance_id),
                         )
                         to_enqueue.append((instance_id, result.node_id))
+
             for instance_id, node_id in to_enqueue:
                 await state.job_runner.enqueue(instance_id)
                 logger.info("Scheduled waiting job %s on node %s", instance_id[:8], node_id)

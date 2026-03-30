@@ -92,20 +92,25 @@ User / Frontend
       │  REST
       ▼
 Central API  (FastAPI — scheduler + state + dispatch)
-      │  POST /jobs/{id}/run          ← HTTP dispatch
-      │  POST /jobs/{id}/stop
-      ▼
-Worker  (FastAPI — per GPU node, port 8001)
-      ├── runs Docker training containers
-      ├── streams logs + progress to DB
-      └── on profiling done: writes duration to DB,
-          sends NOTIFY ijm_schedule,
-          API re-schedules immediately
+      ├── POST /jobs/{id}/run          ← HTTP dispatch
+      ├── POST /jobs/{id}/stop
+      │       ▼
+      │   Worker  (FastAPI — per GPU node, port 8001)
+      │       ├── runs Docker training containers
+      │       ├── streams logs + progress to DB
+      │       └── on profiling done: writes duration to DB,
+      │           sends NOTIFY ijm_schedule
+      │
+      └── POST /optimizer/v5           ← optional batch optimizer
+          GPUspb Optimizer (port 8080)
+              └── cost-aware scheduling with deadlines & priorities
 ```
 
 **Local dev**: nodes without `workerUrl` in config use the embedded `JobRunner + DockerExecutor` — no worker server needed.
 
 **Multi-node**: each GPU node runs a worker container; set `"workerUrl": "http://<host>:8001"` in nodes_config.
+
+**Optimizer** (optional): set `OPTIMIZER_URL=http://optimizer:8080` to enable batch-optimal scheduling via the [GPUspb](https://github.com/FFede0/GPUspb) C++ optimizer. Without it, a greedy scheduler assigns jobs individually.
 
 ### Job lifecycle
 
@@ -217,9 +222,10 @@ backend/    FastAPI API — scheduler, job dispatcher, profiling, routers
 shared/     Shared constants (JobStatus, pg notify channel) — backend + worker
 frontend/   React 19 SPA — Dashboard, Job Queue, Submit, Cluster, Profiling
 worker/     HTTP worker server — executes Docker containers on GPU nodes
+optimizer/  GPUspb cost-aware batch optimizer (C++ core + Flask wrapper)
 runtime/    Training container images (LSTM, ConvNet, EfficientNet)
 infra/      Docker Compose configs + smoke test + tunnel.sh
-config/     Cluster node configs (local, server, tunnel)
+config/     Cluster node configs (local, server, tunnel) + GPU energy costs
 data/       Persistent data (pg/, checkpoints/, runs/)
 ```
 
@@ -228,4 +234,5 @@ data/       Persistent data (pg/, checkpoints/, runs/)
 **Backend**: Python 3.13, FastAPI, psycopg3, psycopg-pool, uv
 **Frontend**: TypeScript, React 19, Vite, TanStack Query, Tailwind, shadcn/ui
 **Worker**: Python 3.13, FastAPI, asyncio, Docker CLI
+**Optimizer**: C++ (scheduling algorithms) + Python 3.8 (Flask REST wrapper)
 **Infrastructure**: Docker, PostgreSQL 16
