@@ -64,12 +64,11 @@ DOCKER_CMD_TIMEOUT_SECONDS = 120
 
 def create_executor(name: str = "docker") -> Executor:
     """Create an executor by name: 'docker' or 'mock-slurm'."""
-    if name == "docker":
-        from src.executors.docker import DockerExecutor
+    from src.executors.docker import DockerExecutor
 
+    if name == "docker":
         return DockerExecutor()
     if name == "mock-slurm":
-        from src.executors.docker import DockerExecutor
         from src.executors.mock_slurm import MockSlurmExecutor
 
         return MockSlurmExecutor(DockerExecutor())

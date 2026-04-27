@@ -21,4 +21,5 @@ echo "Opening tunnels to $HOST (ctrl-c to close)..."
 exec ssh -N \
   -L 127.0.0.1:5433:localhost:5433 \
   -L 127.0.0.1:8001:localhost:8001 \
+  -L 127.0.0.1:8002:10.79.23.173:8001 \
   "$HOST"

@@ -36,6 +36,7 @@ services:
       HOST_PROJECT_ROOT: ${HOST_PROJECT_ROOT:-${PWD}/..}
       EXECUTOR: docker
       OPTIMIZER_URL: ${OPTIMIZER_URL:-}
+      NODES_CONFIG: ${NODES_CONFIG:-config/nodes_config.json}
     ports:
       - "8000:8000"
     depends_on:

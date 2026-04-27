@@ -75,7 +75,7 @@ class JobCreate(BaseModel):
 
     model_config = ConfigDict(populate_by_name=True)
 
-    job_id: str = Field(alias="job_id")
+    job_id: str
     image: str = Field(alias="dockerImage")
     script_path: str | None = Field(default=None, alias="scriptPath")
     directory_to_mount: str | None = Field(default=None, alias="directoryToMount")

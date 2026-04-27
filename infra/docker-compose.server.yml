@@ -28,7 +28,7 @@ services:
       DATABASE_URL: postgresql://postgres:postgres@postgres:5432/ijm
       HOST_ROOT: /host
       HOST_PROJECT_ROOT: /home/wangrat/ijm
-      NODE_ID: matemagician
+      NODE_ID: ${NODE_ID}
     ports:
       - "8001:8001"
     depends_on:

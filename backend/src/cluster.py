@@ -23,36 +23,33 @@ class ClusterManager:
 
     # -- loaders -------------------------------------------------------------
 
+    @staticmethod
+    def _resolve_path(path: Path | None, env_var: str, default: str) -> Path | None:
+        """Find a config file, trying CWD then parent directory."""
+        p = path or Path(os.getenv(env_var, default))
+        if p.is_file():
+            return p
+        alt = Path("..") / p
+        if alt.is_file():
+            return alt
+        logger.warning("Config not found at %s", p)
+        return None
+
     def load_nodes(self, path: Path | None = None) -> None:
-        config_path = path or Path(os.getenv("NODES_CONFIG", "config/nodes_config.json"))
-        if not config_path.is_file():
-            # Fallback: try parent directory (when running from backend/)
-            alt = Path("..") / config_path
-            if alt.is_file():
-                config_path = alt
-            else:
-                logger.warning("Nodes config not found at %s", config_path)
-                return
+        config_path = self._resolve_path(path, "NODES_CONFIG", "config/nodes_config.json")
+        if not config_path:
+            return
         with open(config_path) as f:
             self.nodes = json.load(f)
         logger.info("Loaded %d node(s) from %s", len(self.nodes), config_path)
 
     def load_gpu_energy_costs(self, path: Path | None = None) -> None:
-        config_path = path or Path(os.getenv("GPU_COSTS_CONFIG", "config/gpu_energy_costs.json"))
-        if not config_path.is_file():
-            alt = Path("..") / config_path
-            if alt.is_file():
-                config_path = alt
-            else:
-                logger.warning("GPU energy costs config not found at %s", config_path)
-                return
+        config_path = self._resolve_path(path, "GPU_COSTS_CONFIG", "config/gpu_energy_costs.json")
+        if not config_path:
+            return
         with open(config_path) as f:
             self.gpu_energy_costs = json.load(f)
-        logger.info(
-            "Loaded GPU energy costs for %d GPU type(s) from %s",
-            len(self.gpu_energy_costs),
-            config_path,
-        )
+        logger.info("Loaded GPU energy costs for %d GPU type(s) from %s", len(self.gpu_energy_costs), config_path)
 
     # -- queries -------------------------------------------------------------
 

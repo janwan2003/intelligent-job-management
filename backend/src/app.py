@@ -39,11 +39,9 @@ async def lifespan(_app: FastAPI) -> AsyncGenerator[None]:
     database_url = os.getenv("DATABASE_URL", DEFAULT_DATABASE_URL)
 
     # Connect to database (connection pool)
-    import re
-
-    masked_url = re.sub(r"://[^@]+@", "://*****@", database_url)
+    masked_url = database_url.split("@")[-1] if "@" in database_url else database_url
     logger.info("Connecting to database: %s", masked_url)
-    state.pool = AsyncConnectionPool(conninfo=database_url, min_size=2, max_size=10, open=False)
+    state.pool = AsyncConnectionPool(conninfo=database_url, min_size=2, max_size=50, open=False)
     await state.pool.open()
 
     # Create tables, indexes, and constraints from schema.sql
@@ -119,35 +117,78 @@ async def lifespan(_app: FastAPI) -> AsyncGenerator[None]:
     # ------------------------------------------------------------------
 
     async def _schedule_waiting_jobs() -> None:
-        """Try to assign nodes to QUEUED jobs with assigned_node IS NULL.
+        """Run the optimizer and greedy scheduler to assign/preempt jobs.
 
-        If an external optimizer is configured (OPTIMIZER_URL), batch-optimize
-        all standard-ready jobs first.  Any remaining jobs (needing profiling,
-        or not handled by the optimizer) fall through to the greedy scheduler.
+        Phase 1 (optimizer): sends ALL active jobs + currentScheduling.
+        The optimizer may preempt running jobs to make room for urgent ones.
+        Phase 2 (greedy): handles profiling runs and jobs without profiling data.
         """
         async with state.schedule_lock:
-            # --- Phase 1: try external optimizer for batch assignment ---
-            optimizer_assigned: set[str] = set()
+            # --- Phase 1: optimizer with preemption support ---
+            optimizer_handled: set[str] = set()
+            to_enqueue: list[tuple[str, str]] = []
+
             async with state.get_conn() as conn:
                 node_gpu_usage = await scheduler._get_node_gpu_usage(conn)
-                assignments = await optimize(conn, node_gpu_usage)
+                opt_result = await optimize(conn, node_gpu_usage)
 
-            to_enqueue: list[tuple[str, str]] = []
-            for a in assignments:
+            # Phase 1a: preempt jobs the optimizer dropped, then wait
+            # for containers to actually die before proceeding.
+            if opt_result.preempt:
+                for job_id in opt_result.preempt:
+                    logger.info("Optimizer preempting job %s", job_id[:8])
+                    try:
+                        await state.job_runner.stop(job_id)
+                    except Exception:
+                        logger.warning("Failed to stop preempted job %s", job_id[:8])
+                    optimizer_handled.add(job_id)
+
+                # Wait for containers to actually die, then re-queue the
+                # preempted jobs.  Poll up to 15s for status to become
+                # PREEMPTED (remote workers via HTTP can be slow).
+                logger.info("Waiting for %d preempted container(s) to stop...", len(opt_result.preempt))
+                for _ in range(15):
+                    await asyncio.sleep(1)
+                    async with state.get_conn() as conn:
+                        cur = await conn.execute(
+                            "SELECT count(*) FROM jobs WHERE id = ANY(%s) AND status != %s",
+                            (opt_result.preempt, JobStatus.PREEMPTED),
+                        )
+                        row = await cur.fetchone()
+                        not_preempted = row[0] if row else 0
+                    if not_preempted == 0:
+                        break
+
+                # Re-queue them so they get rescheduled (and resume
+                # from checkpoint) on the next cycle.
                 async with state.get_conn() as conn:
                     now = datetime.now(UTC)
                     await conn.execute(
+                        """UPDATE jobs SET status = %s, assigned_node = NULL,
+                           assigned_gpu_config = NULL, updated_at = %s
+                           WHERE id = ANY(%s) AND status = %s""",
+                        (JobStatus.QUEUED, now, opt_result.preempt, JobStatus.PREEMPTED),
+                    )
+
+            # Phase 1b: apply optimizer assignments
+            for a in opt_result.assignments:
+                async with state.get_conn() as conn:
+                    now = datetime.now(UTC)
+                    cur = await conn.execute(
                         """UPDATE jobs
                            SET assigned_node = %s, assigned_gpu_config = %s,
                                is_profiling_run = FALSE, updated_at = %s
-                           WHERE id = %s AND status = %s AND assigned_node IS NULL""",
+                           WHERE id = %s AND status = %s AND assigned_node IS NULL
+                           RETURNING id""",
                         (a.node_id, Json(a.gpu_config), now, a.instance_id, JobStatus.QUEUED),
                     )
-                optimizer_assigned.add(a.instance_id)
-                to_enqueue.append((a.instance_id, a.node_id))
-                logger.info("Optimizer assigned job %s → node %s %s", a.instance_id[:8], a.node_id, a.gpu_config)
+                    if await cur.fetchone():
+                        to_enqueue.append((a.instance_id, a.node_id))
+                        logger.info(
+                            "Optimizer assigned job %s → node %s %s", a.instance_id[:8], a.node_id, a.gpu_config
+                        )
+                optimizer_handled.add(a.instance_id)
 
-            # --- Phase 2: greedy fallback for remaining jobs ---
             async with state.get_conn() as conn:
                 cur = await conn.execute(
                     "SELECT id, job_id FROM jobs WHERE status = %s AND assigned_node IS NULL ORDER BY created_at ASC",
@@ -156,7 +197,7 @@ async def lifespan(_app: FastAPI) -> AsyncGenerator[None]:
                 unassigned = [(row[0], row[1]) for row in await cur.fetchall()]
 
             for instance_id, type_id in unassigned:
-                if instance_id in optimizer_assigned:
+                if instance_id in optimizer_handled:
                     continue
                 async with state.get_conn() as conn:
                     result = await scheduler.schedule_job(conn, instance_id, job_type_id=type_id)

@@ -19,6 +19,7 @@ from psycopg.types.json import Json
 from shared.constants import DEFAULT_PROFILING_EPOCHS, OUTPUT_LOG_FILENAME, RUNS_DIR, JobStatus
 
 from src.executors import Executor, JobHandle
+from src.executors.docker import CHECKPOINT_MOUNT_PATH, RUNS_MOUNT_PATH
 
 logger = logging.getLogger(__name__)
 
@@ -239,21 +240,14 @@ class JobRunner:
         return ckpt_local, runs_local, ckpt_host, runs_host
 
     @staticmethod
-    def _prepare_checkpoint_dir(ckpt_local: Path, *, is_profiling: bool, is_first_run: bool) -> Path:
+    def _prepare_checkpoint_dir(ckpt_local: Path, *, is_profiling: bool, is_first_run: bool) -> None:
         """Set up checkpoint directory. Profiling uses isolated .profiling/ subdir."""
-        if is_profiling:
-            mount = ckpt_local / ".profiling"
-            mount.mkdir(parents=True, exist_ok=True)
-            for f in mount.iterdir():
+        target = (ckpt_local / ".profiling") if is_profiling else ckpt_local
+        target.mkdir(parents=True, exist_ok=True)
+        if is_profiling or is_first_run:
+            for f in target.iterdir():
                 if f.is_file():
                     f.unlink(missing_ok=True)
-            return mount
-        ckpt_local.mkdir(parents=True, exist_ok=True)
-        if is_first_run:
-            for f in ckpt_local.iterdir():
-                if f.is_file():
-                    f.unlink(missing_ok=True)
-        return ckpt_local
 
     @staticmethod
     def _build_env_vars(job: dict[str, Any]) -> dict[str, str]:
@@ -270,7 +264,6 @@ class JobRunner:
     async def _stream_and_parse(
         self,
         handle: JobHandle,
-        conn: psycopg.AsyncConnection[Any],
         job_id: str,
         log_path: Path,
         epoch_timestamps: list[tuple[int, float]],
@@ -289,7 +282,8 @@ class JobRunner:
                     if match:
                         epoch_num = int(match.group(1))
                         progress = f"{epoch_num}/{match.group(2)}"
-                        await self._update_job(conn, job_id, progress=progress)
+                        async with self.get_conn() as conn:
+                            await self._update_job(conn, job_id, progress=progress)
                         if is_profiling:
                             epoch_timestamps.append((epoch_num, time.monotonic()))
         except Exception as e:
@@ -297,9 +291,8 @@ class JobRunner:
 
     async def _run_job(self, job_id: str) -> None:
         """Execute a single job."""
-        from src.executors.docker import CHECKPOINT_MOUNT_PATH, RUNS_MOUNT_PATH
-
         try:
+            # Phase 1: fetch job and set status (short-lived connection)
             async with self.get_conn() as conn:
                 job = await self._fetch_job(
                     conn,
@@ -327,56 +320,55 @@ class JobRunner:
                 run_start_time = datetime.now(UTC)
                 await self._update_job(conn, job_id, status=run_status, progress=None)
 
-                # Prepare directories
-                ckpt_local, runs_local, ckpt_host, runs_host = self._resolve_paths(job_id)
-                ckpt_local.mkdir(parents=True, exist_ok=True)
-                runs_local.mkdir(parents=True, exist_ok=True)
-
-                is_first_run = job["exit_code"] is None
-                self._prepare_checkpoint_dir(
-                    ckpt_local, is_profiling=job["is_profiling_run"], is_first_run=is_first_run
-                )
-                ckpt_host_mount = (ckpt_host / ".profiling") if job["is_profiling_run"] else ckpt_host
-
                 container_name = f"{CONTAINER_NAME_PREFIX}{job_id[:JOB_ID_DISPLAY_LENGTH]}"
                 await self._update_job(conn, job_id, container_name=container_name)
 
-                env_vars = self._build_env_vars(job)
-                logger.info("Job %s env: %s", job_id[:JOB_ID_DISPLAY_LENGTH], env_vars)
+            # Phase 2: prepare dirs and launch container (no DB connection held)
+            ckpt_local, runs_local, ckpt_host, runs_host = self._resolve_paths(job_id)
+            ckpt_local.mkdir(parents=True, exist_ok=True)
+            runs_local.mkdir(parents=True, exist_ok=True)
 
-                # Shared data (datasets) mounted read-only under /runs/data
-                shared_data_local = Path(self.host_root) / "data" / "shared" / "data"
-                shared_data_host = Path(self.host_project_root) / "data" / "shared" / "data"
-                volumes = {
-                    str(ckpt_host_mount): CHECKPOINT_MOUNT_PATH,
-                    str(runs_host): RUNS_MOUNT_PATH,
-                }
-                if shared_data_local.exists():
-                    volumes[str(shared_data_host)] = "/runs/data"
-                if job.get("directory_to_mount"):
-                    volumes[job["directory_to_mount"]] = "/workspace"
-                handle = await self.executor.run(
-                    container_name,
-                    job["image"],
-                    job["command"],
-                    volumes,
-                    env_vars,
-                )
-                self.running_jobs[job_id] = handle
+            is_first_run = job["exit_code"] is None
+            self._prepare_checkpoint_dir(ckpt_local, is_profiling=job["is_profiling_run"], is_first_run=is_first_run)
+            ckpt_host_mount = (ckpt_host / ".profiling") if job["is_profiling_run"] else ckpt_host
 
-                # Stream output and wait
-                epoch_timestamps: list[tuple[int, float]] = []
-                log_path = runs_local / OUTPUT_LOG_FILENAME
-                stream_task = asyncio.create_task(
-                    self._stream_and_parse(
-                        handle, conn, job_id, log_path, epoch_timestamps, is_profiling=job["is_profiling_run"]
-                    )
-                )
+            env_vars = self._build_env_vars(job)
+            logger.info("Job %s env: %s", job_id[:JOB_ID_DISPLAY_LENGTH], env_vars)
 
-                exit_code = await self.executor.wait(handle, JOB_TIMEOUT_SECONDS)
-                await stream_task
+            shared_data_local = Path(self.host_root) / "data" / "shared" / "data"
+            shared_data_host = Path(self.host_project_root) / "data" / "shared" / "data"
+            volumes = {
+                str(ckpt_host_mount): CHECKPOINT_MOUNT_PATH,
+                str(runs_host): RUNS_MOUNT_PATH,
+            }
+            if shared_data_local.exists():
+                volumes[str(shared_data_host)] = "/runs/data"
+            if job.get("directory_to_mount"):
+                volumes[job["directory_to_mount"]] = "/workspace"
+            handle = await self.executor.run(
+                container_name,
+                job["image"],
+                job["command"],
+                volumes,
+                env_vars,
+            )
+            self.running_jobs[job_id] = handle
 
-                self.running_jobs.pop(job_id, None)
+            # Phase 3: stream output and wait (no DB connection held;
+            # _stream_and_parse acquires its own short-lived connections)
+            epoch_timestamps: list[tuple[int, float]] = []
+            log_path = runs_local / OUTPUT_LOG_FILENAME
+            stream_task = asyncio.create_task(
+                self._stream_and_parse(handle, job_id, log_path, epoch_timestamps, is_profiling=job["is_profiling_run"])
+            )
+
+            exit_code = await self.executor.wait(handle, JOB_TIMEOUT_SECONDS)
+            await stream_task
+
+            self.running_jobs.pop(job_id, None)
+
+            # Phase 4: handle completion (short-lived connection)
+            async with self.get_conn() as conn:
                 await self._handle_completion(conn, job_id, exit_code, run_start_time, epoch_timestamps)
 
         except Exception as e:

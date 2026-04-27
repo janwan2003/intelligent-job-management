@@ -14,10 +14,18 @@ services:
       NODES_CONFIG: config/nodes_config.tunnel.json
       HOST_PROJECT_ROOT: /home/wangrat/ijm
       EXECUTOR: docker
-      OPTIMIZER_URL: ${OPTIMIZER_URL:-}
+      OPTIMIZER_URL: ${OPTIMIZER_URL:-http://localhost:8080}
     volumes:
       - ../backend/src:/app/src
       - ../config:/app/config:ro
+
+  optimizer:
+    build:
+      context: ../optimizer
+    container_name: ijm-optimizer
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
 
   frontend:
     build:

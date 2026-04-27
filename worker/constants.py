@@ -29,3 +29,8 @@ DOCKER_CMD_TIMEOUT_SECONDS = 120
 CHECKPOINT_DIR = "checkpoints"
 CHECKPOINT_MOUNT_PATH = "/checkpoints"
 RUNS_MOUNT_PATH = "/runs"
+
+
+def container_name_for(job_id: str) -> str:
+    """Canonical Docker container name for a job."""
+    return f"{CONTAINER_NAME_PREFIX}{job_id[:JOB_ID_DISPLAY_LENGTH]}"

@@ -1,21 +1,23 @@
 """Client for the GPUspb external optimizer service.
 
-Translates IJM's job queue, profiling results, and cluster state into the
-format expected by POST /optimizer/v5, calls the optimizer, and returns
-a list of (instance_id, node_id, gpu_config) assignments.
+Translates IJM's active jobs, profiling results, and cluster state into the
+format expected by POST /optimizer/v5.  Sends ``currentScheduling`` so the
+optimizer can decide whether to preempt running jobs for more urgent ones.
 """
 
 import logging
 import os
-from dataclasses import dataclass
-from datetime import UTC, datetime
+import re
+from dataclasses import dataclass, field
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import httpx
 import psycopg
-from shared.constants import JobStatus
+from shared.constants import DEFAULT_PROFILING_EPOCHS, JobStatus
 
 from src.cluster import cluster
+from src.constants import DEFAULT_EPOCHS_TOTAL, DEFAULT_JOB_PRIORITY, PRIORITY_MAX, PRIORITY_MIN
 from src.models import NodeConfig
 
 logger = logging.getLogger(__name__)
@@ -25,21 +27,39 @@ OPTIMIZER_URL: str | None = os.getenv("OPTIMIZER_URL")
 # GPUspb timestamp format (dots in time, not colons)
 _TIME_FMT = "%a %d %b %Y, %H.%M.%S"
 
+_PROGRESS_RE = re.compile(r"^(\d+)/(\d+)$")
+
 
 @dataclass
 class Assignment:
-    """Result of the optimizer for one job."""
+    """Optimizer's decision for one job."""
 
     instance_id: str
     node_id: str
     gpu_config: dict[str, int]
 
 
+@dataclass
+class OptimizerResult:
+    """Full result from the optimizer, including preemption decisions."""
+
+    assignments: list[Assignment] = field(default_factory=list)
+    preempt: list[str] = field(default_factory=list)  # instance_ids to stop
+    estimated_cost: float = 0.0
+
+
 def _format_time(dt: datetime) -> str:
-    """Convert a datetime to the GPUspb time format."""
     if dt.tzinfo is None:
         dt = dt.replace(tzinfo=UTC)
     return dt.strftime(_TIME_FMT)
+
+
+def _parse_progress(progress: str | None) -> int:
+    """Parse '5/20' → 5 (current epoch). Returns 0 if not parseable."""
+    if not progress:
+        return 0
+    m = _PROGRESS_RE.match(progress)
+    return int(m.group(1)) if m else 0
 
 
 def _build_nodes_payload(
@@ -47,20 +67,16 @@ def _build_nodes_payload(
 ) -> dict[str, dict[str, Any]]:
     """Build the optimizer 'nodes' dict from cluster config and current usage.
 
-    Mixed-GPU nodes are split into separate virtual entries per GPU type
-    (e.g. node-mixed-01 with A40+L40S becomes node-mixed-01_A40 and
-    node-mixed-01_L40S).
+    ``free_nGPUs`` reflects actual availability (total minus running jobs).
+    The optimizer uses this together with ``currentScheduling`` to decide
+    assignments — ``free_nGPUs`` must already subtract currentScheduling usage.
     """
     nodes: dict[str, dict[str, Any]] = {}
     for raw in cluster.nodes:
         node = NodeConfig.model_validate(raw)
-        if node.is_for_profiling:
-            continue
         used = node_gpu_usage.get(node.id, {})
         for res in node.resources:
-            free = res.gpu_count - used.get(res.gpu_type, 0)
-            if free <= 0:
-                continue
+            free = max(0, res.gpu_count - used.get(res.gpu_type, 0))
             entry_id = f"{node.id}_{res.gpu_type}" if len(node.resources) > 1 else node.id
             nodes[entry_id] = {
                 "GPUtype": res.gpu_type,
@@ -71,110 +87,143 @@ def _build_nodes_payload(
     return nodes
 
 
-def _build_gpu_costs() -> dict[str, dict[str, float]]:
-    """Return GPU costs in the optimizer's format (keys are strings)."""
-    return cluster.gpu_energy_costs
+def _build_node_map(nodes_payload: dict[str, dict[str, Any]]) -> dict[str, tuple[str, str]]:
+    """Build reverse mapping: optimizer node ID → (real node ID, gpu_type)."""
+    node_map: dict[str, tuple[str, str]] = {}
+    real_ids = {raw.get("id") for raw in cluster.nodes}
+    for entry_id, entry in nodes_payload.items():
+        real_id = entry_id.rsplit("_", 1)[0] if "_" in entry_id else entry_id
+        if real_id in real_ids:
+            node_map[entry_id] = (real_id, entry["GPUtype"])
+    return node_map
 
 
-def _node_id_from_optimizer(opt_node_id: str) -> str:
-    """Map an optimizer node ID back to our real node ID.
-
-    Virtual entries like 'node-mixed-01_A40' → 'node-mixed-01'.
-    """
-    for raw in cluster.nodes:
-        node = NodeConfig.model_validate(raw)
-        if node.id == opt_node_id:
-            return node.id
-        if len(node.resources) > 1:
-            for res in node.resources:
-                if f"{node.id}_{res.gpu_type}" == opt_node_id:
-                    return node.id
-    return opt_node_id
-
-
-def _gpu_type_for_opt_node(opt_node_id: str, nodes_payload: dict[str, dict[str, Any]]) -> str:
-    """Look up the GPU type for an optimizer node entry."""
-    entry = nodes_payload.get(opt_node_id, {})
-    return str(entry.get("GPUtype", ""))
+def _opt_node_for_real(real_node_id: str, gpu_type: str, nodes_payload: dict[str, dict[str, Any]]) -> str | None:
+    """Map a real node_id + gpu_type back to the optimizer's node entry ID."""
+    # Direct match
+    if real_node_id in nodes_payload and nodes_payload[real_node_id].get("GPUtype") == gpu_type:
+        return real_node_id
+    # Virtual entry for mixed nodes
+    virtual = f"{real_node_id}_{gpu_type}"
+    if virtual in nodes_payload:
+        return virtual
+    return None
 
 
 async def optimize(
     conn: psycopg.AsyncConnection[Any],
     node_gpu_usage: dict[str, dict[str, int]],
-) -> list[Assignment]:
-    """Call the external optimizer for all QUEUED jobs that have profiling data.
+) -> OptimizerResult:
+    """Call the optimizer with ALL active jobs and currentScheduling.
 
-    Returns a (possibly empty) list of assignments.  On any error, logs a
-    warning and returns [] so the caller can fall back to the greedy scheduler.
+    Returns assignments (what should run) and preempt list (what should stop).
+    On error, returns empty result so caller falls back to the greedy scheduler.
     """
     if not OPTIMIZER_URL:
-        return []
+        return OptimizerResult()
 
-    # Gather QUEUED jobs with no assigned node
+    # Fetch ALL active jobs (QUEUED + RUNNING + PROFILING on non-profiling nodes)
     async with conn.cursor() as cur:
         await cur.execute(
-            "SELECT id, job_id, priority, deadline, created_at, epochs_total, profiling_epochs_no "
-            "FROM jobs WHERE status = %s AND assigned_node IS NULL ORDER BY created_at ASC",
-            (JobStatus.QUEUED,),
+            "SELECT id, job_id, status, priority, deadline, created_at, "
+            "epochs_total, profiling_epochs_no, assigned_node, assigned_gpu_config, progress "
+            "FROM jobs WHERE status IN (%s, %s, %s) AND is_profiling_run = FALSE "
+            "ORDER BY created_at ASC",
+            (JobStatus.QUEUED, JobStatus.RUNNING, JobStatus.PROFILING),
         )
-        queued_jobs = await cur.fetchall()
+        active_jobs = await cur.fetchall()
 
-    if not queued_jobs:
-        return []
+    if not active_jobs:
+        return OptimizerResult()
 
-    # For each job, fetch completed profiling results
-    jobs_payload: dict[str, dict[str, Any]] = {}
-    job_map: dict[str, tuple[str, int, int]] = {}  # opt_job_id → (instance_id, epochs_total, profiling_epochs)
+    # Batch-fetch profiling results
+    type_ids = list({row[1] for row in active_jobs})
+    async with conn.cursor() as cur:
+        await cur.execute(
+            "SELECT job_id, gpu_config, duration_seconds FROM profiling_results "
+            "WHERE job_id = ANY(%s) AND duration_seconds IS NOT NULL",
+            (type_ids,),
+        )
+        all_profiling = await cur.fetchall()
 
-    for instance_id, job_type_id, priority, deadline, created_at, epochs_total, profiling_epochs in queued_jobs:
-        async with conn.cursor() as cur:
-            await cur.execute(
-                "SELECT gpu_config, duration_seconds FROM profiling_results "
-                "WHERE job_id = %s AND duration_seconds IS NOT NULL",
-                (job_type_id,),
-            )
-            profiling_rows = await cur.fetchall()
-
-        if not profiling_rows:
-            continue  # No profiling data yet — skip, greedy scheduler will handle
-
-        # Build ProfilingData: {gpu_type: {num_gpus: total_execution_time}}
-        prof_epochs = profiling_epochs or 3
-        total_epochs = epochs_total or 20
-        profiling_data: dict[str, dict[str, float]] = {}
-        for gpu_config, duration in profiling_rows:
-            for gpu_type, num_gpus in gpu_config.items():
-                # Extrapolate profiling duration to full job
-                total_time = (duration / prof_epochs) * total_epochs
-                profiling_data.setdefault(gpu_type, {})[str(num_gpus)] = total_time
-
-        # Default deadline: 24h from submission if not set
-        dl = deadline or created_at.replace(tzinfo=UTC) + __import__("datetime").timedelta(hours=24)
-
-        jobs_payload[instance_id] = {
-            "SubmissionTime": _format_time(created_at),
-            "Deadline": _format_time(dl),
-            "Priority": max(1, min(5, priority or 3)),
-            "Epochs": str(total_epochs),
-            "ProfilingData": profiling_data,
-        }
-        job_map[instance_id] = (instance_id, total_epochs, prof_epochs)
-
-    if not jobs_payload:
-        return []
+    profiling_by_type: dict[str, list[tuple[dict[str, int], float]]] = {}
+    for type_id, gpu_config, duration in all_profiling:
+        profiling_by_type.setdefault(type_id, []).append((gpu_config, duration))
 
     nodes_payload = _build_nodes_payload(node_gpu_usage)
     if not nodes_payload:
-        logger.info("Optimizer: no available nodes, skipping")
-        return []
+        return OptimizerResult()
 
-    request_body = {
+    # Build jobs payload + currentScheduling
+    jobs_payload: dict[str, dict[str, Any]] = {}
+    current_scheduling: dict[str, dict[str, Any]] = {}
+
+    for row in active_jobs:
+        instance_id = row[0]
+        job_type_id, status = row[1], row[2]
+        priority, deadline, created_at = row[3], row[4], row[5]
+        epochs_total, profiling_epochs = row[6], row[7]
+        assigned_node, assigned_gpu_config, progress = row[8], row[9], row[10]
+
+        profiling_rows = profiling_by_type.get(job_type_id)
+        if not profiling_rows:
+            continue  # No profiling data → greedy scheduler handles it
+
+        prof_epochs = profiling_epochs or DEFAULT_PROFILING_EPOCHS
+        total_epochs = epochs_total or DEFAULT_EPOCHS_TOTAL
+
+        # For running jobs, use remaining epochs
+        current_epoch = _parse_progress(progress) if status == JobStatus.RUNNING else 0
+        remaining_epochs = max(1, total_epochs - current_epoch)
+
+        # Build ProfilingData with remaining execution times
+        profiling_data: dict[str, dict[str, float]] = {}
+        for gpu_config, duration in profiling_rows:
+            for gpu_type, num_gpus in gpu_config.items():
+                time_per_epoch = duration / prof_epochs
+                remaining_time = time_per_epoch * remaining_epochs
+                profiling_data.setdefault(gpu_type, {})[str(num_gpus)] = remaining_time
+
+        dl = deadline or created_at.replace(tzinfo=UTC) + timedelta(hours=24)
+        jobs_payload[instance_id] = {
+            "SubmissionTime": _format_time(created_at),
+            "Deadline": _format_time(dl),
+            "Priority": max(PRIORITY_MIN, min(PRIORITY_MAX, priority or DEFAULT_JOB_PRIORITY)),
+            "Epochs": str(remaining_epochs),
+            "ProfilingData": profiling_data,
+        }
+
+        # Add running/profiling jobs to currentScheduling
+        if status in (JobStatus.RUNNING, JobStatus.PROFILING) and assigned_node and assigned_gpu_config:
+            for gpu_type, n_gpus in assigned_gpu_config.items():
+                opt_node = _opt_node_for_real(assigned_node, gpu_type, nodes_payload)
+                if opt_node:
+                    current_scheduling[instance_id] = {
+                        "node": opt_node,
+                        "GPUtype": gpu_type,
+                        "nGPUs": n_gpus,
+                    }
+                break  # Only first GPU type for currentScheduling entry
+
+    if not jobs_payload:
+        return OptimizerResult()
+
+    request_body: dict[str, Any] = {
         "jobs": jobs_payload,
         "nodes": nodes_payload,
-        "GPUcosts": _build_gpu_costs(),
+        "GPUcosts": cluster.gpu_energy_costs,
         "currentTime": _format_time(datetime.now(UTC)),
         "method": os.getenv("OPTIMIZER_METHOD", "RG"),
     }
+    if current_scheduling:
+        request_body["currentScheduling"] = current_scheduling
+
+    logger.info(
+        "Optimizer request: %d jobs (%d running), %d nodes",
+        len(jobs_payload),
+        len(current_scheduling),
+        len(nodes_payload),
+    )
 
     try:
         async with httpx.AsyncClient(timeout=30.0) as client:
@@ -183,34 +232,35 @@ async def optimize(
             result = resp.json()
     except Exception:
         logger.exception("Optimizer call failed — falling back to greedy")
-        return []
+        return OptimizerResult()
 
     # Parse response
+    node_map = _build_node_map(nodes_payload)
+    assigned_ids: set[str] = set()
     assignments: list[Assignment] = []
-    opt_jobs = result.get("jobs", {})
-    for opt_job_id, assignment in opt_jobs.items():
-        opt_node = assignment.get("node", "")
-        n_gpus = assignment.get("nGPUs", 0)
-        if not opt_node or n_gpus <= 0:
-            continue
 
-        real_node_id = _node_id_from_optimizer(opt_node)
-        gpu_type = _gpu_type_for_opt_node(opt_node, nodes_payload)
-        if not gpu_type:
+    for opt_job_id, opt_assignment in result.get("jobs", {}).items():
+        opt_node = opt_assignment.get("node", "")
+        n_gpus = opt_assignment.get("nGPUs", 0)
+        tardiness = opt_assignment.get("expected_tardiness", 0)
+        if tardiness > 0:
+            logger.warning("Job %s will miss deadline by %.1f hours", opt_job_id[:8], tardiness)
+        if not opt_node or n_gpus <= 0 or opt_node not in node_map:
             continue
+        real_node_id, gpu_type = node_map[opt_node]
+        assignments.append(Assignment(instance_id=opt_job_id, node_id=real_node_id, gpu_config={gpu_type: n_gpus}))
+        assigned_ids.add(opt_job_id)
 
-        assignments.append(
-            Assignment(
-                instance_id=opt_job_id,
-                node_id=real_node_id,
-                gpu_config={gpu_type: n_gpus},
-            )
-        )
+    # Jobs in currentScheduling but NOT in optimizer response → preempt
+    preempt = [job_id for job_id in current_scheduling if job_id not in assigned_ids]
 
     logger.info(
-        "Optimizer returned %d assignment(s) for %d job(s) (cost=%.2f)",
+        "Optimizer: %d assignment(s), %d preemption(s), cost=%.2f",
         len(assignments),
-        len(jobs_payload),
+        len(preempt),
         result.get("estimated_cost", 0),
     )
-    return assignments
+    if preempt:
+        logger.info("Optimizer wants to preempt: %s", [jid[:8] for jid in preempt])
+
+    return OptimizerResult(assignments=assignments, preempt=preempt, estimated_cost=result.get("estimated_cost", 0))
