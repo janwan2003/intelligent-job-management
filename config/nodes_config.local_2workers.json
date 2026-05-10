@@ -1,0 +1,20 @@
+[
+  {
+    "id": "local-worker",
+    "isForProfiling": true,
+    "workerUrl": "http://worker:8001",
+    "cost": 0.30,
+    "resources": [
+      { "gpu_type": "A40", "gpu_count": 2 }
+    ]
+  },
+  {
+    "id": "local-worker2",
+    "isForProfiling": true,
+    "workerUrl": "http://worker2:8001",
+    "cost": 0.10,
+    "resources": [
+      { "gpu_type": "QuadroP600", "gpu_count": 2 }
+    ]
+  }
+]

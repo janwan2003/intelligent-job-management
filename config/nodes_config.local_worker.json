@@ -1,0 +1,11 @@
+[
+  {
+    "id": "local-worker",
+    "isForProfiling": true,
+    "workerUrl": "http://worker:8001",
+    "cost": 0.10,
+    "resources": [
+      { "gpu_type": "A40", "gpu_count": 2 }
+    ]
+  }
+]

@@ -14,18 +14,32 @@ from db import fetch_job
 logger = logging.getLogger(__name__)
 
 
+# Need ≥ 2 timestamps: one ending the warmup epoch and one ending a
+# steady-state epoch, giving 1 post-warmup interval to average.
+MIN_EPOCH_TIMESTAMPS_FOR_STEADY = 2
+
+
 def compute_duration(
     epoch_timestamps: list[tuple[int, float]] | None,
     run_start_time: datetime,
 ) -> float:
-    """Compute profiling duration, excluding first epoch as warmup."""
-    if epoch_timestamps and len(epoch_timestamps) >= 3:
+    """Compute mean per-epoch duration, excluding the first (warmup) epoch.
+
+    The runtime emits a timestamp after each epoch finishes, so
+    ``epoch_timestamps[0]`` marks the end of epoch 1 (warmup) — its duration
+    is unknown because the run-start clock is wall-time, not the container's
+    monotonic clock. Every interval between timestamps is therefore already
+    a post-warmup sample.
+    """
+    if epoch_timestamps and len(epoch_timestamps) >= MIN_EPOCH_TIMESTAMPS_FOR_STEADY:
         intervals = [epoch_timestamps[i + 1][1] - epoch_timestamps[i][1] for i in range(len(epoch_timestamps) - 1)]
-        steady = intervals[1:]
-        mean_epoch_time = sum(steady) / len(steady)
-        total_epochs = epoch_timestamps[-1][0]
-        logger.info("Profiling: warmup=%.4fs, steady mean=%.4fs/epoch", intervals[0], mean_epoch_time)
-        return mean_epoch_time * total_epochs
+        mean_epoch_time = sum(intervals) / len(intervals)
+        logger.info(
+            "Profiling: warmup epoch excluded, mean=%.4fs/epoch over %d sample(s)",
+            mean_epoch_time,
+            len(intervals),
+        )
+        return mean_epoch_time
     return (datetime.now(UTC) - run_start_time).total_seconds()
 
 
@@ -43,12 +57,24 @@ async def handle_complete(
     duration = compute_duration(epoch_timestamps, run_start_time)
     now = datetime.now(UTC)
     async with conn.cursor() as cur:
+        # Filter by instance_id so a stray finish from a different instance
+        # cannot overwrite this row, and warn loudly if no claim row exists
+        # (the scheduler should never let two instances claim the same config,
+        # but if it does we want to know rather than lose a result silently).
         await cur.execute(
             """UPDATE profiling_results
                SET duration_seconds = %s, node_id = %s
-               WHERE job_id = %s AND gpu_config = %s::jsonb AND duration_seconds IS NULL""",
-            (duration, job["assigned_node"], job["job_id"], Json(job["assigned_gpu_config"])),
+               WHERE job_id = %s AND gpu_config = %s::jsonb
+                 AND instance_id = %s AND duration_seconds IS NULL""",
+            (duration, job["assigned_node"], job["job_id"], Json(job["assigned_gpu_config"]), job_id),
         )
+        if cur.rowcount == 0:
+            logger.warning(
+                "No in-flight profiling claim for job %s (type=%s, %s) — result not recorded",
+                job_id[:JOB_ID_DISPLAY_LENGTH],
+                job["job_id"],
+                job["assigned_gpu_config"],
+            )
         await cur.execute(
             """UPDATE jobs SET status = %s, assigned_node = NULL, assigned_gpu_config = NULL,
                is_profiling_run = FALSE, updated_at = %s WHERE id = %s""",

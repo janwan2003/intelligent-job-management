@@ -10,6 +10,7 @@ Subclasses only need to define the model, dataset, and batch preprocessing.
 """
 
 import contextlib
+import io
 import logging
 import os
 import tempfile
@@ -90,7 +91,13 @@ class BaseTrainer(ABC):
             return
         logger.info("Loading checkpoint from %s", self.checkpoint_path)
         try:
-            checkpoint = torch.load(self.checkpoint_path, weights_only=True)
+            # Pre-read into memory before torch.load.  When the checkpoint dir
+            # is on a FUSE mount (rclone/sshfs for cross-node sharing), the
+            # mmap()/seek() syscalls torch.load() may issue can fail with
+            # EPERM ("Operation not permitted").  Reading via plain read()
+            # avoids those calls entirely and is cheap for our checkpoint sizes.
+            buf = io.BytesIO(self.checkpoint_path.read_bytes())
+            checkpoint = torch.load(buf, weights_only=True)
             self.model.load_state_dict(checkpoint["model_state_dict"])
             self.optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
             self.current_epoch = checkpoint["epoch"]
@@ -113,6 +120,7 @@ class BaseTrainer(ABC):
             "best_accuracy": self.best_accuracy,
         }
         fd, tmp_path = tempfile.mkstemp(dir=self.checkpoint_dir, suffix=".pt.tmp")
+        os.close(fd)  # mkstemp opens the file; we let torch.save reopen by path
         try:
             torch.save(checkpoint, tmp_path)
             Path(tmp_path).replace(self.checkpoint_path)

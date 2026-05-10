@@ -5,7 +5,7 @@ import logging
 import os
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import psycopg
@@ -13,7 +13,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from psycopg.types.json import Json
 from psycopg_pool import AsyncConnectionPool
-from shared.constants import PG_NOTIFY_SCHEDULE, JobStatus
+from shared.constants import PG_NOTIFY_SCHEDULE, PG_NOTIFY_SLOT_FREED, JobStatus
 
 import src.state as state
 from src.cluster import cluster
@@ -21,7 +21,8 @@ from src.constants import CORS_ALLOWED_ORIGINS, DEFAULT_DATABASE_URL
 from src.executors import create_executor
 from src.job_dispatcher import JobDispatcher
 from src.job_runner import JobRunner
-from src.optimizer import optimize
+from src.node_slots import NodeSlots
+from src.optimizer import Assignment, optimize
 from src.profiling import scheduler
 from src.routers import router
 
@@ -60,120 +61,209 @@ async def lifespan(_app: FastAPI) -> AsyncGenerator[None]:
     logger.info("Executor: %s", executor_name)
 
     async def _on_profiling_complete(
-        _conn: object,
         job_id: str,
         gpu_config: dict[str, int],
         node_id: str,
         duration: float,
         job_type_id: str | None = None,
     ) -> None:
-        """Handle profiling result — insert to DB, re-schedule job."""
+        """Handle profiling result — record it, then defer placement to the
+        full scheduling pass so the optimizer (not greedy) decides the next run."""
         type_id = job_type_id or job_id
-        async with state.schedule_lock, state.get_conn() as pconn, pconn.transaction():
+        async with state.get_conn() as pconn, pconn.transaction():
             now = datetime.now(UTC)
-            await pconn.execute(
+            # Filter by instance_id so a stray finish from a different instance
+            # can never overwrite this row, and surface a warning if no claim
+            # row matches (e.g. it was deleted by a concurrent failure path).
+            cur = await pconn.execute(
                 """UPDATE profiling_results
                    SET duration_seconds = %s, node_id = %s
-                   WHERE job_id = %s AND gpu_config = %s::jsonb AND duration_seconds IS NULL""",
-                (duration, node_id, type_id, Json(gpu_config)),
+                   WHERE job_id = %s AND gpu_config = %s::jsonb
+                     AND instance_id = %s AND duration_seconds IS NULL""",
+                (duration, node_id, type_id, Json(gpu_config), job_id),
             )
-            schedule_result = await scheduler.schedule_job(
-                pconn,
-                job_id,
-                job_type_id=type_id,
-            )
+            if cur.rowcount == 0:
+                logger.warning(
+                    "No in-flight profiling claim for job %s (type=%s, %s) — result not recorded",
+                    job_id[:8],
+                    type_id,
+                    gpu_config,
+                )
             await pconn.execute(
-                "UPDATE jobs SET status = %s, updated_at = %s WHERE id = %s",
+                """UPDATE jobs
+                   SET status = %s, assigned_node = NULL, assigned_gpu_config = NULL,
+                       is_profiling_run = FALSE, updated_at = %s
+                   WHERE id = %s""",
                 (JobStatus.QUEUED, now, job_id),
             )
 
         logger.info(
             "Recorded profiling result for job %s (type=%s): %s = %.1fs", job_id[:8], type_id, gpu_config, duration
         )
-        if schedule_result.node_id is not None:
-            await state.job_runner.enqueue(job_id)
-            logger.info(
-                "Re-queued job %s (%s mode, node=%s)", job_id[:8], schedule_result.mode, schedule_result.node_id
-            )
-        else:
-            logger.info("No node available for job %s after profiling — watcher will retry", job_id[:8])
+        await _schedule_waiting_jobs()
 
-    async def _on_job_completed() -> None:
-        """When any job finishes, try to schedule waiting QUEUED jobs."""
+    async def _on_job_completed(job_id: str) -> None:
+        """When an in-process job finishes, release its slot semaphore and
+        re-trigger scheduling.
+
+        The slot release uses (assigned_node, assigned_gpu_config) read from
+        the row — at this point the row's status is terminal (SUCCEEDED /
+        FAILED / PREEMPTED) but ``assigned_node`` is still set (the auto-
+        preempt path that nullifies it doesn't go through this callback).
+        Tolerate a missing row / missing assignment defensively.
+        """
+        if state.node_slots is not None:
+            try:
+                async with state.get_conn() as conn:
+                    cur = await conn.execute(
+                        "SELECT assigned_node, assigned_gpu_config FROM jobs WHERE id = %s",
+                        (job_id,),
+                    )
+                    row = await cur.fetchone()
+                if row and row[0] and row[1]:
+                    n_gpus = sum(int(v) for v in row[1].values())
+                    state.node_slots.release(row[0], n_gpus)
+            except Exception:
+                logger.exception("Failed to release slot for completed job %s", job_id[:8])
         await _schedule_waiting_jobs()
 
     local_runner = JobRunner(
         executor=executor,
         get_conn=state.get_conn,
-        schedule_lock=state.schedule_lock,
         on_profiling_complete=_on_profiling_complete,
         on_job_completed=_on_job_completed,
     )
     state.job_runner = JobDispatcher(local_runner, state.get_conn, cluster)
     await state.job_runner.start()
 
+    # NodeSlots: per-node semaphores that gate dispatches.  Reconciled from
+    # DB so that already-occupied slots are pre-acquired.
+    state.node_slots = NodeSlots(cluster)
+    await state.node_slots.reconcile(state.get_conn)
+
     # ------------------------------------------------------------------
-    # Fallback watcher: catch anything missed (runs infrequently)
+    # Slot-coordinated scheduler
     # ------------------------------------------------------------------
+
+    async def _preempt_and_release(job_id: str) -> None:
+        """Auto-preempt a job; the slot is released asynchronously by the
+        worker via ``NOTIFY ijm_slot_freed`` once kill+drain+persist completes.
+
+        ``runner.stop(reason="auto")`` is fire-and-forget for remote workers
+        (`asyncio.create_task` in ``JobDispatcher``), so we cannot use its
+        return as the "slot is free" signal — it returns ~10 ms after task
+        creation, long before the worker has actually killed anything.
+        Instead, the worker's ``/stop`` handler emits ``ijm_slot_freed`` after
+        ``_persist_stop`` commits, and the API's ``_slot_listener`` picks
+        that up and calls ``node_slots.release(...)``.  This keeps the
+        semaphore release in lockstep with the actual kill.
+        """
+        try:
+            await state.job_runner.stop(job_id, reason="auto")
+            logger.info("Issued preempt /stop for job %s (slot release awaits NOTIFY)", job_id[:8])
+        except Exception:
+            logger.exception("Failed to issue preempt for job %s", job_id[:8])
+
+    async def _dispatch_when_slot_free(a: Assignment) -> None:
+        """Wait for the target node's slot to be free, then post /run.
+
+        Acquires the semaphore *after* the row has been UPDATEd in Phase 1b
+        (so the row already points at the target node).  Each dispatch is
+        its own task, so a slow preempt on node A doesn't gate dispatches
+        for node B.
+        """
+        n = sum(int(v) for v in a.gpu_config.values())
+        try:
+            t0 = asyncio.get_running_loop().time()
+            if state.node_slots is not None:
+                await state.node_slots.acquire(a.node_id, n)
+            try:
+                await state.job_runner.enqueue(a.instance_id)
+                elapsed = asyncio.get_running_loop().time() - t0
+                logger.info(
+                    "Dispatched job %s on %s %s (waited %.2fs for slot)",
+                    a.instance_id[:8],
+                    a.node_id,
+                    a.gpu_config,
+                    elapsed,
+                )
+            except Exception:
+                # Don't leak the permit if dispatch itself failed.
+                if state.node_slots is not None:
+                    state.node_slots.release(a.node_id, n)
+                raise
+        except Exception:
+            logger.exception("Dispatch failed for job %s on %s", a.instance_id[:8], a.node_id)
+
+    # Reap QUEUED rows whose assigned_node has been set for longer than
+    # this without the worker advancing them to RUNNING/PROFILING.  These
+    # are dispatches that silently failed (e.g. the worker couldn't pull
+    # the image) — leaving them stuck would cause the optimizer to treat
+    # the slot as occupied (permutation filter), so no re-placement ever
+    # fires.  A normal /run round-trip is well under a second; 30 s is a
+    # generous floor that won't race with healthy in-flight dispatches.
+    _STUCK_DISPATCH_THRESHOLD_S = 30
+
+    async def _reset_stuck_queued_assignments() -> None:
+        """Clear assigned_node + release leaked slot for orphaned QUEUED rows."""
+        cutoff = datetime.now(UTC) - timedelta(seconds=_STUCK_DISPATCH_THRESHOLD_S)
+        async with state.get_conn() as conn:
+            cur = await conn.execute(
+                """SELECT id, assigned_node, assigned_gpu_config FROM jobs
+                   WHERE status = %s AND assigned_node IS NOT NULL
+                     AND updated_at < %s""",
+                (JobStatus.QUEUED, cutoff),
+            )
+            stuck = await cur.fetchall()
+            for jid, node, gpu_config in stuck:
+                n = sum(int(v) for v in (gpu_config or {}).values())
+                # Conditional UPDATE so we don't race with a fresh dispatch
+                # that just flipped the row to RUNNING/PROFILING.
+                ucur = await conn.execute(
+                    """UPDATE jobs
+                       SET assigned_node = NULL, assigned_gpu_config = NULL,
+                           updated_at = %s
+                       WHERE id = %s AND status = %s AND assigned_node = %s
+                       RETURNING id""",
+                    (datetime.now(UTC), jid, JobStatus.QUEUED, node),
+                )
+                if await ucur.fetchone():
+                    if state.node_slots is not None and node and n > 0:
+                        state.node_slots.release(node, n)
+                    logger.warning(
+                        "Reset stuck QUEUED job %s on %s (%dx %s) — dispatch never started; slot released",
+                        jid[:8],
+                        node,
+                        n,
+                        gpu_config,
+                    )
+            await conn.commit()
 
     async def _schedule_waiting_jobs() -> None:
-        """Run the optimizer and greedy scheduler to assign/preempt jobs.
+        """Run the optimizer + greedy scheduler, then spawn parallel
+        preempt/dispatch tasks coordinated by per-node semaphores.
 
-        Phase 1 (optimizer): sends ALL active jobs + currentScheduling.
-        The optimizer may preempt running jobs to make room for urgent ones.
-        Phase 2 (greedy): handles profiling runs and jobs without profiling data.
+        The schedule lock is held only for optimizer + Phase 1b DB writes
+        (sub-second).  Actual stop+dispatch work happens in background
+        tasks that release the lock immediately, so a slow worker on one
+        node doesn't gate scheduling for another.
         """
         async with state.schedule_lock:
-            # --- Phase 1: optimizer with preemption support ---
-            optimizer_handled: set[str] = set()
-            to_enqueue: list[tuple[str, str]] = []
-
+            await _reset_stuck_queued_assignments()
             async with state.get_conn() as conn:
-                node_gpu_usage = await scheduler._get_node_gpu_usage(conn)
+                node_gpu_usage = await scheduler.get_node_gpu_usage(conn)
                 opt_result = await optimize(conn, node_gpu_usage)
 
-            # Phase 1a: preempt jobs the optimizer dropped, then wait
-            # for containers to actually die before proceeding.
-            if opt_result.preempt:
-                for job_id in opt_result.preempt:
-                    logger.info("Optimizer preempting job %s", job_id[:8])
-                    try:
-                        await state.job_runner.stop(job_id)
-                    except Exception:
-                        logger.warning("Failed to stop preempted job %s", job_id[:8])
-                    optimizer_handled.add(job_id)
+            optimizer_handled: set[str] = set(opt_result.preempt)
+            new_dispatches: list[Assignment] = []
 
-                # Wait for containers to actually die, then re-queue the
-                # preempted jobs.  Poll up to 15s for status to become
-                # PREEMPTED (remote workers via HTTP can be slow).
-                logger.info("Waiting for %d preempted container(s) to stop...", len(opt_result.preempt))
-                for _ in range(15):
-                    await asyncio.sleep(1)
-                    async with state.get_conn() as conn:
-                        cur = await conn.execute(
-                            "SELECT count(*) FROM jobs WHERE id = ANY(%s) AND status != %s",
-                            (opt_result.preempt, JobStatus.PREEMPTED),
-                        )
-                        row = await cur.fetchone()
-                        not_preempted = row[0] if row else 0
-                    if not_preempted == 0:
-                        break
-
-                # Re-queue them so they get rescheduled (and resume
-                # from checkpoint) on the next cycle.
-                async with state.get_conn() as conn:
-                    now = datetime.now(UTC)
-                    await conn.execute(
-                        """UPDATE jobs SET status = %s, assigned_node = NULL,
-                           assigned_gpu_config = NULL, updated_at = %s
-                           WHERE id = ANY(%s) AND status = %s""",
-                        (JobStatus.QUEUED, now, opt_result.preempt, JobStatus.PREEMPTED),
-                    )
-
-            # Phase 1b: apply optimizer assignments
-            for a in opt_result.assignments:
-                async with state.get_conn() as conn:
-                    now = datetime.now(UTC)
+            # Phase 1b: apply optimizer assignments.  Each successful UPDATE
+            # claims the row (assigned_node set, status still QUEUED).  The
+            # actual /run dispatch happens in a background task that waits
+            # on the per-node semaphore.
+            async with state.get_conn() as conn:
+                now = datetime.now(UTC)
+                for a in opt_result.assignments:
                     cur = await conn.execute(
                         """UPDATE jobs
                            SET assigned_node = %s, assigned_gpu_config = %s,
@@ -183,35 +273,54 @@ async def lifespan(_app: FastAPI) -> AsyncGenerator[None]:
                         (a.node_id, Json(a.gpu_config), now, a.instance_id, JobStatus.QUEUED),
                     )
                     if await cur.fetchone():
-                        to_enqueue.append((a.instance_id, a.node_id))
+                        new_dispatches.append(a)
                         logger.info(
-                            "Optimizer assigned job %s → node %s %s", a.instance_id[:8], a.node_id, a.gpu_config
+                            "Optimizer assigned job %s → node %s %s",
+                            a.instance_id[:8],
+                            a.node_id,
+                            a.gpu_config,
                         )
-                optimizer_handled.add(a.instance_id)
+                    optimizer_handled.add(a.instance_id)
+                await conn.commit()
 
-            async with state.get_conn() as conn:
+                # Greedy fallback for QUEUED jobs the optimizer didn't
+                # place (typically pre-profiling).
                 cur = await conn.execute(
                     "SELECT id, job_id FROM jobs WHERE status = %s AND assigned_node IS NULL ORDER BY created_at ASC",
                     (JobStatus.QUEUED,),
                 )
                 unassigned = [(row[0], row[1]) for row in await cur.fetchall()]
 
-            for instance_id, type_id in unassigned:
-                if instance_id in optimizer_handled:
-                    continue
-                async with state.get_conn() as conn:
+                for instance_id, type_id in unassigned:
+                    if instance_id in optimizer_handled:
+                        continue
                     result = await scheduler.schedule_job(conn, instance_id, job_type_id=type_id)
-                    if result.node_id is not None:
-                        now = datetime.now(UTC)
+                    if result.node_id is not None and result.gpu_config is not None:
+                        # ``schedule_job`` already wrote assigned_node /
+                        # assigned_gpu_config to the row.  Update status's
+                        # updated_at timestamp for visibility and queue the
+                        # dispatch.
                         await conn.execute(
                             "UPDATE jobs SET status = %s, updated_at = %s WHERE id = %s",
-                            (JobStatus.QUEUED, now, instance_id),
+                            (JobStatus.QUEUED, datetime.now(UTC), instance_id),
                         )
-                        to_enqueue.append((instance_id, result.node_id))
+                        new_dispatches.append(
+                            Assignment(
+                                instance_id=instance_id,
+                                node_id=result.node_id,
+                                gpu_config=result.gpu_config,
+                            )
+                        )
+                await conn.commit()
 
-            for instance_id, node_id in to_enqueue:
-                await state.job_runner.enqueue(instance_id)
-                logger.info("Scheduled waiting job %s on node %s", instance_id[:8], node_id)
+        # Spawn preempt + dispatch tasks OUTSIDE the lock.  Each runs
+        # independently and coordinates via NodeSlots.
+        for jid in opt_result.preempt:
+            logger.info("Optimizer preempting job %s", jid[:8])
+            asyncio.create_task(_preempt_and_release(jid), name=f"preempt-{jid[:8]}")
+
+        for a in new_dispatches:
+            asyncio.create_task(_dispatch_when_slot_free(a), name=f"dispatch-{a.instance_id[:8]}")
 
     async def _queue_watcher() -> None:
         """Safety net: retry scheduling every 60 s in case something was missed."""
@@ -222,6 +331,11 @@ async def lifespan(_app: FastAPI) -> AsyncGenerator[None]:
             except Exception:
                 logger.exception("Queue watcher error")
 
+    # Debounce notifies: at most one pending scheduler run at a time.
+    # Without this, a notify storm spawns unbounded create_task() calls that
+    # all serialize on state.schedule_lock.
+    notify_event = asyncio.Event()
+
     async def _notify_listener() -> None:
         """Wake the scheduler immediately when a worker sends NOTIFY after profiling."""
         while True:
@@ -229,20 +343,98 @@ async def lifespan(_app: FastAPI) -> AsyncGenerator[None]:
                 async with await psycopg.AsyncConnection.connect(database_url, autocommit=True) as conn:
                     await conn.execute(f"LISTEN {PG_NOTIFY_SCHEDULE}")
                     async for _ in conn.notifies():
-                        logger.debug("Received schedule notification — running scheduler")
-                        asyncio.create_task(_schedule_waiting_jobs())
+                        logger.debug("Received schedule notification")
+                        notify_event.set()
             except Exception:
                 logger.warning("Notify listener lost connection, reconnecting in 5s")
                 await asyncio.sleep(5)
 
+    # Minimum interval between optimizer passes — dampens churn.
+    # The optimizer doesn't penalise migrations, so consecutive calls under
+    # similar inputs may produce slightly different placements (an
+    # equivalent point on the cost/tardiness frontier).  We faithfully
+    # execute each plan, which means jobs can be killed and restarted before
+    # they finish a single epoch.  Holding off ~5 s between passes lets the
+    # cluster settle into the previous plan; the next pass either reaffirms
+    # it (no preempts) or has a substantively better one to act on.
+    _SCHEDULE_MIN_INTERVAL_S = 5.0
+    _last_schedule_at = 0.0
+
+    async def _notify_consumer() -> None:
+        """Coalesce notifies → at most one in-flight scheduler pass.
+
+        Also enforces a minimum interval between optimizer calls so the
+        cluster has time to apply the previous plan before re-evaluating.
+        """
+        nonlocal _last_schedule_at
+        while True:
+            await notify_event.wait()
+            notify_event.clear()
+            now = asyncio.get_running_loop().time()
+            wait = _SCHEDULE_MIN_INTERVAL_S - (now - _last_schedule_at)
+            if wait > 0:
+                await asyncio.sleep(wait)
+                # Re-check the event so we coalesce notifies that arrived
+                # while we were sleeping (without losing them — the next
+                # iteration will pick them up via the event still being set).
+            try:
+                _last_schedule_at = asyncio.get_running_loop().time()
+                await _schedule_waiting_jobs()
+            except Exception:
+                logger.exception("Scheduler pass triggered by notify failed")
+
+    async def _slot_listener() -> None:
+        """Release per-node slot permits when workers fire ``ijm_slot_freed``.
+
+        Payload is ``"<node_id>:<n_gpus>"``.  Receipt of a notification means
+        the worker has fully cleaned up that slot's container, so the
+        semaphore release is safe.
+        """
+        while True:
+            try:
+                async with await psycopg.AsyncConnection.connect(database_url, autocommit=True) as conn:
+                    await conn.execute(f"LISTEN {PG_NOTIFY_SLOT_FREED}")
+                    async for n in conn.notifies():
+                        payload = (n.payload or "").strip()
+                        if not payload:
+                            continue
+                        try:
+                            node_id, n_str = payload.rsplit(":", 1)
+                            count = int(n_str)
+                        except ValueError:
+                            logger.warning("malformed slot-freed payload: %r", payload)
+                            continue
+                        if state.node_slots is None:
+                            continue
+                        state.node_slots.release(node_id, count)
+                        logger.debug(
+                            "Released %d permit(s) on %s (avail=%d)",
+                            count,
+                            node_id,
+                            state.node_slots.available(node_id),
+                        )
+                        # Wake the scheduler: a freshly-vacant slot may
+                        # unblock a previously-unplaceable QUEUED row.  Also
+                        # required for migrations — after auto-preempt
+                        # nullifies the old assignment, Phase 1b can finally
+                        # apply the optimizer's intended new placement.
+                        notify_event.set()
+            except Exception:
+                logger.warning("Slot listener lost connection, reconnecting in 5s")
+                await asyncio.sleep(5)
+
     watcher_task = asyncio.create_task(_queue_watcher())
     listener_task = asyncio.create_task(_notify_listener())
+    consumer_task = asyncio.create_task(_notify_consumer())
+    slot_listener_task = asyncio.create_task(_slot_listener())
 
     yield
 
     # Cleanup
     watcher_task.cancel()
     listener_task.cancel()
+    consumer_task.cancel()
+    slot_listener_task.cancel()
     await state.job_runner.shutdown()
     if state.pool:
         await state.pool.close()

@@ -70,7 +70,7 @@ class ProfilingScheduler:
         configs.sort(key=lambda c: sum(c.values()))
         return configs
 
-    async def _get_node_gpu_usage(self, conn: psycopg.AsyncConnection[Any]) -> dict[str, dict[str, int]]:
+    async def get_node_gpu_usage(self, conn: psycopg.AsyncConnection[Any]) -> dict[str, dict[str, int]]:
         """Query allocated GPUs per node from currently running/profiling jobs.
 
         Returns ``{node_id: {gpu_type: allocated_count, ...}, ...}``.
@@ -225,7 +225,7 @@ class ProfilingScheduler:
         Called after a profiling run completes to immediately transition to real
         execution on any configuration that has been measured.
         """
-        node_gpu_usage = await self._get_node_gpu_usage(conn)
+        node_gpu_usage = await self.get_node_gpu_usage(conn)
         available = await self._find_available_config(conn, job_id, node_gpu_usage)
         if available:
             gpu_config, node = available
@@ -276,7 +276,7 @@ class ProfilingScheduler:
         profiling results across submissions.  Falls back to *job_id* if not provided.
         """
         type_id = job_type_id or job_id
-        node_gpu_usage = await self._get_node_gpu_usage(conn)
+        node_gpu_usage = await self.get_node_gpu_usage(conn)
         all_configs = self.get_valid_configurations()
         profiled = await self.get_profiled_configs(conn, type_id)
         profiled_keys = {config_key(c) for c in profiled}
@@ -302,30 +302,33 @@ class ProfilingScheduler:
                 job_id[:8],
             )
 
-        gpu_config: dict[str, int] | None
+        gpu_config: dict[str, int] | None = None
+        node: NodeConfig | None = None
+        mode = "standard"
+        is_profiling_run = False
+
         if remaining and profiled_this_round < self.configs_per_job:
             # Exploration: pick the smallest un-profiled config (fewest total GPUs)
-            gpu_config = remaining[0]
-            node = self._find_node_for_config(gpu_config, is_for_profiling=True, node_gpu_usage=node_gpu_usage)
-            result = ScheduleResult(
-                mode="profiling",
-                gpu_config=gpu_config,
-                node_id=node.id if node else None,
-                is_profiling_run=True,
-            )
-        else:
-            # Enough configs profiled (or none remain) — pick any available one
+            candidate = remaining[0]
+            candidate_node = self._find_node_for_config(candidate, is_for_profiling=True, node_gpu_usage=node_gpu_usage)
+            if candidate_node is not None:
+                gpu_config, node = candidate, candidate_node
+                mode, is_profiling_run = "profiling", True
+
+        if not is_profiling_run:
+            # Either profiling-mode skipped, or the profiling candidate didn't
+            # fit on any node right now — fall through to a standard run on any
+            # already-profiled config that fits.
             available = await self._find_available_config(conn, type_id, node_gpu_usage)
             if available:
                 gpu_config, node = available
-            else:
-                gpu_config, node = None, None
-            result = ScheduleResult(
-                mode="standard",
-                gpu_config=gpu_config,
-                node_id=node.id if node else None,
-                is_profiling_run=False,
-            )
+
+        result = ScheduleResult(
+            mode=mode,
+            gpu_config=gpu_config,
+            node_id=node.id if node else None,
+            is_profiling_run=is_profiling_run,
+        )
 
         await self._persist_assignment(conn, job_id, result, type_id=type_id, instance_id=job_id)
 

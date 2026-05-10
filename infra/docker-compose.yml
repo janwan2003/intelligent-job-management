@@ -28,17 +28,27 @@ services:
     container_name: ijm-api
     restart: unless-stopped
     environment:
-      DATABASE_URL: postgresql://postgres:postgres@postgres:5432/ijm
+      # Override with DATABASE_URL=...@host.docker.internal:5433/ijm when
+      # using the tunnel deployment so the API + remote workers share the
+      # same postgres on matemagician.  Default points at the local
+      # ``postgres`` service for fully-local docker-compose dev runs.
+      DATABASE_URL: ${DATABASE_URL:-postgresql://postgres:postgres@postgres:5432/ijm}
       HOST_ROOT: /host
       # HOST_PROJECT_ROOT must be the absolute host path of the project root.
       # docker run -v paths are resolved by the Docker daemon on the HOST, not
       # inside the API container.  ${PWD}/.. works when running from infra/.
       HOST_PROJECT_ROOT: ${HOST_PROJECT_ROOT:-${PWD}/..}
       EXECUTOR: docker
-      OPTIMIZER_URL: ${OPTIMIZER_URL:-}
+      OPTIMIZER_URL: ${OPTIMIZER_URL:-http://optimizer:8080}
       NODES_CONFIG: ${NODES_CONFIG:-config/nodes_config.json}
     ports:
-      - "8000:8000"
+      - "${IJM_API_PORT:-8000}:8000"
+    # Lets the API reach the host's SSH-tunneled worker ports via
+    # ``host.docker.internal:8001/8002`` (referenced from the tunnel
+    # ``nodes_config``).  Without this, ``localhost`` from inside the
+    # container hits the container's own loopback, not the host's tunnels.
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     depends_on:
       postgres:
         condition: service_healthy
@@ -49,6 +59,7 @@ services:
       retries: 3
     volumes:
       - ../backend/src:/app/src
+      - ../shared:/app/shared
       - ../config:/app/config:ro
       - ../data:/data:ro
       - /var/run/docker.sock:/var/run/docker.sock
@@ -86,8 +97,32 @@ services:
         limits:
           memory: 256M
 
+  worker2:
+    profiles: [worker2]
+    build:
+      context: ..
+      dockerfile: worker/Dockerfile
+    container_name: ijm-worker2
+    restart: unless-stopped
+    environment:
+      DATABASE_URL: postgresql://postgres:postgres@postgres:5432/ijm
+      HOST_ROOT: /host
+      HOST_PROJECT_ROOT: ${HOST_PROJECT_ROOT:-${PWD}/..}
+      NODE_ID: local-worker2
+    ports:
+      - "8002:8001"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ..:/host
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+
   optimizer:
-    profiles: [optimizer]
     build:
       context: ../optimizer
     container_name: ijm-optimizer

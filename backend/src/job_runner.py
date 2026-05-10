@@ -55,13 +55,11 @@ class JobRunner:
         self,
         executor: Executor,
         get_conn: Any,  # callable returning async context manager for DB connections
-        schedule_lock: asyncio.Lock,
-        on_profiling_complete: Any = None,  # callback(conn, job_id, gpu_config, node_id, duration)
+        on_profiling_complete: Any = None,  # callback(job_id, gpu_config, node_id, duration, job_type_id)
         on_job_completed: Any = None,  # callback()
     ) -> None:
         self.executor = executor
         self.get_conn = get_conn
-        self.schedule_lock = schedule_lock
         self.on_profiling_complete = on_profiling_complete
         self.on_job_completed = on_job_completed
 
@@ -81,10 +79,15 @@ class JobRunner:
         """Enqueue a job for execution."""
         await self.job_queue.put(job_id)
 
-    async def stop(self, job_id: str) -> None:
-        """Stop a running job."""
+    async def stop(self, job_id: str, *, reason: str = "user") -> None:
+        """Stop a running job.
+
+        ``reason="user"``: status → PREEMPTED, awaits manual resume.
+        ``reason="auto"``: status → QUEUED with assignment cleared, picked up
+        again by the next scheduler pass.
+        """
         try:
-            await self._stop_job(job_id)
+            await self._stop_job(job_id, reason=reason)
         except Exception:
             logger.exception("Error stopping job %s", job_id[:JOB_ID_DISPLAY_LENGTH])
 
@@ -92,13 +95,18 @@ class JobRunner:
     # Lifecycle (started by app lifespan)
     # ------------------------------------------------------------------
 
-    async def start(self) -> None:
-        """Start the job runner background tasks."""
-        await self._reconcile_job_states()
-        await self._pickup_queued_jobs()
-        await self._start_dispatch_loop()
+    async def start(self, local_node_ids: frozenset[str] | None = None) -> None:
+        """Start the job runner background tasks.
 
-    async def _start_dispatch_loop(self) -> None:
+        *local_node_ids* — only reconcile/pick-up jobs assigned to these nodes
+        (or unassigned). Used by ``JobDispatcher`` so remote-worker jobs are
+        owned by their respective workers.
+        """
+        await self.reconcile_job_states(local_node_ids)
+        await self.pickup_queued_jobs(local_node_ids)
+        self.start_dispatch_loop()
+
+    def start_dispatch_loop(self) -> None:
         self._runner_task = asyncio.create_task(self._dispatch_loop())
         logger.info("Job runner started")
 
@@ -132,7 +140,7 @@ class JobRunner:
     # Startup recovery
     # ------------------------------------------------------------------
 
-    async def _reconcile_job_states(self, local_node_ids: frozenset[str] | None = None) -> None:
+    async def reconcile_job_states(self, local_node_ids: frozenset[str] | None = None) -> None:
         """Mark RUNNING/PROFILING jobs as FAILED if their container is gone.
 
         When *local_node_ids* is provided only jobs assigned to those nodes
@@ -142,25 +150,22 @@ class JobRunner:
         try:
             running_containers = await self.executor.list_running(CONTAINER_NAME_PREFIX)
 
-            async with self.get_conn() as conn:
-                cur = conn.cursor(row_factory=dict_row)
+            async with self.get_conn() as conn, conn.cursor(row_factory=dict_row) as cur:
                 if local_node_ids is not None:
                     await cur.execute(
-                        "SELECT id, container_name, status FROM jobs WHERE status IN (%s, %s, %s)"
+                        "SELECT id, container_name, status FROM jobs WHERE status IN (%s, %s)"
                         " AND (assigned_node IS NULL OR assigned_node = ANY(%s))",
-                        (JobStatus.RUNNING, JobStatus.PROFILING, JobStatus.QUEUED, list(local_node_ids)),
+                        (JobStatus.RUNNING, JobStatus.PROFILING, list(local_node_ids)),
                     )
                 else:
                     await cur.execute(
-                        "SELECT id, container_name, status FROM jobs WHERE status IN (%s, %s, %s)",
-                        (JobStatus.RUNNING, JobStatus.PROFILING, JobStatus.QUEUED),
+                        "SELECT id, container_name, status FROM jobs WHERE status IN (%s, %s)",
+                        (JobStatus.RUNNING, JobStatus.PROFILING),
                     )
                 jobs = await cur.fetchall()
 
-                reconciled = 0
+                orphaned: list[str] = []
                 for job in jobs:
-                    if job["status"] not in (JobStatus.RUNNING, JobStatus.PROFILING):
-                        continue
                     expected = job["container_name"] or f"{CONTAINER_NAME_PREFIX}{job['id'][:JOB_ID_DISPLAY_LENGTH]}"
                     if expected not in running_containers:
                         logger.warning(
@@ -168,16 +173,23 @@ class JobRunner:
                             job["id"][:JOB_ID_DISPLAY_LENGTH],
                             job["status"],
                         )
-                        await self._update_job(conn, job["id"], status=JobStatus.FAILED)
-                        reconciled += 1
+                        orphaned.append(job["id"])
 
-            logger.info("Reconciled %d orphaned job(s)", reconciled) if reconciled else logger.info(
-                "All job states consistent"
-            )
-        except Exception as e:
-            logger.error("Failed to reconcile: %s", e, exc_info=True)
+                if orphaned:
+                    await cur.execute(
+                        "UPDATE jobs SET status = %s, updated_at = %s WHERE id = ANY(%s)",
+                        (JobStatus.FAILED, datetime.now(UTC), orphaned),
+                    )
+                    await conn.commit()
 
-    async def _pickup_queued_jobs(self, local_node_ids: frozenset[str] | None = None) -> None:
+            if orphaned:
+                logger.info("Reconciled %d orphaned job(s)", len(orphaned))
+            else:
+                logger.info("All job states consistent")
+        except Exception:
+            logger.exception("Failed to reconcile job states")
+
+    async def pickup_queued_jobs(self, local_node_ids: frozenset[str] | None = None) -> None:
         """Enqueue QUEUED jobs that were missed (e.g. after restart).
 
         When *local_node_ids* is provided only jobs assigned to those nodes
@@ -240,11 +252,18 @@ class JobRunner:
         return ckpt_local, runs_local, ckpt_host, runs_host
 
     @staticmethod
-    def _prepare_checkpoint_dir(ckpt_local: Path, *, is_profiling: bool, is_first_run: bool) -> None:
-        """Set up checkpoint directory. Profiling uses isolated .profiling/ subdir."""
+    def _prepare_checkpoint_dir(ckpt_local: Path, *, is_profiling: bool) -> None:
+        """Set up checkpoint directory. Profiling uses isolated ``.profiling/``
+        subdir which is always wiped (fresh short run, shouldn't inherit
+        state).  For real runs we never delete files: the trainer overwrites
+        ``latest.pt`` atomically and a missing file means "start fresh".
+        Wiping on a perceived first-run lost live checkpoints when two
+        dispatches raced (the second saw exit_code=None during the brief
+        window before Phase 4 wrote it, classified itself first-run, and
+        nuked the dir mid-resume)."""
         target = (ckpt_local / ".profiling") if is_profiling else ckpt_local
         target.mkdir(parents=True, exist_ok=True)
-        if is_profiling or is_first_run:
+        if is_profiling:
             for f in target.iterdir():
                 if f.is_file():
                     f.unlink(missing_ok=True)
@@ -286,13 +305,19 @@ class JobRunner:
                             await self._update_job(conn, job_id, progress=progress)
                         if is_profiling:
                             epoch_timestamps.append((epoch_num, time.monotonic()))
-        except Exception as e:
-            logger.debug("Output streaming ended: %s", e)
+        except Exception:
+            # An error here means we lose the rest of the container output and
+            # any further epoch timestamps — surface it instead of swallowing.
+            logger.warning(
+                "Output streaming for job %s ended unexpectedly", job_id[:JOB_ID_DISPLAY_LENGTH], exc_info=True
+            )
 
     async def _run_job(self, job_id: str) -> None:
         """Execute a single job."""
         try:
-            # Phase 1: fetch job and set status (short-lived connection)
+            # Phase 1: fetch job + atomically claim it (short-lived connection).
+            # We use a conditional UPDATE so concurrent stop()/dispatch can't
+            # race us into clobbering a PREEMPTED status with RUNNING.
             async with self.get_conn() as conn:
                 job = await self._fetch_job(
                     conn,
@@ -312,24 +337,32 @@ class JobRunner:
                 if not job:
                     logger.error("Job %s not found", job_id)
                     return
-                if job["status"] not in RUNNABLE_STATUSES:
-                    logger.info("Job %s status is %s, skipping", job_id[:JOB_ID_DISPLAY_LENGTH], job["status"])
-                    return
 
                 run_status = JobStatus.PROFILING if job["is_profiling_run"] else JobStatus.RUNNING
                 run_start_time = datetime.now(UTC)
-                await self._update_job(conn, job_id, status=run_status, progress=None)
-
                 container_name = f"{CONTAINER_NAME_PREFIX}{job_id[:JOB_ID_DISPLAY_LENGTH]}"
-                await self._update_job(conn, job_id, container_name=container_name)
+
+                cur = await conn.execute(
+                    "UPDATE jobs SET status = %s, container_name = %s, updated_at = %s "
+                    "WHERE id = %s AND status = ANY(%s) RETURNING id",
+                    (run_status, container_name, run_start_time, job_id, list(RUNNABLE_STATUSES)),
+                )
+                claimed = await cur.fetchone()
+                await conn.commit()
+                if not claimed:
+                    logger.info(
+                        "Job %s no longer in a runnable status (was %s), skipping",
+                        job_id[:JOB_ID_DISPLAY_LENGTH],
+                        job["status"],
+                    )
+                    return
 
             # Phase 2: prepare dirs and launch container (no DB connection held)
             ckpt_local, runs_local, ckpt_host, runs_host = self._resolve_paths(job_id)
             ckpt_local.mkdir(parents=True, exist_ok=True)
             runs_local.mkdir(parents=True, exist_ok=True)
 
-            is_first_run = job["exit_code"] is None
-            self._prepare_checkpoint_dir(ckpt_local, is_profiling=job["is_profiling_run"], is_first_run=is_first_run)
+            self._prepare_checkpoint_dir(ckpt_local, is_profiling=job["is_profiling_run"])
             ckpt_host_mount = (ckpt_host / ".profiling") if job["is_profiling_run"] else ckpt_host
 
             env_vars = self._build_env_vars(job)
@@ -382,7 +415,11 @@ class JobRunner:
             self.running_jobs.pop(job_id, None)
             if self.on_job_completed:
                 try:
-                    await self.on_job_completed()
+                    # Pass job_id so the callback can release the slot
+                    # semaphore for this job's specific (node, gpu_count).
+                    # Older callbacks took no args; the wired-up callback in
+                    # app.py now takes job_id.
+                    await self.on_job_completed(job_id)
                 except Exception:
                     logger.warning("on_job_completed callback failed for %s", job_id[:JOB_ID_DISPLAY_LENGTH])
 
@@ -398,7 +435,9 @@ class JobRunner:
         run_start_time: datetime,
         epoch_timestamps: list[tuple[int, float]],
     ) -> None:
-        job = await self._fetch_job(conn, job_id, "status")
+        # Fetch the columns we may need for FAILED branch up-front so we can
+        # release the profiling claim atomically with the FAILED update below.
+        job = await self._fetch_job(conn, job_id, "status", "job_id", "is_profiling_run", "assigned_gpu_config")
         if not job:
             return
 
@@ -409,13 +448,30 @@ class JobRunner:
 
         if exit_code != 0:
             logger.error("Job %s failed with exit code %d", job_id[:JOB_ID_DISPLAY_LENGTH], exit_code)
-            await self._update_job(conn, job_id, status=JobStatus.FAILED, exit_code=exit_code)
-            # Release in-flight profiling claim so the config can be retried
-            if job.get("is_profiling_run") and job.get("assigned_gpu_config"):
+            # Mark FAILED + release any in-flight profiling claim atomically.
+            # Doing both in one transaction guarantees the DELETE actually
+            # commits — previously _update_job committed, then the DELETE ran
+            # in a fresh implicit transaction that the pool rolled back on
+            # connection return, permanently locking the config.
+            now = datetime.now(UTC)
+            async with conn.transaction():
                 await conn.execute(
-                    "DELETE FROM profiling_results WHERE job_id = %s AND gpu_config = %s::jsonb AND duration_seconds IS NULL",
-                    (job.get("job_id", job_id), Json(job["assigned_gpu_config"])),
+                    "UPDATE jobs SET status = %s, exit_code = %s, updated_at = %s WHERE id = %s",
+                    (JobStatus.FAILED, exit_code, now, job_id),
                 )
+                if job.get("is_profiling_run") and job.get("assigned_gpu_config"):
+                    cur = await conn.execute(
+                        "DELETE FROM profiling_results "
+                        "WHERE job_id = %s AND gpu_config = %s::jsonb "
+                        "AND instance_id = %s AND duration_seconds IS NULL",
+                        (job["job_id"], Json(job["assigned_gpu_config"]), job_id),
+                    )
+                    if cur.rowcount == 0:
+                        logger.warning(
+                            "Profiling claim for failed job %s (%s) not found — possibly already released",
+                            job_id[:JOB_ID_DISPLAY_LENGTH],
+                            job["assigned_gpu_config"],
+                        )
             return
 
         # Success — check if profiling
@@ -430,19 +486,32 @@ class JobRunner:
     # Profiling
     # ------------------------------------------------------------------
 
+    # Need ≥ 2 timestamps: one ending the warmup epoch and one ending a
+    # steady-state epoch, giving 1 post-warmup interval to average.
+    MIN_EPOCH_TIMESTAMPS_FOR_STEADY = 2
+
     @staticmethod
     def compute_profiling_duration(
         epoch_timestamps: list[tuple[int, float]] | None,
         run_start_time: datetime,
     ) -> float:
-        """Compute profiling duration, excluding first interval as warmup."""
-        if epoch_timestamps and len(epoch_timestamps) >= 3:
+        """Compute mean per-epoch duration, excluding the first (warmup) epoch.
+
+        ``epoch_timestamps[0]`` marks the end of epoch 1 — its own duration
+        can't be measured (no monotonic start sample), so all intervals
+        between timestamps are already post-warmup samples.
+        """
+        if epoch_timestamps and len(epoch_timestamps) >= JobRunner.MIN_EPOCH_TIMESTAMPS_FOR_STEADY:
             intervals = [epoch_timestamps[i + 1][1] - epoch_timestamps[i][1] for i in range(len(epoch_timestamps) - 1)]
-            steady = intervals[1:]
-            mean_epoch_time = sum(steady) / len(steady)
-            total_epochs = epoch_timestamps[-1][0]
-            logger.info("Profiling: dropped warmup (%.4fs), steady mean=%.4fs/epoch", intervals[0], mean_epoch_time)
-            return mean_epoch_time * total_epochs
+            mean_epoch_time = sum(intervals) / len(intervals)
+            logger.info(
+                "Profiling: warmup epoch excluded, mean=%.4fs/epoch over %d sample(s)",
+                mean_epoch_time,
+                len(intervals),
+            )
+            return mean_epoch_time
+        # Fall back to wall-clock when we don't have enough samples for a
+        # warmup-corrected mean.
         return (datetime.now(UTC) - run_start_time).total_seconds()
 
     async def _report_profiling(
@@ -459,18 +528,18 @@ class JobRunner:
 
         duration = self.compute_profiling_duration(epoch_timestamps, run_start_time)
         total_epochs = epoch_timestamps[-1][0] if epoch_timestamps else None
+        warmup_excluded = bool(epoch_timestamps and len(epoch_timestamps) >= self.MIN_EPOCH_TIMESTAMPS_FOR_STEADY)
         logger.info(
             "Profiling result for job %s: %s = %.1fs (epochs=%s, warmup_excluded=%s)",
             job_id[:JOB_ID_DISPLAY_LENGTH],
             job["assigned_gpu_config"],
             duration,
             total_epochs,
-            bool(epoch_timestamps and len(epoch_timestamps) >= 3),
+            warmup_excluded,
         )
 
         if self.on_profiling_complete:
             await self.on_profiling_complete(
-                conn,
                 job_id,
                 job["assigned_gpu_config"],
                 job["assigned_node"],
@@ -483,14 +552,32 @@ class JobRunner:
     # Stop handling
     # ------------------------------------------------------------------
 
-    async def _stop_job(self, job_id: str) -> None:
-        # Fast path: tracked locally — kill immediately
+    async def _stop_job(self, job_id: str, *, reason: str = "user") -> None:
+        # ``reason="user"`` → PREEMPTED (sticky, manual resume).
+        # ``reason="auto"`` → QUEUED + cleared assignment (auto-handled by
+        # the next scheduler pass).
+        if reason == "auto":
+            stop_kwargs: dict[str, Any] = {
+                "status": JobStatus.QUEUED,
+                "assigned_node": None,
+                "assigned_gpu_config": None,
+                "container_name": None,
+            }
+        else:
+            stop_kwargs = {"status": JobStatus.PREEMPTED}
+
+        # Fast path: tracked locally — kill first, mark only on success.
+        # Marking the DB before the kill would leave the row lying about the
+        # actual state if executor.kill raises (e.g. daemon hiccup).
         handle = self.running_jobs.get(job_id)
         if handle:
-            logger.info("Killing tracked job %s", job_id[:JOB_ID_DISPLAY_LENGTH])
+            logger.info("Killing tracked job %s (reason=%s)", job_id[:JOB_ID_DISPLAY_LENGTH], reason)
+            killed = await self.executor.kill(handle)
+            if not killed:
+                logger.error("Failed to kill tracked job %s", job_id[:JOB_ID_DISPLAY_LENGTH])
+                return
             async with self.get_conn() as conn:
-                await self._update_job(conn, job_id, status=JobStatus.PREEMPTED)
-            await self.executor.kill(handle)
+                await self._update_job(conn, job_id, **stop_kwargs)
             return
 
         # Slow path: look up from DB
@@ -501,8 +588,8 @@ class JobRunner:
                 return
 
             if job["status"] == JobStatus.QUEUED:
-                logger.info("Job %s is QUEUED, marking PREEMPTED", job_id[:JOB_ID_DISPLAY_LENGTH])
-                await self._update_job(conn, job_id, status=JobStatus.PREEMPTED)
+                logger.info("Job %s is QUEUED, applying %s stop", job_id[:JOB_ID_DISPLAY_LENGTH], reason)
+                await self._update_job(conn, job_id, **stop_kwargs)
                 return
 
             if job["status"] not in (JobStatus.RUNNING, JobStatus.PROFILING):
@@ -512,7 +599,7 @@ class JobRunner:
             container_name = job["container_name"] or f"{CONTAINER_NAME_PREFIX}{job_id[:JOB_ID_DISPLAY_LENGTH]}"
             killed = await self.executor.kill(JobHandle(container_name=container_name))
             if killed:
-                logger.info("Container %s killed", container_name)
-                await self._update_job(conn, job_id, status=JobStatus.PREEMPTED)
+                logger.info("Container %s killed (reason=%s)", container_name, reason)
+                await self._update_job(conn, job_id, **stop_kwargs)
             else:
                 logger.error("Failed to kill container %s", container_name)

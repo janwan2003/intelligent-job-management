@@ -13,7 +13,7 @@ import httpx
 from fastapi import APIRouter, HTTPException, Query
 from fastapi.responses import PlainTextResponse
 from psycopg.rows import dict_row
-from shared.constants import OUTPUT_LOG_FILENAME, RUNS_DIR, JobStatus
+from shared.constants import OUTPUT_LOG_FILENAME, PG_NOTIFY_SCHEDULE, RUNS_DIR, JobStatus
 
 import src.state as state
 from src.constants import RESUMABLE_STATUSES, STOPPABLE_STATUSES
@@ -47,9 +47,8 @@ async def create_job(job_request: JobCreate) -> Job:
     if not _IMAGE_RE.match(job_request.image):
         raise HTTPException(status_code=422, detail="Invalid Docker image name")
 
-    # Validate deadline is in the future (if provided)
-    if job_request.deadline and job_request.deadline.replace(tzinfo=UTC) < datetime.now(UTC):
-        raise HTTPException(status_code=422, detail="Deadline must be in the future")
+    # Past deadlines are allowed — the optimizer treats them as urgent
+    # ("expected_tardiness > 0") rather than invalid.
 
     instance_id = str(uuid4())
     now = datetime.now(UTC)
@@ -91,10 +90,19 @@ async def create_job(job_request: JobCreate) -> Job:
         # Use job_id (type) for profiling correlation, instance_id for DB row
         schedule_result = await scheduler.schedule_job(conn, instance_id, job_type_id=job_request.job_id)
 
+        # Wake the optimizer immediately.  Greedy placement above only fills
+        # free slots; it cannot decide to preempt a lower-priority running
+        # job to make room for an urgent (e.g. past-deadline) submission.
+        # The 60s safety-net watcher would eventually trigger that decision,
+        # but is too slow for the common case.  The notify is debounced on
+        # the consumer side so a redundant pass when greedy already placed
+        # the job is essentially free.
+        await conn.execute(f"NOTIFY {PG_NOTIFY_SCHEDULE}")
+
     if schedule_result.node_id is not None:
         await runner.enqueue(instance_id)
     else:
-        logger.info("No node available for new job %s — leaving QUEUED, watcher will retry", instance_id[:8])
+        logger.info("No node available for new job %s — notified scheduler for optimizer pass", instance_id[:8])
 
     return Job(
         id=instance_id,
@@ -211,11 +219,16 @@ async def resume_job(job_id: str) -> dict[str, str]:
         job_type_id = row[1]
         schedule_result = await scheduler.schedule_job(conn, job_id, job_type_id=job_type_id)
 
+        # Same rationale as create_job: wake the optimizer so a resumed job
+        # with high priority / past deadline can preempt running work
+        # without waiting for the 60s safety-net watcher.
+        await conn.execute(f"NOTIFY {PG_NOTIFY_SCHEDULE}")
+
     if schedule_result.node_id is not None:
         await runner.enqueue(job_id)
         logger.info("Resumed job %s (node=%s)", job_id[:8], schedule_result.node_id)
     else:
-        logger.info("Resumed job %s — no node available, watcher will retry", job_id[:8])
+        logger.info("Resumed job %s — no node available, notified scheduler for optimizer pass", job_id[:8])
 
     return {"status": "resume_requested", "job_id": job_id}
 
@@ -258,7 +271,19 @@ async def clear_all_jobs() -> None:
 
 @router.get("/jobs/{job_id}/logs")
 async def get_job_logs(job_id: str) -> PlainTextResponse:
-    """Return the output log for a job."""
+    """Return the output log for a job by proxying to the worker that owns it.
+
+    The API typically runs on a different host (laptop / control plane) than
+    the workers, so it can't read worker filesystems directly.  Fan-out path:
+
+    1. If the row has ``assigned_node`` set and that node has a workerUrl,
+       proxy there.
+    2. Else fan out to every configured worker in parallel and return the
+       response with the *newest mtime* — not the longest, which used to
+       mis-pick the stale frozen file on the original node when a job had
+       migrated.
+    3. Else fall back to the API's own filesystem (local-dev embedded runner).
+    """
     if not _UUID_RE.match(job_id):
         raise HTTPException(status_code=400, detail="Invalid job ID format")
 
@@ -269,32 +294,68 @@ async def get_job_logs(job_id: str) -> PlainTextResponse:
             raise HTTPException(status_code=404, detail="Job not found")
         assigned_node = row[1]
 
-    # Proxy to remote worker if this job's node has a workerUrl
     runner = state.job_runner
+    cluster = getattr(runner, "_cluster", None)
+
+    async def _fetch_from(worker_url: str) -> str | None:
+        try:
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                resp = await client.get(f"{worker_url}/jobs/{job_id}/logs")
+                resp.raise_for_status()
+                return resp.text
+        except Exception as exc:
+            logger.warning("Failed to fetch logs from worker %s: %s", worker_url, exc)
+            return None
+
+    # 1. Direct proxy to the assigned node's worker.
     if assigned_node and hasattr(runner, "get_worker_url"):
         worker_url = runner.get_worker_url(assigned_node)
         if worker_url:
-            try:
-                async with httpx.AsyncClient(timeout=10.0) as client:
-                    resp = await client.get(f"{worker_url}/jobs/{job_id}/logs")
-                    resp.raise_for_status()
-                    return PlainTextResponse(resp.text)
-            except Exception as exc:
-                logger.warning("Failed to fetch logs from worker %s: %s", worker_url, exc)
+            text = await _fetch_from(worker_url)
+            if text is not None and text.strip() and text.strip() != "No logs available yet.":
+                return PlainTextResponse(text)
 
-    # Fall through to local filesystem (local dev / embedded runner)
+    # 2. Fan out to every worker that has a logs endpoint.  Pick by mtime
+    #    (the worker reports it via X-Log-Mtime if present) — newest wins,
+    #    which is the live writer.  When no header is available, fall back
+    #    to "non-empty, longest" but only among non-default responses.
+    if cluster is not None:
+        urls = [n["workerUrl"] for n in cluster.nodes if n.get("workerUrl")]
+        if urls:
+
+            async def _fetch_with_mtime(url: str) -> tuple[str, float] | None:
+                try:
+                    async with httpx.AsyncClient(timeout=10.0) as client:
+                        resp = await client.get(f"{url}/jobs/{job_id}/logs")
+                        resp.raise_for_status()
+                        mtime_hdr = resp.headers.get("X-Log-Mtime")
+                        mtime = float(mtime_hdr) if mtime_hdr else 0.0
+                        return resp.text, mtime
+                except Exception:
+                    return None
+
+            results = await asyncio.gather(*(_fetch_with_mtime(u) for u in urls))
+            valid = [
+                (text, mtime)
+                for r in results
+                if r is not None
+                for text, mtime in [r]
+                if text.strip() and text.strip() != "No logs available yet."
+            ]
+            if valid:
+                # Prefer newest mtime; ties broken by length.
+                text, _ = max(valid, key=lambda tm: (tm[1], len(tm[0])))
+                return PlainTextResponse(text)
+
+    # 3. Local FS fallback (local dev).
     log_path = DATA_DIR / RUNS_DIR / job_id / OUTPUT_LOG_FILENAME
-
     try:
         log_path.resolve().relative_to(DATA_DIR.resolve())
     except ValueError:
         raise HTTPException(status_code=400, detail="Invalid job ID") from None
-
     if not log_path.is_file():
         return PlainTextResponse("No logs available yet.\n", status_code=200)
-
     if log_path.stat().st_size > _MAX_LOG_SIZE:
         raise HTTPException(status_code=413, detail="Log file too large")
-
     content = await asyncio.to_thread(log_path.read_text)
     return PlainTextResponse(content)

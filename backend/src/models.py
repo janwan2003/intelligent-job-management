@@ -1,9 +1,9 @@
 """Pydantic models and SQL helpers for the IJM backend."""
 
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Any
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 from shared.constants import DEFAULT_PROFILING_EPOCHS
 
 from src.constants import (
@@ -85,6 +85,20 @@ class JobCreate(BaseModel):
     batch_size: int | None = Field(default=None, alias="batchSize")
     profiling_epochs_no: int = Field(default=DEFAULT_PROFILING_EPOCHS, alias="profilingEpochsNo", ge=1)
     epochs_total: int = Field(default=DEFAULT_EPOCHS_TOTAL, alias="epochsTotal", ge=1)
+
+    @field_validator("deadline", mode="after")
+    @classmethod
+    def _normalize_deadline_to_utc(cls, v: datetime | None) -> datetime | None:
+        # Wire format is expected to carry an offset (frontend now sends
+        # `.toISOString()`).  We accept naive values for backward compatibility
+        # and assume UTC, but the right answer is always to convert tz-aware
+        # values to UTC rather than re-label them — re-labeling would shift
+        # the absolute instant by the sender's offset.
+        if v is None:
+            return v
+        if v.tzinfo is None:
+            return v.replace(tzinfo=UTC)
+        return v.astimezone(UTC)
 
 
 _DB_NULLABLE_DEFAULTS = ("priority", "epochs_total", "profiling_epochs_no")

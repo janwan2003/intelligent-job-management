@@ -17,6 +17,10 @@ from psycopg_pool import AsyncConnectionPool
 # Global state — initialised in app.lifespan()
 pool: AsyncConnectionPool | None = None
 job_runner: Any = None
+# Per-node GPU slot semaphores; populated in app.lifespan() after reconcile().
+# ``Any`` not ``NodeSlots`` to avoid a circular import (NodeSlots imports
+# from shared.constants which doesn't depend on state).
+node_slots: Any = None
 
 # Serialises all scheduling decisions so two coroutines cannot assign the same node
 schedule_lock: asyncio.Lock = asyncio.Lock()

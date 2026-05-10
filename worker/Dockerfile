@@ -13,7 +13,7 @@ RUN apt-get update && \
 COPY worker/requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-COPY worker/app.py worker/constants.py ./
+COPY worker/app.py worker/constants.py worker/db.py worker/docker.py worker/execution.py worker/profiling.py worker/reconcile.py ./
 COPY shared/ ./shared/
 
 EXPOSE 8001

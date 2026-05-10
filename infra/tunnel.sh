@@ -18,8 +18,12 @@
 set -euo pipefail
 HOST="${1:-polimi}"
 echo "Opening tunnels to $HOST (ctrl-c to close)..."
+# Bind to 0.0.0.0 so the dockerised API can reach the tunnels via
+# ``host.docker.internal`` (configured as ``host-gateway`` in
+# infra/docker-compose.yml).  127.0.0.1-only bindings would only be
+# reachable from native uvicorn-on-host processes.
 exec ssh -N \
-  -L 127.0.0.1:5433:localhost:5433 \
-  -L 127.0.0.1:8001:localhost:8001 \
-  -L 127.0.0.1:8002:10.79.23.173:8001 \
+  -L 0.0.0.0:5433:localhost:5433 \
+  -L 0.0.0.0:8001:localhost:8001 \
+  -L 0.0.0.0:8002:10.79.23.173:8001 \
   "$HOST"

@@ -10,6 +10,6 @@ ARG SCRIPT=lstm_small.py
 COPY base.py .
 COPY ${SCRIPT} ./train.py
 
-RUN mkdir -p /checkpoints /runs
+RUN mkdir -p /checkpoints /runs && chmod 0777 /checkpoints /runs
 
 CMD ["python", "-u", "train.py"]

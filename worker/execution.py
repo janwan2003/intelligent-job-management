@@ -1,6 +1,7 @@
 """Job execution lifecycle for the IJM worker."""
 
 import asyncio
+import contextlib
 import logging
 import os
 import re
@@ -10,11 +11,18 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from shared.constants import DEFAULT_PROFILING_EPOCHS, OUTPUT_LOG_FILENAME, PG_NOTIFY_SCHEDULE, RUNS_DIR, JobStatus
+from shared.constants import (
+    DEFAULT_PROFILING_EPOCHS,
+    OUTPUT_LOG_FILENAME,
+    PG_NOTIFY_SCHEDULE,
+    PG_NOTIFY_SLOT_FREED,
+    RUNS_DIR,
+    JobStatus,
+)
 
-from constants import CHECKPOINT_DIR, JOB_ID_DISPLAY_LENGTH, RUNNABLE_STATUSES, container_name_for
+from constants import CHECKPOINT_DIR, JOB_ID_DISPLAY_LENGTH, NODE_ID, RUNNABLE_STATUSES, container_name_for
 from db import conn, fetch_job, update_job
-from docker import build_run_cmd
+from docker import build_run_cmd, remove_container_if_exists
 from profiling import handle_complete
 
 logger = logging.getLogger(__name__)
@@ -26,7 +34,12 @@ HOST_ROOT: str = os.getenv("HOST_ROOT", "/host")
 HOST_PROJECT_ROOT: str = os.path.normpath(os.getenv("HOST_PROJECT_ROOT", HOST_ROOT))
 
 # In-process tracking
-running_jobs: dict[str, subprocess.Popen[str]] = {}
+# A value of ``None`` is a placeholder meaning "Phase 1 has claimed this job
+# but Phase 2 hasn't launched the container yet".  /stop must wait for the
+# Popen to materialize (or the placeholder to clear) before deciding what to
+# do; otherwise it would persist QUEUED while the container is about to be
+# launched, leaving the row lying about a live container.
+running_jobs: dict[str, subprocess.Popen[str] | None] = {}
 _job_tasks: set[asyncio.Task[None]] = set()
 
 
@@ -39,20 +52,34 @@ def _resolve_paths(job_id: str) -> tuple[Path, Path, Path, Path]:
     return ckpt_local, runs_local, ckpt_host, runs_host
 
 
-def _prepare_checkpoint_dir(ckpt_local: Path, *, is_profiling: bool, is_first_run: bool) -> None:
-    """Create and clean checkpoint directory. Profiling uses an isolated .profiling/ subdir."""
+def _prepare_checkpoint_dir(ckpt_local: Path, *, is_profiling: bool) -> None:
+    """Create the checkpoint directory.  Profiling uses an isolated
+    ``.profiling/`` subdir which is always wiped — profiling is a fresh
+    short run and shouldn't inherit state from a previous attempt.
+
+    For real runs we never delete files here.  The only file we care about
+    is ``latest.pt``, which the trainer overwrites atomically on every
+    save.  Wiping on a perceived "first run" is what caused checkpoint
+    loss when two dispatches raced (the second saw progress=None — reset
+    by Phase 1 — and nuked the live checkpoint mid-resume).  If the file
+    isn't there, the trainer just starts from scratch.
+    """
     if is_profiling:
         mount = ckpt_local / ".profiling"
         mount.mkdir(parents=True, exist_ok=True)
+        # chmod 0777 so the pinned (non-root) container UID can write here,
+        # mirroring the widening in _run_job for ckpt_local/runs_local.  Both
+        # rootful and rootless workers pass through this code path; root
+        # creates dirs at 0755 by default which blocks the container user.
+        with contextlib.suppress(OSError):
+            os.chmod(mount, 0o777)
         for f in mount.iterdir():
             if f.is_file():
                 f.unlink(missing_ok=True)
     else:
         ckpt_local.mkdir(parents=True, exist_ok=True)
-        if is_first_run:
-            for f in ckpt_local.iterdir():
-                if f.is_file():
-                    f.unlink(missing_ok=True)
+        with contextlib.suppress(OSError):
+            os.chmod(ckpt_local, 0o777)
 
 
 def _build_env_vars(job: dict[str, Any]) -> dict[str, str]:
@@ -74,12 +101,20 @@ def _build_env_vars(job: dict[str, Any]) -> dict[str, str]:
 async def _stream_output(
     process: subprocess.Popen[str],
     job_id: str,
+    container_name: str,
     log_path: Path,
     epoch_timestamps: list[tuple[int, float]],
     *,
     is_profiling: bool,
 ) -> None:
-    """Stream container stdout, write to log file, parse progress updates."""
+    """Stream container stdout, write to log file, parse progress updates.
+
+    Progress writes are guarded: we only update if the row still has
+    ``status IN (RUNNING, PROFILING)`` AND ``container_name`` matches what
+    we own.  If the row was reassigned (auto-preempt + reschedule on a new
+    node), the UPDATE is a no-op and we stop streaming — the new owner is
+    authoritative now.
+    """
     loop = asyncio.get_running_loop()
     stdout = process.stdout
     if stdout is None:
@@ -98,18 +133,45 @@ async def _stream_output(
                 if match:
                     epoch_num = int(match.group(1))
                     progress = f"{epoch_num}/{match.group(2)}"
-                    async with conn() as c:
-                        await update_job(c, job_id, progress=progress)
+                    async with conn() as c, c.cursor() as cur:
+                        await cur.execute(
+                            "UPDATE jobs SET progress = %s, updated_at = %s "
+                            "WHERE id = %s AND status = ANY(%s) AND container_name = %s",
+                            (
+                                progress,
+                                datetime.now(UTC),
+                                job_id,
+                                [JobStatus.RUNNING, JobStatus.PROFILING],
+                                container_name,
+                            ),
+                        )
+                        rowcount = cur.rowcount
+                        await c.commit()
+                    if rowcount == 0:
+                        logger.warning(
+                            "Job %s row no longer owns container %s — stopping stream",
+                            job_id[:JOB_ID_DISPLAY_LENGTH],
+                            container_name,
+                        )
+                        return
                     if is_profiling:
                         epoch_timestamps.append((epoch_num, time.monotonic()))
-    except Exception as exc:
-        logger.debug("Output streaming ended: %s", exc)
+    except Exception:
+        # An error here means we lose the rest of the container output and any
+        # further epoch timestamps — surface it instead of swallowing.
+        logger.warning("Output streaming for job %s ended unexpectedly", job_id[:JOB_ID_DISPLAY_LENGTH], exc_info=True)
 
 
 async def _run_job(job_id: str) -> None:
     """Execute a job in a Docker container."""
     try:
-        # Phase 1: fetch job + set status (short-lived connection)
+        # Phase 1: atomically claim the job (short-lived connection).
+        # Two ops in sequence (fetch then update) used to allow a /stop
+        # arriving between them to clobber RUNNING with QUEUED — leaving the
+        # row at QUEUED while Phase 2 still launched the container.  The
+        # claim+placeholder pair below makes the dispatch indivisible from
+        # the perspective of /stop: once we hold ``running_jobs[job_id]``,
+        # /stop blocks on us; if the claim loses, we never touch the dict.
         async with conn() as c:
             job = await fetch_job(
                 c,
@@ -123,6 +185,8 @@ async def _run_job(job_id: str) -> None:
                 "epochs_total",
                 "batch_size",
                 "assigned_node",
+                "assigned_gpu_config",
+                "progress",
             )
             if not job:
                 logger.error("Job %s not found", job_id)
@@ -134,14 +198,46 @@ async def _run_job(job_id: str) -> None:
             run_status = JobStatus.PROFILING if job["is_profiling_run"] else JobStatus.RUNNING
             run_start_time = datetime.now(UTC)
             name = container_name_for(job_id)
-            await update_job(c, job_id, status=run_status, progress=None, container_name=name)
+            # Atomic claim — only succeeds if the row is still in a runnable
+            # status.  A concurrent /stop that fired _persist_stop already
+            # committed (status=QUEUED, container_name=NULL) makes this
+            # WHERE clause miss and we bail out.  Don't reset progress here:
+            # back-to-back dispatches would both see progress=None and both
+            # treat themselves as a first run, wiping the live checkpoint.
+            async with c.cursor() as cur:
+                await cur.execute(
+                    "UPDATE jobs SET status = %s, container_name = %s, updated_at = %s "
+                    "WHERE id = %s AND status = ANY(%s) RETURNING id",
+                    (run_status, name, datetime.now(UTC), job_id, list(RUNNABLE_STATUSES)),
+                )
+                claimed = await cur.fetchone()
+            await c.commit()
+            if not claimed:
+                logger.info(
+                    "Job %s no longer in a runnable status — dispatch losing the claim",
+                    job_id[:JOB_ID_DISPLAY_LENGTH],
+                )
+                return
+
+        # Reserve a placeholder so /stop can synchronize with us BEFORE the
+        # container exists.  Must happen synchronously after the claim and
+        # before any awaitable work that could let /stop run in our gap.
+        # The ``finally`` below pops it on every exit path.
+        running_jobs[job_id] = None
 
         # Phase 2: prepare dirs, launch container (no DB connection held)
         ckpt_local, runs_local, ckpt_host, runs_host = _resolve_paths(job_id)
         ckpt_local.mkdir(parents=True, exist_ok=True)
         runs_local.mkdir(parents=True, exist_ok=True)
+        # Worker may run as root (rootful) or wangrat (rootless).  The
+        # container is pinned to the host data-dir owner via --user, so
+        # widen perms here in case mkdir created the dir with a stricter
+        # umask under root.  Cheap and idempotent.
+        for d in (ckpt_local, runs_local):
+            with contextlib.suppress(OSError):
+                os.chmod(d, 0o777)
 
-        _prepare_checkpoint_dir(ckpt_local, is_profiling=job["is_profiling_run"], is_first_run=job["exit_code"] is None)
+        _prepare_checkpoint_dir(ckpt_local, is_profiling=job["is_profiling_run"])
         ckpt_host_mount = (ckpt_host / ".profiling") if job["is_profiling_run"] else ckpt_host
 
         # Shared dataset cache (e.g. MNIST) — mounted at /runs/data inside the
@@ -163,14 +259,31 @@ async def _run_job(job_id: str) -> None:
         )
         logger.info("Starting job %s: %s", job_id[:JOB_ID_DISPLAY_LENGTH], " ".join(docker_cmd))
 
+        # Clear any leftover container with this name (worker crash, kill race,
+        # or daemon-side --rm delay).  Otherwise `docker run --name` will fail
+        # with exit 125 "name already in use".
+        await remove_container_if_exists(name)
+
+        # Per-run header in the output log so a viewer can see which node and
+        # GPU config served each run, even before the container produces any
+        # output (and even while the row is back in QUEUED).
+        epoch_timestamps: list[tuple[int, float]] = []
+        log_path = runs_local / OUTPUT_LOG_FILENAME
+        run_kind = "PROFILING" if job["is_profiling_run"] else "RUNNING"
+        header = (
+            f"=== {run_kind} on node={NODE_ID} gpu_config={job.get('assigned_gpu_config')} "
+            f"image={job['image']} command={job['command']} "
+            f"start={run_start_time.isoformat()} ===\n"
+        )
+        with open(log_path, "a") as _f:
+            _f.write(header)
+
         process = subprocess.Popen(docker_cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
         running_jobs[job_id] = process
 
         # Phase 3: stream output + wait (connections acquired per progress update)
-        epoch_timestamps: list[tuple[int, float]] = []
-        log_path = runs_local / OUTPUT_LOG_FILENAME
         stream_task = asyncio.create_task(
-            _stream_output(process, job_id, log_path, epoch_timestamps, is_profiling=job["is_profiling_run"])
+            _stream_output(process, job_id, name, log_path, epoch_timestamps, is_profiling=job["is_profiling_run"])
         )
 
         loop = asyncio.get_running_loop()
@@ -187,25 +300,70 @@ async def _run_job(job_id: str) -> None:
         await stream_task
         running_jobs.pop(job_id, None)
 
-        # Phase 4: handle completion (short-lived connection)
+        # Phase 4: handle completion (short-lived connection).
+        # Capture (assigned_node, n_gpus) before the terminal UPDATE so we
+        # can NOTIFY ijm_slot_freed with the right payload.  After the
+        # UPDATE, the row may still have assigned_node (for SUCCEEDED /
+        # FAILED) but logically the slot is free.
         async with conn() as c:
-            current = await fetch_job(c, job_id, "status")
-            if current and current["status"] == JobStatus.PREEMPTED:
-                logger.info("Job %s was preempted, keeping status", job_id[:JOB_ID_DISPLAY_LENGTH])
+            current = await fetch_job(c, job_id, "status", "assigned_node", "assigned_gpu_config")
+            slot_node = current.get("assigned_node") if current else None
+            slot_cfg = current.get("assigned_gpu_config") if current else None
+            slot_n = sum(int(v) for v in (slot_cfg or {}).values())
+
+            async def _notify_slot_freed() -> None:
+                if slot_node and slot_n > 0:
+                    await c.execute(
+                        "SELECT pg_notify(%s, %s)",
+                        (PG_NOTIFY_SLOT_FREED, f"{slot_node}:{slot_n}"),
+                    )
+                    await c.commit()
+
+            # If the job has been migrated to a different node, our run is the
+            # *old* one — don't touch the row.  The new node's worker owns it
+            # now, including any final state transition.  Skipping this check
+            # would let our exit (often exit=137 from the migration kill)
+            # clobber the new run's RUNNING with FAILED.
+            if current and current["assigned_node"] not in (None, NODE_ID):
+                logger.info(
+                    "Job %s migrated to %s, skipping completion update from %s",
+                    job_id[:JOB_ID_DISPLAY_LENGTH],
+                    current["assigned_node"],
+                    NODE_ID,
+                )
+                return
+            # If the status is no longer RUNNING/PROFILING, the API has already
+            # decided this run is done (e.g. it requeued PREEMPTED → QUEUED for
+            # rescheduling).  Don't override — just record the exit code.
+            # The /stop handler that flipped the status already fired
+            # ijm_slot_freed, so we don't double-notify here.
+            if current and current["status"] not in (JobStatus.RUNNING, JobStatus.PROFILING):
+                logger.info(
+                    "Job %s already in terminal/external status %s, recording exit_code only",
+                    job_id[:JOB_ID_DISPLAY_LENGTH],
+                    current["status"],
+                )
                 await update_job(c, job_id, exit_code=exit_code)
-                await c.execute(f"NOTIFY {PG_NOTIFY_SCHEDULE}")
-                await c.commit()
+                if current["status"] == JobStatus.PREEMPTED:
+                    await c.execute(f"NOTIFY {PG_NOTIFY_SCHEDULE}")
+                    await c.commit()
                 return
 
             if exit_code != 0:
                 logger.error("Job %s failed (exit=%d)", job_id[:JOB_ID_DISPLAY_LENGTH], exit_code)
                 await update_job(c, job_id, status=JobStatus.FAILED, exit_code=exit_code)
+                await _notify_slot_freed()
                 return
 
             is_profiling = await handle_complete(c, job_id, run_start_time, epoch_timestamps)
             if not is_profiling:
                 logger.info("Job %s completed successfully", job_id[:JOB_ID_DISPLAY_LENGTH])
                 await update_job(c, job_id, status=JobStatus.SUCCEEDED, exit_code=exit_code)
+                await _notify_slot_freed()
+            else:
+                # Profiling completion — handle_complete clears assigned_node
+                # and resets to QUEUED, freeing the slot for re-scheduling.
+                await _notify_slot_freed()
 
     except Exception:
         logger.exception("Failed to run job %s", job_id)

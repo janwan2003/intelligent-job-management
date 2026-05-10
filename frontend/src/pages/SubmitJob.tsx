@@ -66,7 +66,13 @@ export default function SubmitJob() {
         ...(batchSize !== undefined && { batchSize }),
         ...(scriptPath.trim() && { scriptPath: scriptPath.trim() }),
         ...(directoryToMount.trim() && { directoryToMount: directoryToMount.trim() }),
-        ...(deadlineDate && { deadline: `${deadlineDate}T${deadlineTime || "23:59"}:00` }),
+        // Build a real Date from the user's local input so .toISOString()
+        // emits the UTC instant with a `Z` suffix.  Sending a naive string
+        // would make the backend interpret it as UTC and shift the deadline
+        // by the user's timezone offset.
+        ...(deadlineDate && {
+          deadline: new Date(`${deadlineDate}T${deadlineTime || "23:59"}:00`).toISOString(),
+        }),
       },
       {
         onSuccess: () => {

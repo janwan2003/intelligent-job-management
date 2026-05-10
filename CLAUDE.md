@@ -6,6 +6,8 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 Intelligent Job Management (IJM) — a job management system for GPU deep learning clusters with stoppable/resumable jobs. Modeled after the ANDREAS project (Polimi). Docker-based execution with an Executor abstraction for future SLURM integration. PostgreSQL for state.
 
+**Deployment target.** The only supported configuration is the **distributed cluster: API runs on the user's machine, postgres + workers run on remote GPU nodes (matemagician, polimi-gpu) reached over SSH-tunnelled HTTP.** Single-process / docker-compose-on-localhost runs are useful for development but are not the supported topology. Any tradeoff between "local-dev simplicity" and "distributed correctness" resolves toward distributed.
+
 ## Common Commands
 
 ### Full stack (Docker Compose)
@@ -84,6 +86,7 @@ QUEUED → PROFILING → QUEUED (re-queued as standard run) → RUNNING → SUCC
 | `HOST_PROJECT_ROOT` | API | `${PWD}/..` (host-resolvable path for Docker volumes) |
 | `EXECUTOR` | API | `docker` (or `mock-slurm`) |
 | `OPTIMIZER_URL` | API | unset (greedy scheduler); set to `http://optimizer:8080` for batch optimizer |
+| `OPTIMIZER_SWITCH_PENALTY_S` | API | `60` — wall-time charged at the destination GPU's hourly rate when destination profiling data is missing. Drops optimizer-proposed migrations whose claimed energy savings don't pay for kill+drain+lost-epoch overhead (tardy jobs are exempt). |
 
 ## Ports
 

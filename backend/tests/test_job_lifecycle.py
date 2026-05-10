@@ -570,14 +570,15 @@ class TestCreateJob:
         resp = client.post("/jobs", json={"job_id": "t", "dockerImage": "img", "command": ["cmd"], "Priority": 6})
         assert resp.status_code == 422
 
-    def test_create_job_past_deadline_returns_422(self) -> None:
+    def test_create_job_past_deadline_is_accepted(self) -> None:
+        # Past deadlines are valid input — the optimizer treats them as urgent
+        # ("expected_tardiness > 0") rather than rejecting the job.
         client, _conn, _ = _make_rich_client()
         response = client.post(
             "/jobs",
             json={"job_id": "t", "dockerImage": "img", "command": ["cmd"], "deadline": "2020-01-01T00:00:00Z"},
         )
-        assert response.status_code == 422
-        assert "Deadline" in response.json()["detail"]
+        assert response.status_code == 201
 
     def test_create_job_assigns_profiling_config(self) -> None:
         client, conn, _ = _make_rich_client()
@@ -1195,7 +1196,7 @@ _TWO_GPU_NODE = {
 class TestSchedulerGpuAccounting:
     """Regression: QUEUED+assigned jobs must count toward GPU usage.
 
-    Previously _get_node_gpu_usage only counted RUNNING/PROFILING, so the
+    Previously get_node_gpu_usage only counted RUNNING/PROFILING, so the
     scheduler could assign the same GPU slot to multiple jobs before any of
     them transitioned to RUNNING.
     """
@@ -1211,7 +1212,7 @@ class TestSchedulerGpuAccounting:
                 ]
             }
         )
-        usage = await sched._get_node_gpu_usage(conn)
+        usage = await sched.get_node_gpu_usage(conn)
         assert usage == {"gpu-node": {"A40": 2}}
 
     async def test_no_oversubscription_when_queued_jobs_fill_node(self) -> None:

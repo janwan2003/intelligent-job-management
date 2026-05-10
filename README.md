@@ -34,29 +34,65 @@ cd infra && docker compose up --build
 Opens:
 - **Frontend** → http://localhost:5173
 - **API** → http://localhost:8000
+- **Optimizer** → http://localhost:8080
 - **Postgres** → localhost:5432
 
-The API runs jobs directly via its embedded `JobRunner` + `DockerExecutor` — no separate worker process needed for local dev.
+The API runs jobs directly via its embedded `JobRunner` + `DockerExecutor` — no separate worker process needed for local dev. The GPUspb optimizer is started by default for deadline-aware, cost-optimised scheduling with cross-job preemption; to disable it, set `OPTIMIZER_URL=` (the API falls back to a greedy FIFO scheduler).
+
+### 4. (Optional) Simulate multi-node locally
+
+By default every node in [config/nodes_config.json](config/nodes_config.json) has `workerUrl: null`, so the API runs jobs in-process. To exercise the real HTTP dispatch path against a separate worker container:
+
+1. In [config/nodes_config.json](config/nodes_config.json), set `"workerUrl": "http://worker:8001"` on one node.
+2. Start with the `worker` profile:
+   ```bash
+   cd infra && docker compose --profile worker up --build
+   ```
+
+The fake worker (`ijm-worker`, `NODE_ID=local-worker`) runs containers via the host Docker socket. GPU presence is trusted from the config rather than probed, so you can declare any `resources` you like (e.g. `4× A40` on a laptop) to exercise scheduling/preemption end-to-end without real GPUs. Duplicate the `worker` service in [infra/docker-compose.yml](infra/docker-compose.yml) (different `container_name`, host port, `NODE_ID`) to fake additional nodes.
 
 ---
 
 ## Cluster Deployment (Polimi server)
 
-The production setup splits responsibilities: the **worker** runs on the GPU node, the **API** runs anywhere (laptop, CI server) and connects via SSH tunnel.
+The production setup splits responsibilities: **workers** run on each GPU node, the **API** runs anywhere (laptop, CI server) and connects via SSH tunnel.
 
-### Server side — deploy once
+### Primary node — postgres + worker
 
 Run from your local machine:
 
 ```bash
-./infra/deploy.sh          # rsyncs worker source + starts postgres + worker on server
+NODE_ID=matemagician ./infra/deploy.sh polimi
 ```
 
-`deploy.sh` pushes only the worker source, shared module, Dockerfile, and compose file to `~/ijm/` on the server, then runs `docker-compose up --build -d`. The server needs no other files from the repo.
-
-The server runs two containers:
+`deploy.sh` rsyncs worker source + Dockerfile + compose file to `~/ijm/` on the server and starts:
 - **postgres** (port 5433) — shared job state database
-- **worker** (port 8001) — executes Docker training containers on the GPU node
+- **worker** (port 8001) — executes Docker training containers
+
+### Additional GPU nodes (worker-only)
+
+For each extra GPU node, deploy worker only — they connect to the primary node's postgres:
+
+```bash
+NODE_ID=polimi-gpu ./infra/deploy.sh --worker-only polimi-gpu
+```
+
+The `--worker-only` flag uses `docker-compose.worker.yml` which omits postgres and points `DATABASE_URL` at the primary node.
+
+For nodes where `wangrat` doesn't have docker group access, see [docs on rootless Docker setup](#rootless-docker) below.
+
+### Shared filesystem (for cross-node checkpoint resume)
+
+So a job preempted on node-A can resume on node-B from its checkpoint, all nodes must share `~/ijm/data/checkpoints/`. We use rclone over SSH:
+
+```bash
+# On each non-primary node
+sudo dnf install fuse-sshfs   # or apt install fuse3
+~/.local/bin/rclone mount matemagician:/home/wangrat/ijm/data ~/ijm/data \
+  --daemon --vfs-cache-mode writes --dir-cache-time 10s
+```
+
+NFS works too if you have admin access.
 
 ### Client side — run API + frontend locally against the cluster
 
@@ -64,15 +100,16 @@ The server runs two containers:
 # Terminal 1: open SSH tunnels (keep running)
 ./infra/tunnel.sh
 
-# Terminal 2: start API + frontend
+# Terminal 2: start API + frontend (+ optimizer)
 cd infra && docker compose -f docker-compose.tunnel.yml up --build
 ```
 
 Opens:
 - **Frontend** → http://localhost:5173
 - **API** → http://localhost:8000
+- **Optimizer** → localhost:8080
 
-The tunnel forwards the server's ports since the Polimi network does not expose them directly. Close Terminal 1 to disconnect.
+`tunnel.sh` forwards 3 ports through matemagician: `5433` (postgres), `8001` (matemagician worker), `8002` (polimi-gpu worker via internal LAN). Close Terminal 1 to disconnect.
 
 ### Building the runtime image on the server
 
@@ -82,6 +119,25 @@ The `runtime/` directory is not deployed to the server. Copy the runtime directo
 rsync -av runtime/ polimi:~/ijm-runtime/
 ssh polimi "docker build -t wangrat/ijm-lstm-small:latest --build-arg SCRIPT=lstm_small.py ~/ijm-runtime/"
 ```
+
+If the node can't reach Docker Hub (Polimi firewall), build the image locally and transfer:
+
+```bash
+docker save ijm-lstm-small:dev | gzip | ssh polimi "gunzip | docker load"
+ssh polimi "docker tag ijm-lstm-small:dev wangrat/ijm-lstm-small:latest"
+```
+
+### Rootless Docker
+
+If your user isn't in the `docker` group on a node, install rootless Docker (no sudo needed beyond `loginctl enable-linger` for processes to survive logout):
+
+```bash
+dockerd-rootless-setuptool.sh install --skip-iptables
+sudo loginctl enable-linger $USER     # asks admin
+echo 'export DOCKER_HOST=unix:///run/user/$(id -u)/docker.sock' >> ~/.bashrc
+```
+
+Then deploy as usual — the worker compose detects `DOCKER_SOCK` env var to mount the rootless socket.
 
 ---
 
@@ -110,7 +166,7 @@ Central API  (FastAPI — scheduler + state + dispatch)
 
 **Multi-node**: each GPU node runs a worker container; set `"workerUrl": "http://<host>:8001"` in nodes_config.
 
-**Optimizer** (optional): set `OPTIMIZER_URL=http://optimizer:8080` to enable batch-optimal scheduling via the [GPUspb](https://github.com/FFede0/GPUspb) C++ optimizer. Without it, a greedy scheduler assigns jobs individually.
+**Optimizer**: started by default. Provides batch-optimal scheduling with deadlines, priorities, and preemption via the [GPUspb](https://github.com/FFede0/GPUspb) C++ optimizer. Set `OPTIMIZER_URL=` (empty) to disable and fall back to a greedy per-job scheduler.
 
 ### Job lifecycle
 
@@ -160,10 +216,14 @@ pnpm dev        # dev server on :5173
 ```bash
 cd worker
 DATABASE_URL=postgresql://postgres:postgres@localhost:5432/ijm \
+HOST_ROOT=$(cd .. && pwd) \
 HOST_PROJECT_ROOT=$(cd .. && pwd) \
+PYTHONPATH=$(cd .. && pwd) \
 NODE_ID=local-worker \
 uvicorn app:app --port 8001
 ```
+
+The worker is split into modules: `app.py` (HTTP endpoints), `db.py`, `docker.py`, `execution.py`, `profiling.py`, `reconcile.py`.
 
 ### Tests
 

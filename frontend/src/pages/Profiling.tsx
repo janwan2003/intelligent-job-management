@@ -63,9 +63,10 @@ export default function Profiling() {
   );
 
   const totalConfigs = configurations?.length ?? 0;
-  const profiledCount = profilingResults?.length ?? 0;
-  // Backend returns results sorted by duration ASC, so index 0 is the fastest
-  const bestResultId = profilingResults?.[0]?.id;
+  const completedResults = profilingResults?.filter((r) => r.duration_seconds != null);
+  const profiledCount = completedResults?.length ?? 0;
+  // Backend returns results sorted by duration ASC (NULLs last), so first non-null is the fastest
+  const bestResultId = completedResults?.[0]?.id;
 
   return (
     <div className="space-y-4">
@@ -157,7 +158,9 @@ export default function Profiling() {
                     <TableBody>
                       {configurations?.map((config) => {
                         const result = findResult(profilingResults, config);
-                        const isBest = result != null && result.id === bestResultId;
+                        const isInFlight = result != null && result.duration_seconds == null;
+                        const isDone = result != null && result.duration_seconds != null;
+                        const isBest = isDone && result.id === bestResultId;
                         return (
                           <TableRow
                             key={configKey(config.gpu_config)}
@@ -170,7 +173,7 @@ export default function Profiling() {
                               {formatGpuConfig(config.gpu_config)}
                             </TableCell>
                             <TableCell className="font-mono text-xs py-2.5">
-                              {result ? (
+                              {isDone ? (
                                 formatDuration(result.duration_seconds)
                               ) : (
                                 <span className="text-muted-foreground">—</span>
@@ -180,9 +183,13 @@ export default function Profiling() {
                               {result?.node_id ?? "—"}
                             </TableCell>
                             <TableCell className="py-2.5">
-                              {result ? (
+                              {isDone ? (
                                 <span className="inline-flex items-center rounded-full bg-emerald-500/10 px-2 py-0.5 text-[10px] font-medium text-emerald-600">
                                   Done
+                                </span>
+                              ) : isInFlight ? (
+                                <span className="inline-flex items-center rounded-full bg-amber-500/10 px-2 py-0.5 text-[10px] font-medium text-amber-600">
+                                  Profiling
                                 </span>
                               ) : (
                                 <span className="inline-flex items-center rounded-full bg-muted px-2 py-0.5 text-[10px] font-medium text-muted-foreground">
