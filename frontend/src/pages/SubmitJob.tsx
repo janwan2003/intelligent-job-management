@@ -38,8 +38,8 @@ export default function SubmitJob() {
   const [scriptPath, setScriptPath] = useState("");
   const [directoryToMount, setDirectoryToMount] = useState("");
   const [priority, setPriority] = useState(DEFAULT_JOB_PRIORITY);
-  const [deadlineDate, setDeadlineDate] = useState("");
-  const [deadlineTime, setDeadlineTime] = useState("23:59");
+  const [deadlineHours, setDeadlineHours] = useState<number | undefined>(undefined);
+  const [deadlineMinutes, setDeadlineMinutes] = useState<number | undefined>(undefined);
   const [profilingEpochsNo, setProfilingEpochsNo] = useState(DEFAULT_PROFILING_EPOCHS);
   const [epochsTotal, setEpochsTotal] = useState(DEFAULT_EPOCHS_TOTAL);
   const [batchSize, setBatchSize] = useState<number | undefined>(undefined);
@@ -66,12 +66,12 @@ export default function SubmitJob() {
         ...(batchSize !== undefined && { batchSize }),
         ...(scriptPath.trim() && { scriptPath: scriptPath.trim() }),
         ...(directoryToMount.trim() && { directoryToMount: directoryToMount.trim() }),
-        // Build a real Date from the user's local input so .toISOString()
-        // emits the UTC instant with a `Z` suffix.  Sending a naive string
-        // would make the backend interpret it as UTC and shift the deadline
-        // by the user's timezone offset.
-        ...(deadlineDate && {
-          deadline: new Date(`${deadlineDate}T${deadlineTime || "23:59"}:00`).toISOString(),
+        // Deadline entered as a relative offset (hours + minutes from now)
+        // and converted to an absolute UTC instant for the backend.
+        ...((deadlineHours ?? 0) + (deadlineMinutes ?? 0) > 0 && {
+          deadline: new Date(
+            Date.now() + ((deadlineHours ?? 0) * 60 + (deadlineMinutes ?? 0)) * 60_000,
+          ).toISOString(),
         }),
       },
       {
@@ -248,27 +248,48 @@ export default function SubmitJob() {
                   />
                 </div>
 
-                {/* Deadline */}
+                {/* Deadline (relative: hours + minutes from now) */}
                 <div className="space-y-1.5">
-                  <Label htmlFor="deadlineDate" className="text-xs">
-                    Deadline
-                    <FieldHint text="Soft deadline for job completion. The scheduler uses this to prioritize urgent jobs." />
+                  <Label htmlFor="deadlineHours" className="text-xs">
+                    Deadline (from now)
+                    <FieldHint text="Soft deadline relative to submission time. The scheduler uses this to prioritize urgent jobs." />
                   </Label>
                   <div className="flex gap-2">
-                    <Input
-                      id="deadlineDate"
-                      type="date"
-                      value={deadlineDate}
-                      onChange={(e) => setDeadlineDate(e.target.value)}
-                      className="font-mono text-sm flex-1"
-                    />
-                    <Input
-                      id="deadlineTime"
-                      type="time"
-                      value={deadlineTime}
-                      onChange={(e) => setDeadlineTime(e.target.value)}
-                      className="font-mono text-sm w-28"
-                    />
+                    <div className="flex-1 relative">
+                      <Input
+                        id="deadlineHours"
+                        type="number"
+                        min={0}
+                        placeholder="0"
+                        value={deadlineHours ?? ""}
+                        onChange={(e) =>
+                          setDeadlineHours(e.target.value === "" ? undefined : Math.max(0, Number(e.target.value)))
+                        }
+                        className="font-mono text-sm pr-8"
+                      />
+                      <span className="absolute right-2 top-1/2 -translate-y-1/2 text-xs text-muted-foreground pointer-events-none">
+                        h
+                      </span>
+                    </div>
+                    <div className="flex-1 relative">
+                      <Input
+                        id="deadlineMinutes"
+                        type="number"
+                        min={0}
+                        max={59}
+                        placeholder="0"
+                        value={deadlineMinutes ?? ""}
+                        onChange={(e) =>
+                          setDeadlineMinutes(
+                            e.target.value === "" ? undefined : Math.min(59, Math.max(0, Number(e.target.value))),
+                          )
+                        }
+                        className="font-mono text-sm pr-10"
+                      />
+                      <span className="absolute right-2 top-1/2 -translate-y-1/2 text-xs text-muted-foreground pointer-events-none">
+                        min
+                      </span>
+                    </div>
                   </div>
                 </div>
               </div>

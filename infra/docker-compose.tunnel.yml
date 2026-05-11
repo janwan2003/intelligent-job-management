@@ -15,6 +15,7 @@ services:
       HOST_PROJECT_ROOT: /home/wangrat/ijm
       EXECUTOR: docker
       OPTIMIZER_URL: ${OPTIMIZER_URL:-http://localhost:8080}
+      OPTIMIZER_VERBOSE: ${OPTIMIZER_VERBOSE:-2}
     volumes:
       - ../backend/src:/app/src
       - ../config:/app/config:ro

@@ -21,6 +21,11 @@ job_runner: Any = None
 # ``Any`` not ``NodeSlots`` to avoid a circular import (NodeSlots imports
 # from shared.constants which doesn't depend on state).
 node_slots: Any = None
+# Registry of in-flight ``_dispatch_when_slot_free`` tasks, keyed by
+# ``instance_id``.  Promoted out of app.py's lifespan closure so the
+# ``/admin/dispatch-tasks`` endpoint can read it.  Also consulted by the
+# reaper to coordinate cancellation rather than double-releasing.
+dispatch_tasks: dict[str, asyncio.Task[None]] = {}
 
 # Serialises all scheduling decisions so two coroutines cannot assign the same node
 schedule_lock: asyncio.Lock = asyncio.Lock()

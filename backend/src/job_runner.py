@@ -30,13 +30,57 @@ logger = logging.getLogger(__name__)
 CONTAINER_NAME_PREFIX = "ijm-"
 JOB_ID_DISPLAY_LENGTH = 8
 CHECKPOINT_DIR = "checkpoints"
-RUNNABLE_STATUSES = frozenset({JobStatus.QUEUED, JobStatus.RUNNING})
+# Mirrors worker/constants.py — Phase 1's atomic claim only succeeds for
+# QUEUED rows.  Including RUNNING here would let a stale dispatch task
+# re-claim its own already-running row and try to start a duplicate
+# container under the same ``ijm-<id>`` name.
+RUNNABLE_STATUSES = frozenset({JobStatus.QUEUED})
 
 # Regex to parse progress from training output, e.g. "Epoch 3/20"
 PROGRESS_RE = re.compile(r"Epoch\s+(\d+)/(\d+)")
 
 # Maximum wall-clock time for a single job (default: 24 hours)
 JOB_TIMEOUT_SECONDS = int(os.getenv("JOB_TIMEOUT_SECONDS", str(24 * 3600)))
+
+# Whitelist of columns ``_update_job`` / ``_fetch_job`` may touch.  Defends
+# against a future caller passing arbitrary user-derived field names that
+# would otherwise concatenate straight into the SET / SELECT clause.
+_ALLOWED_JOB_FIELDS: frozenset[str] = frozenset(
+    {
+        "status",
+        "container_name",
+        "exit_code",
+        "progress",
+        "assigned_node",
+        "assigned_gpu_config",
+        "is_profiling_run",
+        "updated_at",
+    }
+)
+_FETCHABLE_JOB_FIELDS: frozenset[str] = frozenset(
+    {
+        "id",
+        "job_id",
+        "image",
+        "command",
+        "script_path",
+        "directory_to_mount",
+        "status",
+        "created_at",
+        "updated_at",
+        "container_name",
+        "exit_code",
+        "progress",
+        "priority",
+        "deadline",
+        "batch_size",
+        "epochs_total",
+        "profiling_epochs_no",
+        "assigned_node",
+        "assigned_gpu_config",
+        "is_profiling_run",
+    }
+)
 
 
 # ---------------------------------------------------------------------------
@@ -124,16 +168,26 @@ class JobRunner:
 
     async def _update_job(self, conn: psycopg.AsyncConnection[Any], job_id: str, **fields: Any) -> None:
         fields["updated_at"] = datetime.now(UTC)
+        bad = set(fields) - _ALLOWED_JOB_FIELDS
+        if bad:
+            raise ValueError(f"_update_job: disallowed fields {bad}")
         sets = ", ".join(f"{k} = %({k})s" for k in fields)
         fields["_id"] = job_id
         async with conn.cursor() as cur:
-            await cur.execute(f"UPDATE jobs SET {sets} WHERE id = %(_id)s", fields)  # noqa: S608
+            # Whitelisted column names → safe to interpolate.
+            await cur.execute(f"UPDATE jobs SET {sets} WHERE id = %(_id)s", fields)
             await conn.commit()
 
     async def _fetch_job(self, conn: psycopg.AsyncConnection[Any], job_id: str, *columns: str) -> dict[str, Any] | None:
-        cols = ", ".join(columns) if columns else "*"
+        if columns:
+            bad = set(columns) - _FETCHABLE_JOB_FIELDS
+            if bad:
+                raise ValueError(f"_fetch_job: disallowed columns {bad}")
+            cols = ", ".join(columns)
+        else:
+            cols = "*"
         async with conn.cursor(row_factory=dict_row) as cur:
-            await cur.execute(f"SELECT {cols} FROM jobs WHERE id = %(id)s", {"id": job_id})  # noqa: S608
+            await cur.execute(f"SELECT {cols} FROM jobs WHERE id = %(id)s", {"id": job_id})
             return await cur.fetchone()
 
     # ------------------------------------------------------------------
@@ -193,15 +247,19 @@ class JobRunner:
         """Enqueue QUEUED jobs that were missed (e.g. after restart).
 
         When *local_node_ids* is provided only jobs assigned to those nodes
-        (or unassigned) are picked up — remote-worker jobs are left alone.
+        are picked up — remote-worker jobs are left alone, and unassigned
+        jobs are left for the scheduler/optimizer to place (otherwise the
+        local executor would try to run them on a node that doesn't exist
+        in this process — fully-remote topologies have no local docker
+        socket at all, so picking them up here just produces FAILED rows).
         """
         try:
             async with self.get_conn() as conn:
                 if local_node_ids is not None:
+                    if not local_node_ids:
+                        return  # Fully-remote topology — scheduler handles all placement.
                     cur = await conn.execute(
-                        "SELECT id FROM jobs WHERE status = %s"
-                        " AND (assigned_node IS NULL OR assigned_node = ANY(%s))"
-                        " ORDER BY created_at ASC",
+                        "SELECT id FROM jobs WHERE status = %s AND assigned_node = ANY(%s) ORDER BY created_at ASC",
                         (JobStatus.QUEUED, list(local_node_ids)),
                     )
                 else:

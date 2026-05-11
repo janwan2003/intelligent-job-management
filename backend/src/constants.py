@@ -43,4 +43,9 @@ DEFAULT_DATABASE_URL = "postgresql://postgres:postgres@localhost:5432/ijm"
 # CORS
 # ---------------------------------------------------------------------------
 
-CORS_ALLOWED_ORIGINS = [o.strip() for o in os.getenv("CORS_ORIGINS", "http://localhost:5173").split(",")]
+# Filter out empty strings so an empty/whitespace-only ``CORS_ORIGINS`` env
+# var doesn't yield ``[""]`` (which CORSMiddleware treats as a wildcard match
+# against any origin string).
+CORS_ALLOWED_ORIGINS = [
+    o for o in (s.strip() for s in os.getenv("CORS_ORIGINS", "http://localhost:5173").split(",")) if o
+]

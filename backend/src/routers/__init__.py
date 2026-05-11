@@ -2,6 +2,7 @@
 
 from fastapi import APIRouter
 
+from src.routers.admin import router as admin_router
 from src.routers.health import router as health_router
 from src.routers.jobs import router as jobs_router
 from src.routers.nodes import router as nodes_router
@@ -12,3 +13,4 @@ router.include_router(health_router)
 router.include_router(nodes_router)
 router.include_router(jobs_router)
 router.include_router(profiling_router)
+router.include_router(admin_router)

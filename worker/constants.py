@@ -5,7 +5,14 @@ import os
 from shared.constants import JobStatus
 
 # Statuses eligible for execution (worker picks up QUEUED jobs)
-RUNNABLE_STATUSES = frozenset({JobStatus.QUEUED, JobStatus.RUNNING})
+# Phase 1's atomic claim only succeeds when the row is exactly QUEUED.  We
+# previously also accepted RUNNING (idempotent re-claim of our own row), but
+# that opens the door to a second ``_run_job`` task spawning for an already-
+# running row and trying to start a second container under the same
+# ``ijm-<id>`` name — Docker rejects it but the row state ends up confused.
+# A fresh dispatch is always for a QUEUED row; if a row is already RUNNING,
+# the right answer is to NOT re-dispatch it.
+RUNNABLE_STATUSES = frozenset({JobStatus.QUEUED})
 
 # ---------------------------------------------------------------------------
 # Node identity

@@ -3,6 +3,7 @@
 import asyncio
 import logging
 import os
+import random
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime, timedelta
@@ -140,6 +141,7 @@ async def lifespan(_app: FastAPI) -> AsyncGenerator[None]:
     # DB so that already-occupied slots are pre-acquired.
     state.node_slots = NodeSlots(cluster)
     await state.node_slots.reconcile(state.get_conn)
+    state.job_runner.set_node_slots(state.node_slots)
 
     # ------------------------------------------------------------------
     # Slot-coordinated scheduler
@@ -164,21 +166,27 @@ async def lifespan(_app: FastAPI) -> AsyncGenerator[None]:
         except Exception:
             logger.exception("Failed to issue preempt for job %s", job_id[:8])
 
+    # Registry of in-flight dispatch tasks lives on ``state`` so the
+    # ``/admin/dispatch-tasks`` endpoint can read it.  The reaper consults
+    # this so it can cancel a stuck dispatch task instead of racing it on
+    # a release — without coordination both the reaper and the task's
+    # exception handler would release the same permit, inflating the
+    # semaphore by 1 each cycle (this was the actual root cause of the
+    # matemagician=3 oversubscription we were seeing).
+    _dispatch_tasks = state.dispatch_tasks
+
     async def _dispatch_when_slot_free(a: Assignment) -> None:
         """Wait for the target node's slot to be free, then post /run.
 
-        Acquires the semaphore *after* the row has been UPDATEd in Phase 1b
-        (so the row already points at the target node).  Each dispatch is
-        its own task, so a slow preempt on node A doesn't gate dispatches
-        for node B.
+        Each dispatch is its own task, so a slow preempt on node A doesn't
+        gate dispatches for node B.  Delegates the actual acquire-then-post
+        to ``JobDispatcher.dispatch_with_slot`` so this code path stays in
+        lockstep with the direct submission/resume paths.
         """
-        n = sum(int(v) for v in a.gpu_config.values())
         try:
             t0 = asyncio.get_running_loop().time()
-            if state.node_slots is not None:
-                await state.node_slots.acquire(a.node_id, n)
             try:
-                await state.job_runner.enqueue(a.instance_id)
+                await state.job_runner.dispatch_with_slot(a.instance_id, a.node_id, a.gpu_config)
                 elapsed = asyncio.get_running_loop().time() - t0
                 logger.info(
                     "Dispatched job %s on %s %s (waited %.2fs for slot)",
@@ -187,11 +195,18 @@ async def lifespan(_app: FastAPI) -> AsyncGenerator[None]:
                     a.gpu_config,
                     elapsed,
                 )
-            except Exception:
-                # Don't leak the permit if dispatch itself failed.
-                if state.node_slots is not None:
-                    state.node_slots.release(a.node_id, n)
+            except asyncio.CancelledError:
+                # Reaper cancelled us — dispatch_with_slot already released
+                # the permit on its way out.  Don't log as an exception.
+                logger.info("Dispatch for %s cancelled (likely by reaper)", a.instance_id[:8])
                 raise
+            except Exception:
+                # Wake the scheduler immediately so the just-freed slot can
+                # be reused without waiting up to 60 s for ``_queue_watcher``.
+                notify_event.set()
+                raise
+        except asyncio.CancelledError:
+            raise
         except Exception:
             logger.exception("Dispatch failed for job %s on %s", a.instance_id[:8], a.node_id)
 
@@ -205,7 +220,15 @@ async def lifespan(_app: FastAPI) -> AsyncGenerator[None]:
     _STUCK_DISPATCH_THRESHOLD_S = 30
 
     async def _reset_stuck_queued_assignments() -> None:
-        """Clear assigned_node + release leaked slot for orphaned QUEUED rows."""
+        """Clear assigned_node + release leaked slot for orphaned QUEUED rows.
+
+        Race-safe with in-flight dispatch tasks: if a dispatch task for the
+        stuck row is still alive (typically blocked on ``acquire`` because
+        the node is at full capacity), we *cancel* it and let it release
+        its own permit via ``dispatch_with_slot``'s ``BaseException``
+        handler.  Releasing here as well would double-release — the bug
+        that caused matemagician=3 in our last run.
+        """
         cutoff = datetime.now(UTC) - timedelta(seconds=_STUCK_DISPATCH_THRESHOLD_S)
         async with state.get_conn() as conn:
             cur = await conn.execute(
@@ -215,6 +238,7 @@ async def lifespan(_app: FastAPI) -> AsyncGenerator[None]:
                 (JobStatus.QUEUED, cutoff),
             )
             stuck = await cur.fetchall()
+            tasks_to_await: list[asyncio.Task[None]] = []
             for jid, node, gpu_config in stuck:
                 n = sum(int(v) for v in (gpu_config or {}).values())
                 # Conditional UPDATE so we don't race with a fresh dispatch
@@ -227,11 +251,30 @@ async def lifespan(_app: FastAPI) -> AsyncGenerator[None]:
                        RETURNING id""",
                     (datetime.now(UTC), jid, JobStatus.QUEUED, node),
                 )
-                if await ucur.fetchone():
+                if not await ucur.fetchone():
+                    continue
+
+                inflight = _dispatch_tasks.get(jid)
+                if inflight is not None and not inflight.done():
+                    # Cancel and let the task's BaseException handler
+                    # release the permit (or no-op if it never acquired).
+                    inflight.cancel()
+                    tasks_to_await.append(inflight)
+                    logger.warning(
+                        "Reset stuck QUEUED job %s on %s (%dx %s) — cancelled in-flight dispatch task",
+                        jid[:8],
+                        node,
+                        n,
+                        gpu_config,
+                    )
+                else:
+                    # No live task (e.g. crashed or pre-restart). Release
+                    # directly — this is the only safe path that doesn't
+                    # race anyone.
                     if state.node_slots is not None and node and n > 0:
                         state.node_slots.release(node, n)
                     logger.warning(
-                        "Reset stuck QUEUED job %s on %s (%dx %s) — dispatch never started; slot released",
+                        "Reset stuck QUEUED job %s on %s (%dx %s) — no dispatch task; slot released",
                         jid[:8],
                         node,
                         n,
@@ -239,21 +282,35 @@ async def lifespan(_app: FastAPI) -> AsyncGenerator[None]:
                     )
             await conn.commit()
 
+        # Wait for cancelled tasks to actually finish releasing.  Cheap:
+        # they're either at the acquire suspension point (cancellation is
+        # immediate) or in a quick post-acquire await.
+        if tasks_to_await:
+            await asyncio.gather(*tasks_to_await, return_exceptions=True)
+
     async def _schedule_waiting_jobs() -> None:
         """Run the optimizer + greedy scheduler, then spawn parallel
         preempt/dispatch tasks coordinated by per-node semaphores.
 
-        The schedule lock is held only for optimizer + Phase 1b DB writes
-        (sub-second).  Actual stop+dispatch work happens in background
-        tasks that release the lock immediately, so a slow worker on one
-        node doesn't gate scheduling for another.
+        The schedule lock is held only for the DB write phases (Phase 1a
+        reset + Phase 1b apply).  The optimizer HTTP call runs WITHOUT
+        the lock — its 30 s timeout would otherwise block every other
+        scheduler invocation (including the queue watcher heartbeat) any
+        time the optimizer is slow or unreachable.  Phase 1b's
+        ``WHERE assigned_node IS NULL`` filter makes stale optimizer
+        suggestions safe to apply: rows that were claimed in the meantime
+        simply don't match.
         """
         async with state.schedule_lock:
             await _reset_stuck_queued_assignments()
             async with state.get_conn() as conn:
                 node_gpu_usage = await scheduler.get_node_gpu_usage(conn)
-                opt_result = await optimize(conn, node_gpu_usage)
 
+        # Optimizer call OUTSIDE the schedule lock — see docstring.
+        async with state.get_conn() as conn:
+            opt_result = await optimize(conn, node_gpu_usage)
+
+        async with state.schedule_lock:
             optimizer_handled: set[str] = set(opt_result.preempt)
             new_dispatches: list[Assignment] = []
 
@@ -320,7 +377,24 @@ async def lifespan(_app: FastAPI) -> AsyncGenerator[None]:
             asyncio.create_task(_preempt_and_release(jid), name=f"preempt-{jid[:8]}")
 
         for a in new_dispatches:
-            asyncio.create_task(_dispatch_when_slot_free(a), name=f"dispatch-{a.instance_id[:8]}")
+            existing = _dispatch_tasks.get(a.instance_id)
+            if existing is not None and not existing.done():
+                # A dispatch task for this row is already in flight — don't
+                # spawn a duplicate.  This matters because spawning twice
+                # means two acquires, and only one container ever runs (the
+                # second /run hits the worker's 409), so one permit leaks.
+                logger.info(
+                    "Skipping duplicate dispatch task for %s (already in flight)",
+                    a.instance_id[:8],
+                )
+                continue
+            task = asyncio.create_task(_dispatch_when_slot_free(a), name=f"dispatch-{a.instance_id[:8]}")
+            _dispatch_tasks[a.instance_id] = task
+
+            def _cleanup(_t: asyncio.Task[None], jid: str = a.instance_id) -> None:
+                _dispatch_tasks.pop(jid, None)
+
+            task.add_done_callback(_cleanup)
 
     async def _queue_watcher() -> None:
         """Safety net: retry scheduling every 60 s in case something was missed."""
@@ -338,16 +412,26 @@ async def lifespan(_app: FastAPI) -> AsyncGenerator[None]:
 
     async def _notify_listener() -> None:
         """Wake the scheduler immediately when a worker sends NOTIFY after profiling."""
+        backoff = 1.0
+        max_backoff = 60.0
         while True:
             try:
                 async with await psycopg.AsyncConnection.connect(database_url, autocommit=True) as conn:
                     await conn.execute(f"LISTEN {PG_NOTIFY_SCHEDULE}")
+                    backoff = 1.0  # connection established → reset backoff
                     async for _ in conn.notifies():
                         logger.debug("Received schedule notification")
                         notify_event.set()
             except Exception:
-                logger.warning("Notify listener lost connection, reconnecting in 5s")
-                await asyncio.sleep(5)
+                # Exponential backoff with jitter caps reconnect storms when
+                # the DB is down for an extended period.  At max backoff the
+                # listener tries roughly once a minute, which is enough for
+                # the queue watcher heartbeat to pick up state changes.
+                jitter = random.uniform(0, backoff * 0.25)
+                wait = backoff + jitter
+                logger.warning("Notify listener lost connection, reconnecting in %.1fs", wait)
+                await asyncio.sleep(wait)
+                backoff = min(max_backoff, backoff * 2)
 
     # Minimum interval between optimizer passes — dampens churn.
     # The optimizer doesn't penalise migrations, so consecutive calls under
@@ -389,11 +473,27 @@ async def lifespan(_app: FastAPI) -> AsyncGenerator[None]:
         Payload is ``"<node_id>:<n_gpus>"``.  Receipt of a notification means
         the worker has fully cleaned up that slot's container, so the
         semaphore release is safe.
+
+        On every reconnect we also call ``recover_from_drift`` to catch up on
+        NOTIFYs lost during the disconnect window — without this, a tunnel
+        drop while a job completes leaves the API holding a permit that can
+        never be released.
         """
         while True:
             try:
                 async with await psycopg.AsyncConnection.connect(database_url, autocommit=True) as conn:
                     await conn.execute(f"LISTEN {PG_NOTIFY_SLOT_FREED}")
+                    if state.node_slots is not None:
+                        try:
+                            deltas = await state.node_slots.recover_from_drift(state.get_conn)
+                            if deltas:
+                                logger.warning(
+                                    "Slot listener (re)connect: drift recovery applied %s",
+                                    deltas,
+                                )
+                                notify_event.set()
+                        except Exception:
+                            logger.exception("Slot listener: drift recovery failed")
                     async for n in conn.notifies():
                         payload = (n.payload or "").strip()
                         if not payload:
@@ -407,12 +507,6 @@ async def lifespan(_app: FastAPI) -> AsyncGenerator[None]:
                         if state.node_slots is None:
                             continue
                         state.node_slots.release(node_id, count)
-                        logger.debug(
-                            "Released %d permit(s) on %s (avail=%d)",
-                            count,
-                            node_id,
-                            state.node_slots.available(node_id),
-                        )
                         # Wake the scheduler: a freshly-vacant slot may
                         # unblock a previously-unplaceable QUEUED row.  Also
                         # required for migrations — after auto-preempt
@@ -423,10 +517,37 @@ async def lifespan(_app: FastAPI) -> AsyncGenerator[None]:
                 logger.warning("Slot listener lost connection, reconnecting in 5s")
                 await asyncio.sleep(5)
 
+    async def _drift_watcher() -> None:
+        """Periodic drift heartbeat — corrects in-memory ``_used`` if it has
+        diverged from the DB authoritative count.  Catches anything the
+        listener missed: leftover containers from pre-fix runs completing,
+        bugs in new release paths, etc.  At 5 min cadence it's cheap and
+        the warnings double as an alerting signal — drift in steady state
+        means a code path is leaking somewhere worth investigating.
+        """
+        while True:
+            await asyncio.sleep(300)
+            try:
+                if state.node_slots is None:
+                    continue
+                drift = await state.node_slots.detect_drift(state.get_conn)
+                if drift:
+                    logger.warning("Drift watcher: %s — reconciling", drift)
+                    await state.node_slots.recover_from_drift(state.get_conn)
+                    notify_event.set()
+            except Exception:
+                logger.exception("Drift watcher iteration failed")
+
     watcher_task = asyncio.create_task(_queue_watcher())
     listener_task = asyncio.create_task(_notify_listener())
     consumer_task = asyncio.create_task(_notify_consumer())
     slot_listener_task = asyncio.create_task(_slot_listener())
+    drift_task = asyncio.create_task(_drift_watcher(), name="drift-watcher")
+
+    # Kick the scheduler once at startup so jobs queued before this
+    # process started (or left QUEUED across a restart) get placed
+    # immediately rather than waiting up to 60 s for _queue_watcher.
+    notify_event.set()
 
     yield
 
@@ -435,6 +556,7 @@ async def lifespan(_app: FastAPI) -> AsyncGenerator[None]:
     listener_task.cancel()
     consumer_task.cancel()
     slot_listener_task.cancel()
+    drift_task.cancel()
     await state.job_runner.shutdown()
     if state.pool:
         await state.pool.close()

@@ -31,7 +31,7 @@ BATCH_SIZE = int(os.environ.get("BATCH_SIZE", "64"))
 
 class LSTMSmall(nn.Module):
     def __init__(self, input_size=28, hidden_size=128, num_classes=10):
-        super(LSTMSmall, self).__init__()
+        super().__init__()
         self.lstm = nn.LSTM(input_size, hidden_size, num_layers=1, batch_first=True)
         self.fc = nn.Linear(hidden_size, num_classes)
 

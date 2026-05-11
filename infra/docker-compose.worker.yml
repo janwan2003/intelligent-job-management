@@ -3,11 +3,27 @@ version: "2"
 services:
   worker:
     image: ijm-worker:latest
+    build:
+      context: .
+      dockerfile: Dockerfile
     container_name: wangrat-ijm-worker
     restart: unless-stopped
+    # ``network_mode: host`` works only on **rootful Docker** (matemagician).
+    # On rootless Docker (polimi-gpu) the container actually runs inside
+    # slirp4netns regardless of this setting — and slirp's bridge can't
+    # reach matemagician:5433 reliably from a containerised process.
+    # For rootless nodes use the native-process deploy in
+    # ``infra/deploy_native.sh`` instead of this compose file.  See
+    # ``documentation/SLOT_INVARIANTS.md`` for the full deployment matrix.
     network_mode: host
     security_opt:
       - seccomp=unconfined
+    # Rootless docker on polimi-gpu generates a container resolv.conf that
+    # only points at slirp4netns (10.0.2.3) and can't reach polimi-internal
+    # DNS, so matemagician.deib.polimi.it fails to resolve.  Pin the IP via
+    # /etc/hosts as a workaround until rootless DNS inherits the host's.
+    extra_hosts:
+      - "matemagician.deib.polimi.it:131.175.15.40"
     environment:
       DATABASE_URL: postgresql://postgres:postgres@matemagician.deib.polimi.it:5433/ijm
       HOST_ROOT: /host
@@ -17,3 +33,15 @@ services:
     volumes:
       - ${DOCKER_SOCK}:/docker.sock
       - .:/host
+      # Mount the rsync'd worker source over the COPY'd files so deploys
+      # don't require rebuilding the image (rootless docker on polimi-gpu
+      # can't resolve external DNS at build time, so the original
+      # docker-cli download in the Dockerfile fails).
+      - ./app.py:/app/app.py:ro
+      - ./constants.py:/app/constants.py:ro
+      - ./db.py:/app/db.py:ro
+      - ./docker.py:/app/docker.py:ro
+      - ./execution.py:/app/execution.py:ro
+      - ./profiling.py:/app/profiling.py:ro
+      - ./reconcile.py:/app/reconcile.py:ro
+      - ./shared:/app/shared:ro

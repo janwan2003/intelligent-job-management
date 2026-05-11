@@ -2,14 +2,11 @@
 """efficientNet: MBConv-based image classification on CIFAR-10."""
 
 import logging
-from typing import Any
+import os
 
 import torch
 import torch.nn as nn
-from torch.utils.data import Dataset
-from torchvision import datasets, transforms
-
-from base import BaseTrainer, download_dataset
+from base import CIFAR10Trainer
 
 logging.basicConfig(
     level=logging.INFO,
@@ -17,15 +14,6 @@ logging.basicConfig(
     datefmt="%Y-%m-%d %H:%M:%S",
 )
 logger = logging.getLogger(__name__)
-
-DATA_ROOT = "/runs/data"
-
-CIFAR_TRANSFORM = transforms.Compose(
-    [
-        transforms.ToTensor(),
-        transforms.Normalize((0.4914, 0.4822, 0.4465), (0.2470, 0.2435, 0.2616)),
-    ]
-)
 
 
 class MBConvBlock(nn.Module):
@@ -74,32 +62,16 @@ class MiniEfficientNet(nn.Module):
         return self.head(self.blocks(self.stem(x)))
 
 
-class Trainer(BaseTrainer):
-    def __init__(self, checkpoint_dir: str = "/checkpoints") -> None:
-        # EfficientNet uses smaller default batch size
-        import os
-
+class Trainer(CIFAR10Trainer):
+    def __init__(self, checkpoint_dir: str | None = None) -> None:
+        # EfficientNet trains with a smaller default batch size; setting the
+        # env var BEFORE super().__init__() reads it is intentional.
         if "BATCH_SIZE" not in os.environ:
             os.environ["BATCH_SIZE"] = "32"
         super().__init__(checkpoint_dir)
 
     def _create_model(self) -> nn.Module:
         return MiniEfficientNet()
-
-    def _load_datasets(self) -> tuple[Dataset[Any], Dataset[Any]]:
-        return (
-            download_dataset(
-                datasets.CIFAR10, DATA_ROOT, train=True, transform=CIFAR_TRANSFORM
-            ),
-            download_dataset(
-                datasets.CIFAR10, DATA_ROOT, train=False, transform=CIFAR_TRANSFORM
-            ),
-        )
-
-    def _preprocess_batch(
-        self, images: torch.Tensor, labels: torch.Tensor
-    ) -> tuple[torch.Tensor, torch.Tensor]:
-        return images, labels
 
 
 if __name__ == "__main__":

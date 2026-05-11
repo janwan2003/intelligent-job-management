@@ -40,6 +40,23 @@ HOST_PROJECT_ROOT: str = os.path.normpath(os.getenv("HOST_PROJECT_ROOT", HOST_RO
 # do; otherwise it would persist QUEUED while the container is about to be
 # launched, leaving the row lying about a live container.
 running_jobs: dict[str, subprocess.Popen[str] | None] = {}
+# Set when Phase 2 has either populated the Popen or bailed out (claim lost,
+# launch failure).  /stop awaits this Event instead of polling running_jobs,
+# avoiding the race where a 0.1s sleep loop expires while Phase 2 is still
+# inside a slow mkdir/remove_container_if_exists call.
+dispatch_ready: dict[str, asyncio.Event] = {}
+# The asyncio.Task for each in-flight _run_job — /stop awaits it to know when
+# the run has fully drained (replacing a 60s polling loop on running_jobs).
+running_tasks: dict[str, asyncio.Task[None]] = {}
+# Set by ``/stop`` at the very top so Phase 4 can distinguish "container
+# exited 137 because /stop killed it" from "container exited 137 because it
+# OOM'd / was externally killed".  Without this flag Phase 4 always wrote
+# ``status=FAILED`` for non-zero exits, and the frontend's 3-s poll caught
+# the brief FAILED window before ``_persist_stop`` flipped it to
+# QUEUED/PREEMPTED.  When the flag is present, Phase 4 records exit_code
+# only and lets ``_persist_stop`` (or the stale-stop branch) own status +
+# slot release.
+stopping: dict[str, str] = {}
 _job_tasks: set[asyncio.Task[None]] = set()
 
 
@@ -164,6 +181,7 @@ async def _stream_output(
 
 async def _run_job(job_id: str) -> None:
     """Execute a job in a Docker container."""
+    ready = dispatch_ready.setdefault(job_id, asyncio.Event())
     try:
         # Phase 1: atomically claim the job (short-lived connection).
         # Two ops in sequence (fetch then update) used to allow a /stop
@@ -199,16 +217,23 @@ async def _run_job(job_id: str) -> None:
             run_start_time = datetime.now(UTC)
             name = container_name_for(job_id)
             # Atomic claim — only succeeds if the row is still in a runnable
-            # status.  A concurrent /stop that fired _persist_stop already
-            # committed (status=QUEUED, container_name=NULL) makes this
-            # WHERE clause miss and we bail out.  Don't reset progress here:
-            # back-to-back dispatches would both see progress=None and both
-            # treat themselves as a first run, wiping the live checkpoint.
+            # status AND still pointed at this worker.  A concurrent /stop
+            # whose _persist_stop already committed (status=QUEUED,
+            # container_name=NULL) makes this miss.  The ``assigned_node``
+            # check is required because the API-side reaper can clear
+            # ``assigned_node`` for a stuck QUEUED row while this claim is
+            # still in flight — without the check we'd commit status=RUNNING
+            # while the row's slot has already been released by the reaper,
+            # producing a phantom RUNNING row with no slot (the 5/4 GPUs bug).
+            # Don't reset progress here: back-to-back dispatches would both
+            # see progress=None and both treat themselves as a first run,
+            # wiping the live checkpoint.
             async with c.cursor() as cur:
                 await cur.execute(
                     "UPDATE jobs SET status = %s, container_name = %s, updated_at = %s "
-                    "WHERE id = %s AND status = ANY(%s) RETURNING id",
-                    (run_status, name, datetime.now(UTC), job_id, list(RUNNABLE_STATUSES)),
+                    "WHERE id = %s AND status = ANY(%s) AND assigned_node = %s "
+                    "RETURNING id",
+                    (run_status, name, datetime.now(UTC), job_id, list(RUNNABLE_STATUSES), NODE_ID),
                 )
                 claimed = await cur.fetchone()
             await c.commit()
@@ -280,6 +305,7 @@ async def _run_job(job_id: str) -> None:
 
         process = subprocess.Popen(docker_cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
         running_jobs[job_id] = process
+        ready.set()  # /stop can now safely target the live container
 
         # Phase 3: stream output + wait (connections acquired per progress update)
         stream_task = asyncio.create_task(
@@ -317,7 +343,9 @@ async def _run_job(job_id: str) -> None:
                         "SELECT pg_notify(%s, %s)",
                         (PG_NOTIFY_SLOT_FREED, f"{slot_node}:{slot_n}"),
                     )
-                    await c.commit()
+                # Always commit so the preceding update_job() persists even
+                # when there is no slot to free (already-cleared assignment).
+                await c.commit()
 
             # If the job has been migrated to a different node, our run is the
             # *old* one — don't touch the row.  The new node's worker owns it
@@ -346,10 +374,24 @@ async def _run_job(job_id: str) -> None:
                 await update_job(c, job_id, exit_code=exit_code)
                 if current["status"] == JobStatus.PREEMPTED:
                     await c.execute(f"NOTIFY {PG_NOTIFY_SCHEDULE}")
-                    await c.commit()
+                # Single commit covers both the exit_code update and the
+                # optional NOTIFY.
+                await c.commit()
                 return
 
             if exit_code != 0:
+                if job_id in stopping:
+                    # /stop is in flight; it will own the final status and the
+                    # ``ijm_slot_freed`` NOTIFY.  Just record the exit code so
+                    # the UI doesn't flash FAILED during the preempt cycle.
+                    logger.info(
+                        "Job %s exited (exit=%d) during /stop (reason=%s) — leaving status to /stop",
+                        job_id[:JOB_ID_DISPLAY_LENGTH],
+                        exit_code,
+                        stopping[job_id],
+                    )
+                    await update_job(c, job_id, exit_code=exit_code)
+                    return
                 logger.error("Job %s failed (exit=%d)", job_id[:JOB_ID_DISPLAY_LENGTH], exit_code)
                 await update_job(c, job_id, status=JobStatus.FAILED, exit_code=exit_code)
                 await _notify_slot_freed()
@@ -369,16 +411,44 @@ async def _run_job(job_id: str) -> None:
         logger.exception("Failed to run job %s", job_id)
         try:
             async with conn() as c:
+                # Read assignment BEFORE updating so we know which slot to
+                # release even if assigned_node gets cleared elsewhere.
+                cur = await c.execute(
+                    "SELECT assigned_node, assigned_gpu_config FROM jobs WHERE id = %s",
+                    (job_id,),
+                )
+                row = await cur.fetchone()
+                slot_node = row.get("assigned_node") if row else None
+                slot_cfg = row.get("assigned_gpu_config") if row else None
+                slot_n = sum(int(v) for v in (slot_cfg or {}).values())
+
                 await update_job(c, job_id, status=JobStatus.FAILED)
+                # Without this NOTIFY a pre-Phase-4 exception (e.g. mkdir
+                # failure, docker daemon hiccup, runtime image missing) would
+                # leak the API permit forever — Phase 4 normally emits this
+                # but we never got there.
+                if slot_node and slot_n > 0:
+                    await c.execute(
+                        "SELECT pg_notify(%s, %s)",
+                        (PG_NOTIFY_SLOT_FREED, f"{slot_node}:{slot_n}"),
+                    )
+                await c.commit()
         except Exception:
             logger.exception("Failed to update job %s status to FAILED", job_id)
     finally:
         running_jobs.pop(job_id, None)
+        # Always set so any /stop awaiting the dispatch placeholder unblocks
+        # — even on early-bail paths (claim lost, launch error) where Phase 2
+        # never reached the Popen line.
+        ready.set()
+        running_tasks.pop(job_id, None)
+        dispatch_ready.pop(job_id, None)
 
 
 def dispatch_job(job_id: str) -> asyncio.Task[None]:
     """Create an asyncio task for job execution."""
     task: asyncio.Task[None] = asyncio.create_task(_run_job(job_id), name=f"job-{job_id[:JOB_ID_DISPLAY_LENGTH]}")
+    running_tasks[job_id] = task
     _job_tasks.add(task)
     task.add_done_callback(_job_tasks.discard)
     return task

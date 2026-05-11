@@ -99,8 +99,12 @@ async def create_job(job_request: JobCreate) -> Job:
         # the job is essentially free.
         await conn.execute(f"NOTIFY {PG_NOTIFY_SCHEDULE}")
 
-    if schedule_result.node_id is not None:
-        await runner.enqueue(instance_id)
+    if schedule_result.node_id is not None and schedule_result.gpu_config is not None:
+        # Go through dispatch_with_slot so the per-node semaphore acquires a
+        # permit.  Calling enqueue directly here was a long-standing bug:
+        # direct submissions and resumes bypassed the slot invariant and let
+        # more containers run on a node than it had GPUs for.
+        await runner.dispatch_with_slot(instance_id, schedule_result.node_id, schedule_result.gpu_config)
     else:
         logger.info("No node available for new job %s — notified scheduler for optimizer pass", instance_id[:8])
 
@@ -224,8 +228,9 @@ async def resume_job(job_id: str) -> dict[str, str]:
         # without waiting for the 60s safety-net watcher.
         await conn.execute(f"NOTIFY {PG_NOTIFY_SCHEDULE}")
 
-    if schedule_result.node_id is not None:
-        await runner.enqueue(job_id)
+    if schedule_result.node_id is not None and schedule_result.gpu_config is not None:
+        # Same fix as create_job — must acquire a slot permit, not bypass it.
+        await runner.dispatch_with_slot(job_id, schedule_result.node_id, schedule_result.gpu_config)
         logger.info("Resumed job %s (node=%s)", job_id[:8], schedule_result.node_id)
     else:
         logger.info("Resumed job %s — no node available, notified scheduler for optimizer pass", job_id[:8])
@@ -235,7 +240,7 @@ async def resume_job(job_id: str) -> dict[str, str]:
 
 @router.delete("/jobs/{job_id}", status_code=204)
 async def delete_job(job_id: str) -> None:
-    """Delete a job."""
+    """Delete a job, killing any running container first."""
     runner = require_runner()
 
     async with state.get_conn() as conn:
@@ -251,9 +256,18 @@ async def delete_job(job_id: str) -> None:
             except Exception:
                 logger.warning("Failed to stop job %s before delete", job_id[:8])
 
-        # Delete profiling results first, then the job (atomically)
+        # Atomically clear in-flight claims owned by this instance, then the
+        # job row itself.  Important: we filter by ``instance_id``, not by
+        # ``profiling_results.job_id`` — the latter is the *type* ID and is
+        # shared across instances, so deleting on it would wipe cached
+        # measurements that other instances of the same type still rely on.
+        # Completed rows (duration_seconds NOT NULL) are left alone so future
+        # instances of this type continue to benefit from the cached profile.
         async with conn.transaction():
-            await conn.execute("DELETE FROM profiling_results WHERE job_id = %s", (job_id,))
+            await conn.execute(
+                "DELETE FROM profiling_results WHERE instance_id = %s AND duration_seconds IS NULL",
+                (job_id,),
+            )
             await conn.execute("DELETE FROM jobs WHERE id = %s", (job_id,))
 
     return None
@@ -261,10 +275,44 @@ async def delete_job(job_id: str) -> None:
 
 @router.delete("/jobs", status_code=204)
 async def clear_all_jobs() -> None:
-    """Delete all jobs and their profiling results."""
+    """Delete all jobs and their profiling results.
+
+    Stops any running/profiling containers first so we don't leave zombies
+    on remote workers — those zombies eventually emit ``ijm_slot_freed``
+    for rows that no longer exist, over-releasing the API's per-node
+    semaphore.  This is exactly how the matemagician=3 oversubscription
+    persisted across e2e runs: each run's ``Stage 0 clearing state`` left
+    containers alive, the next run added more, and the semaphore inflated.
+    """
+    runner = require_runner()
+
+    async with state.get_conn() as conn:
+        cur = await conn.execute(
+            "SELECT id FROM jobs WHERE status = ANY(%s)",
+            (list(STOPPABLE_STATUSES),),
+        )
+        active_ids = [r[0] for r in await cur.fetchall()]
+
+    for jid in active_ids:
+        try:
+            await runner.stop(jid, reason="user")
+        except Exception:
+            logger.warning("Failed to stop job %s during clear_all_jobs", jid[:8])
+
     async with state.get_conn() as conn, conn.transaction():
         await conn.execute("DELETE FROM profiling_results")
         await conn.execute("DELETE FROM jobs")
+
+    # The /stop loop above releases slots via NOTIFY for jobs that were
+    # RUNNING/PROFILING.  Anything still in QUEUED with an assigned_node
+    # (dispatch task blocked on slot acquire) just got its row deleted —
+    # the dispatch task's RuntimeError handler releases its own permit,
+    # but if the task hasn't woken yet the slot lingers in memory until
+    # the 5-min drift watcher fires.  Forcing a reconcile here makes the
+    # cleared state immediately consistent so the next batch of submits
+    # doesn't block on a phantom permit.
+    if state.node_slots is not None:
+        await state.node_slots.recover_from_drift(state.get_conn)
 
     return None
 

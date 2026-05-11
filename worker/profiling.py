@@ -80,8 +80,9 @@ async def handle_complete(
                is_profiling_run = FALSE, updated_at = %s WHERE id = %s""",
             (JobStatus.QUEUED, now, job_id),
         )
-    await conn.commit()
-    await conn.execute(f"NOTIFY {PG_NOTIFY_SCHEDULE}")
+        # NOTIFY in the same transaction so the scheduler wake-up can never
+        # outlive an unwritten status flip (or vice versa).
+        await cur.execute(f"NOTIFY {PG_NOTIFY_SCHEDULE}")
     await conn.commit()
 
     logger.info(

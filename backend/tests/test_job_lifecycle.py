@@ -238,7 +238,7 @@ class TestResumeJob:
         response = client.post("/jobs/preempt-id/resume")
         assert response.status_code == 202
         # No cluster nodes configured → schedule_job returns node_id=None → no enqueue
-        fake_runner.enqueue.assert_not_called()
+        fake_runner.dispatch_with_slot.assert_not_called()
 
     def test_resume_failed_job_sets_queued(self) -> None:
         """Resuming a FAILED job should set it to QUEUED (no enqueue when no node available)."""
@@ -246,7 +246,7 @@ class TestResumeJob:
 
         response = client.post("/jobs/fail-id/resume")
         assert response.status_code == 202
-        fake_runner.enqueue.assert_not_called()
+        fake_runner.dispatch_with_slot.assert_not_called()
 
     def test_resume_nonexistent_job_returns_404(self) -> None:
         client, _conn, _ = _make_client()
@@ -531,7 +531,7 @@ class TestCreateJob:
         assert body["priority"] == 3
         assert body["is_profiling_run"] is True
         assert body["assigned_gpu_config"] is not None
-        fake_runner.enqueue.assert_called_once()
+        fake_runner.dispatch_with_slot.assert_called_once()
 
     def test_create_job_with_extended_fields(self) -> None:
         """Create a job with extended fields."""
@@ -800,15 +800,15 @@ class TestComplexLifecycle:
         resp = client.post("/jobs", json={"job_id": "test", "dockerImage": "img", "command": ["cmd"]})
         assert resp.status_code == 201
         job_id = resp.json()["id"]
-        assert fake_runner.enqueue.call_count == 1
+        assert fake_runner.dispatch_with_slot.call_count == 1
 
         resp = client.post(f"/jobs/{job_id}/stop")
         assert resp.status_code == 202
-        assert fake_runner.enqueue.call_count == 1  # QUEUED->PREEMPTED, no enqueue
+        assert fake_runner.dispatch_with_slot.call_count == 1  # QUEUED->PREEMPTED, no enqueue
 
         resp = client.post(f"/jobs/{job_id}/resume")
         assert resp.status_code == 202
-        assert fake_runner.enqueue.call_count == 2
+        assert fake_runner.dispatch_with_slot.call_count == 2
 
     def test_resume_preserves_profiling_results(self) -> None:
         """Resume should NOT delete profiling results."""
@@ -851,8 +851,8 @@ class TestComplexLifecycle:
         assert resp.status_code == 201
         job_id = resp.json()["id"]
 
-        fake_runner.enqueue.assert_called_once()
-        enqueued_id = fake_runner.enqueue.call_args[0][0]
+        fake_runner.dispatch_with_slot.assert_called_once()
+        enqueued_id = fake_runner.dispatch_with_slot.call_args[0][0]
         assert enqueued_id == job_id
 
     def test_stop_running_calls_runner_stop_with_job_id(self) -> None:
@@ -977,7 +977,7 @@ class TestMultiJobRegression:
             assert body["assigned_node"] is not None
             assert body["assigned_gpu_config"] is not None
 
-        assert fake_runner.enqueue.call_count == 6
+        assert fake_runner.dispatch_with_slot.call_count == 6
 
     def test_all_jobs_enqueued_after_submission(self) -> None:
         client, _conn, fake_runner = _make_rich_client(cluster_nodes=_REAL_CLUSTER_NODES)
@@ -991,7 +991,7 @@ class TestMultiJobRegression:
             job_ids.append(resp.json()["id"])
 
         enqueued_ids: set[str] = set()
-        for call in fake_runner.enqueue.call_args_list:
+        for call in fake_runner.dispatch_with_slot.call_args_list:
             enqueued_ids.add(call[0][0])
 
         for jid in job_ids:

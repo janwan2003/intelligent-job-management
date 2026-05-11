@@ -32,11 +32,19 @@ async def list_nodes() -> list[NodeStatus]:
     for node_data in cluster.nodes:
         node = NodeConfig.model_validate(node_data)
         job_ids = assigned.get(node.id, [])
+        # Source hourly cost from gpu_energy_costs.json (same table the
+        # scheduler/optimizer uses) so the UI cannot drift from actual costs.
+        # Resource groups whose (gpu_type, gpu_count) isn't priced contribute 0.
+        hourly_cost = 0.0
+        for res in node.resources:
+            rate = cluster.get_energy_cost(res.gpu_type, res.gpu_count)
+            if rate is not None:
+                hourly_cost += rate
         result.append(
             NodeStatus(
                 id=node.id,
                 is_for_profiling=node.is_for_profiling,
-                cost=node.cost,
+                cost=hourly_cost,
                 resources=node.resources,
                 status=NodeStatusEnum.BUSY if job_ids else NodeStatusEnum.IDLE,
                 current_job_ids=job_ids,

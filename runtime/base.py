@@ -22,6 +22,7 @@ from typing import Any
 import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader, Dataset
+from torchvision import datasets, transforms
 
 logger = logging.getLogger(__name__)
 
@@ -45,11 +46,18 @@ class BaseTrainer(ABC):
     - ``_preprocess_batch(images, labels)`` — transform a batch before forward pass
     """
 
-    def __init__(self, checkpoint_dir: str = "/checkpoints") -> None:
-        self.checkpoint_dir = Path(checkpoint_dir)
+    def __init__(self, checkpoint_dir: str | None = None) -> None:
+        # Match EPOCHS_TOTAL / BATCH_SIZE: env-driven by default, with the
+        # constructor argument as an override (used by tests).
+        self.checkpoint_dir = Path(
+            checkpoint_dir or os.environ.get("CHECKPOINT_DIR", "/checkpoints")
+        )
         self.checkpoint_path = self.checkpoint_dir / "latest.pt"
 
-        self.model = self._create_model()
+        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        logger.info("Using device: %s", self.device)
+
+        self.model = self._create_model().to(self.device)
         self.optimizer = torch.optim.Adam(self.model.parameters(), lr=0.001)
         self.criterion = nn.CrossEntropyLoss()
 
@@ -97,7 +105,7 @@ class BaseTrainer(ABC):
             # EPERM ("Operation not permitted").  Reading via plain read()
             # avoids those calls entirely and is cheap for our checkpoint sizes.
             buf = io.BytesIO(self.checkpoint_path.read_bytes())
-            checkpoint = torch.load(buf, weights_only=True)
+            checkpoint = torch.load(buf, weights_only=True, map_location=self.device)
             self.model.load_state_dict(checkpoint["model_state_dict"])
             self.optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
             self.current_epoch = checkpoint["epoch"]
@@ -107,7 +115,12 @@ class BaseTrainer(ABC):
                 self.current_epoch,
                 self.best_accuracy,
             )
-        except Exception as e:
+        except (OSError, RuntimeError, KeyError, EOFError) as e:
+            # OSError covers FUSE/filesystem errors; RuntimeError covers
+            # torch.load failures (corrupted file, version mismatch);
+            # KeyError covers missing keys in the checkpoint dict.  Anything
+            # else (e.g. CUDA OOM during load) should bubble up — we don't
+            # want to start from scratch on a transient hardware issue.
             logger.warning("Failed to load checkpoint, starting from scratch: %s", e)
 
     def save_checkpoint(self) -> None:
@@ -125,7 +138,7 @@ class BaseTrainer(ABC):
             torch.save(checkpoint, tmp_path)
             Path(tmp_path).replace(self.checkpoint_path)
             logger.info("Checkpoint saved at epoch %d", self.current_epoch)
-        except BaseException:
+        except Exception:
             Path(tmp_path).unlink(missing_ok=True)
             raise
 
@@ -139,6 +152,8 @@ class BaseTrainer(ABC):
         self.model.eval()
         correct = total = 0
         for images, labels in self.test_loader:
+            images = images.to(self.device, non_blocking=True)
+            labels = labels.to(self.device, non_blocking=True)
             images, labels = self._preprocess_batch(images, labels)
             outputs = self.model(images)
             correct += (outputs.argmax(1) == labels).sum().item()
@@ -155,6 +170,8 @@ class BaseTrainer(ABC):
         total_loss = 0.0
         num_batches = 0
         for images, labels in self.train_loader:
+            images = images.to(self.device, non_blocking=True)
+            labels = labels.to(self.device, non_blocking=True)
             images, labels = self._preprocess_batch(images, labels)
             self.optimizer.zero_grad()
             outputs = self.model(images)
@@ -196,3 +213,61 @@ class BaseTrainer(ABC):
             self.save_checkpoint()
 
         logger.info("Training completed! Final epoch: %d", self.current_epoch)
+
+
+# ---------------------------------------------------------------------------
+# Dataset mixins — let concrete trainers focus on the model, not the loader
+# ---------------------------------------------------------------------------
+
+DATA_ROOT = "/runs/data"
+
+CIFAR_TRANSFORM = transforms.Compose(
+    [
+        transforms.ToTensor(),
+        transforms.Normalize((0.4914, 0.4822, 0.4465), (0.2470, 0.2435, 0.2616)),
+    ]
+)
+
+
+class MNISTTrainer(BaseTrainer):
+    """Trainer pre-wired for MNIST; identity batch preprocessing by default."""
+
+    def _load_datasets(self) -> tuple[Dataset[Any], Dataset[Any]]:
+        t = transforms.ToTensor()
+        return (
+            download_dataset(datasets.MNIST, DATA_ROOT, train=True, transform=t),
+            download_dataset(datasets.MNIST, DATA_ROOT, train=False, transform=t),
+        )
+
+    def _preprocess_batch(
+        self, images: torch.Tensor, labels: torch.Tensor
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        return images, labels
+
+
+class MNISTSequenceTrainer(MNISTTrainer):
+    """MNIST trainer that reshapes batches into 28×28 sequences for LSTMs."""
+
+    def _preprocess_batch(
+        self, images: torch.Tensor, labels: torch.Tensor
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        return images.squeeze(1), labels  # (B,1,28,28) -> (B,28,28)
+
+
+class CIFAR10Trainer(BaseTrainer):
+    """Trainer pre-wired for CIFAR-10 with the canonical normalisation."""
+
+    def _load_datasets(self) -> tuple[Dataset[Any], Dataset[Any]]:
+        return (
+            download_dataset(
+                datasets.CIFAR10, DATA_ROOT, train=True, transform=CIFAR_TRANSFORM
+            ),
+            download_dataset(
+                datasets.CIFAR10, DATA_ROOT, train=False, transform=CIFAR_TRANSFORM
+            ),
+        )
+
+    def _preprocess_batch(
+        self, images: torch.Tensor, labels: torch.Tensor
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        return images, labels

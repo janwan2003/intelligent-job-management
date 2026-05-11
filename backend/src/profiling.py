@@ -218,6 +218,20 @@ class ProfilingScheduler:
                         now,
                     ),
                 )
+                # If the INSERT lost the race (another instance already claimed
+                # this config) we'd otherwise schedule a profiling run whose
+                # result has nowhere to land — the UPDATE in
+                # ``_on_profiling_complete`` filters by instance_id and would
+                # silently drop the measurement.  Surface it loudly so the
+                # operator can investigate; rare in practice because
+                # schedule_lock serializes most schedule_job calls.
+                if (getattr(cur, "rowcount", 0) or 0) == 0:
+                    logger.warning(
+                        "Profiling claim collision for type=%s config=%s — instance %s will profile without a recordable claim",
+                        type_id or job_id,
+                        result.gpu_config,
+                        (instance_id or job_id)[:8],
+                    )
 
     async def schedule_standard_run(self, conn: psycopg.AsyncConnection[Any], job_id: str) -> ScheduleResult:
         """Schedule a standard (non-profiling) run using any available profiled config.
@@ -259,6 +273,41 @@ class ProfilingScheduler:
             row = await cur.fetchone()
         return row[0] if row else 0
 
+    async def _sweep_stale_claims(self, conn: psycopg.AsyncConnection[Any], type_id: str) -> int:
+        """Delete claim rows whose owning instance is terminal or missing.
+
+        A claim row is ``profiling_results.duration_seconds IS NULL`` written
+        by ``_persist_assignment`` to mark a config as in-flight.  If the
+        owning job instance never reached the worker (failed dispatch),
+        crashed, or finished without recording a duration, the row stays
+        with ``duration_seconds = NULL`` and ``instance_id`` pointing at a
+        terminal job — which makes ``get_profiled_configs`` count the
+        config as "profiled" even though no usable measurement exists.
+        That deadlocks scheduling: the optimizer/greedy can't use a NULL
+        duration, and the profiling scheduler refuses to re-profile.
+
+        Sweeping on every ``schedule_job`` keeps the table self-healing
+        without coupling profiling bookkeeping to the dispatch watchdog.
+        Returns the number of rows deleted (mainly for logging/tests).
+        """
+        async with conn.cursor() as cur:
+            await cur.execute(
+                """DELETE FROM profiling_results pr
+                   WHERE pr.job_id = %s
+                     AND pr.duration_seconds IS NULL
+                     AND (pr.instance_id IS NULL
+                          OR NOT EXISTS (
+                              SELECT 1 FROM jobs j
+                              WHERE j.id = pr.instance_id
+                                AND j.status IN (%s, %s, %s)
+                          ))""",
+                (type_id, JobStatus.QUEUED, JobStatus.RUNNING, JobStatus.PROFILING),
+            )
+            deleted = getattr(cur, "rowcount", 0) or 0
+        if deleted > 0:
+            logger.info("Cleared %d stale profiling claim(s) for type %s", deleted, type_id)
+        return deleted
+
     async def schedule_job(
         self,
         conn: psycopg.AsyncConnection[Any],
@@ -276,6 +325,7 @@ class ProfilingScheduler:
         profiling results across submissions.  Falls back to *job_id* if not provided.
         """
         type_id = job_type_id or job_id
+        await self._sweep_stale_claims(conn, type_id)
         node_gpu_usage = await self.get_node_gpu_usage(conn)
         all_configs = self.get_valid_configurations()
         profiled = await self.get_profiled_configs(conn, type_id)

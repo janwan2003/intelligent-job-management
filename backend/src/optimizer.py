@@ -269,11 +269,11 @@ async def optimize(
         # Status filter: only RUNNING/PROFILING rows are "in place".  A
         # QUEUED row may carry a stale assigned_node (Phase 1b wrote it, but
         # the dispatch failed — e.g. worker couldn't pull the image).  If we
-        # let such a row into currentScheduling, the permutation filter below
-        # treats it as immovable and the optimizer keeps proposing the same
-        # placement forever, even though no container is actually running.
-        # Treating it as a fresh placement instead lets the optimizer/greedy
-        # combo re-place it.  (The watchdog in app.py separately clears
+        # let such a row into currentScheduling, downstream filters treat it
+        # as immovable and the optimizer keeps proposing the same placement
+        # forever, even though no container is actually running.  Treating
+        # it as a fresh placement instead lets the optimizer/greedy combo
+        # re-place it.  (The watchdog in app.py separately clears
         # truly-orphaned assignments and releases their slots.)
         #
         # We track per-node usage as we build currentScheduling and skip
@@ -319,6 +319,14 @@ async def optimize(
     }
     if current_scheduling:
         request_body["currentScheduling"] = current_scheduling
+    # Per-job assignment reasoning gets written to the optimizer's per-call
+    # log file at ``/opt/code-optimizer/build/logs/log_<ts>.log`` inside the
+    # ``ijm-optimizer`` container.  Levels: 0=cost only (default), 1=high-
+    # level, 2=per-job, 3=heuristic internals.  Set OPTIMIZER_VERBOSE to
+    # raise the level when debugging churn or unexpected drops.
+    opt_verbose = int(os.getenv("OPTIMIZER_VERBOSE", "0"))
+    if opt_verbose:
+        request_body["verbose"] = opt_verbose
 
     logger.debug(
         "OPT REQ nodes=%s currentSched=%s jobs=%s",
@@ -367,43 +375,6 @@ async def optimize(
     # self-correct from a bad placement.
     assignment_by_id = {a.instance_id: a for a in assignments}
 
-    # Permutation filter: the optimizer is allowed to swap which job_id goes
-    # in which slot when it doesn't change the *shape* of the placement (per
-    # (node, gpu_type, nGPUs) slot count).  Such swaps are pure churn — they
-    # cost two preempts, two restarts, a kill-drain on each side, and don't
-    # improve the objective by anything we can measure.  Detect this case
-    # and treat all candidate-migrations as no-ops: the existing rows stay
-    # where they are.
-    #
-    # We only filter migrations *between currently-running jobs*.  Jobs the
-    # optimizer is dropping (preempt-out without re-assignment) and new jobs
-    # entering the system are kept as real preempts/assignments — those
-    # genuinely change the slot multiset.
-    def _slot_key(node: str, gpu_type: str, n_gpus: int) -> tuple[str, str, int]:
-        return (node, gpu_type, int(n_gpus))
-
-    current_slots: list[tuple[str, str, int]] = []
-    for _jid, slot in current_scheduling.items():
-        cur_node = slot["node"].rsplit("_", 1)[0] if "_" in slot["node"] else slot["node"]
-        current_slots.append(_slot_key(cur_node, slot["GPUtype"], slot["nGPUs"]))
-    new_slots_for_existing: list[tuple[str, str, int]] = []
-    for a in assignments:
-        if a.instance_id in current_scheduling:
-            gtype = next(iter(a.gpu_config))
-            new_slots_for_existing.append(_slot_key(a.node_id, gtype, a.gpu_config[gtype]))
-
-    # Only safe to filter when the optimizer is keeping *every* current job
-    # and only shuffling them.  If any are dropped (jobs leaving currentSched
-    # entirely) the multiset comparison wouldn't represent reality.
-    all_current_kept = all(jid in assignment_by_id for jid in current_scheduling)
-    permutation_only = all_current_kept and sorted(current_slots) == sorted(new_slots_for_existing)
-    if permutation_only and current_scheduling:
-        logger.info(
-            "Optimizer plan is a permutation of current placement (same slot multiset) — "
-            "skipping migrations to avoid churn. %d job(s) kept in place.",
-            len(current_scheduling),
-        )
-
     preempt: list[str] = []
     keep_assignments: list[Assignment] = []
     for a in assignments:
@@ -415,11 +386,10 @@ async def optimize(
         new_gpu_type = next(iter(a.gpu_config))
         new_n = a.gpu_config[new_gpu_type]
         same = cur_real == a.node_id and existing["GPUtype"] == new_gpu_type and existing["nGPUs"] == new_n
-        if same or permutation_only:
-            # Same exact slot OR this is a permutation-only plan — keep the
-            # row where it is.  Phase 1b's UPDATE WHERE assigned_node IS NULL
-            # won't match anyway (row already has a node), so dropping the
-            # assignment is the only correct action.
+        if same:
+            # Same exact slot — keep the row where it is.  Phase 1b's UPDATE
+            # WHERE assigned_node IS NULL won't match anyway (row already has
+            # a node), so dropping the assignment is the only correct action.
             logger.debug(
                 "Optimizer keeping job %s on %s %s (no migration)",
                 a.instance_id[:8],
@@ -427,44 +397,49 @@ async def optimize(
                 {existing["GPUtype"]: existing["nGPUs"]},
             )
             continue
-        # Cost-benefit filter: drop migrations whose claimed energy savings
-        # don't pay for the kill+drain+lost-epoch overhead.  Tardiness > 0
-        # means the deadline is at risk — we always honour those migrations,
-        # since our energy-only `benefit` doesn't model tardiness penalty.
-        tardiness = tardiness_by_id.get(a.instance_id, 0.0)
-        if tardiness <= 0:
-            type_id, remaining_epochs = job_meta.get(a.instance_id, ("", 0))
-            gpu_costs = cluster.gpu_energy_costs
-            cur_gtype = existing["GPUtype"]
-            cur_n = int(existing["nGPUs"])
-            cur_cost = _slot_cost(type_id, cur_gtype, cur_n, remaining_epochs, profiling_by_type, gpu_costs)
-            new_cost = _slot_cost(type_id, new_gpu_type, new_n, remaining_epochs, profiling_by_type, gpu_costs)
-            src_hourly = _hourly_cost(gpu_costs, cur_gtype, cur_n)
-            dst_hourly = _hourly_cost(gpu_costs, new_gpu_type, new_n)
-            dst_epoch_s = _mean_epoch_s(type_id, new_gpu_type, new_n, profiling_by_type)
-            lost_epoch_s = dst_epoch_s if dst_epoch_s is not None else OPTIMIZER_SWITCH_PENALTY_S
-            if cur_cost is not None and new_cost is not None and src_hourly is not None and dst_hourly is not None:
-                benefit = cur_cost - new_cost
-                penalty = _KILL_DRAIN_S * src_hourly / 3600.0 + lost_epoch_s * dst_hourly / 3600.0
-                if benefit < penalty:
-                    logger.info(
-                        "Optimizer migration for %s suppressed: benefit=$%.4f < penalty=$%.4f "
-                        "(%s %dx%s -> %s %dx%s, tardiness=0)",
-                        a.instance_id[:8],
-                        benefit,
-                        penalty,
-                        cur_real,
-                        cur_n,
-                        cur_gtype,
-                        a.node_id,
-                        new_n,
-                        new_gpu_type,
-                    )
-                    continue
+        # Cost-benefit migration filter — DISABLED.
+        #
+        # Previously we second-guessed GPUspb here: for non-tardy jobs, if
+        # our local estimate said the kill+drain+lost-epoch penalty was
+        # bigger than the energy savings, we suppressed the migration.
+        # Disabled because the operator wants GPUspb's plan to go through
+        # unfiltered ("the optimiser is god").  GPUspb already includes
+        # a node-on / GPU cost term in its objective, so migrations it
+        # proposes have already cleared its own cost-benefit gate.
+        #
+        # Re-enable by setting IJM_OPTIMIZER_GUARD_MIGRATIONS=1 in the API
+        # env if you want this safety net back without recompiling.
+        if os.getenv("IJM_OPTIMIZER_GUARD_MIGRATIONS"):
+            tardiness = tardiness_by_id.get(a.instance_id, 0.0)
+            if tardiness <= 0:
+                type_id, remaining_epochs = job_meta.get(a.instance_id, ("", 0))
+                gpu_costs = cluster.gpu_energy_costs
+                cur_gtype = existing["GPUtype"]
+                cur_n = int(existing["nGPUs"])
+                cur_cost = _slot_cost(type_id, cur_gtype, cur_n, remaining_epochs, profiling_by_type, gpu_costs)
+                new_cost = _slot_cost(type_id, new_gpu_type, new_n, remaining_epochs, profiling_by_type, gpu_costs)
+                src_hourly = _hourly_cost(gpu_costs, cur_gtype, cur_n)
+                dst_hourly = _hourly_cost(gpu_costs, new_gpu_type, new_n)
+                dst_epoch_s = _mean_epoch_s(type_id, new_gpu_type, new_n, profiling_by_type)
+                lost_epoch_s = dst_epoch_s if dst_epoch_s is not None else OPTIMIZER_SWITCH_PENALTY_S
+                if cur_cost is not None and new_cost is not None and src_hourly is not None and dst_hourly is not None:
+                    benefit = cur_cost - new_cost
+                    penalty = _KILL_DRAIN_S * src_hourly / 3600.0 + lost_epoch_s * dst_hourly / 3600.0
+                    if benefit < penalty:
+                        logger.info(
+                            "Optimizer migration for %s suppressed (guard on): benefit=$%.4f < penalty=$%.4f",
+                            a.instance_id[:8],
+                            benefit,
+                            penalty,
+                        )
+                        continue
         # Migration: preempt + let Phase 1b reapply with new placement.
         preempt.append(a.instance_id)
         keep_assignments.append(a)
     # Anything in currentScheduling that the optimizer didn't include at all → preempt.
+    # Trust GPUspb's decisions completely — if it drops a job from its plan we
+    # honour that.  Tuning so the cost function gives sensible drops is the
+    # operator's responsibility (gpu_energy_costs in nodes_config).
     for job_id in current_scheduling:
         if job_id not in assignment_by_id:
             preempt.append(job_id)

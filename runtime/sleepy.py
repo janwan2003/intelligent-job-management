@@ -13,9 +13,8 @@ from typing import Any
 
 import torch
 import torch.nn as nn
-from torch.utils.data import Dataset, TensorDataset
-
 from base import BaseTrainer
+from torch.utils.data import Dataset, TensorDataset
 
 logging.basicConfig(
     level=logging.INFO,

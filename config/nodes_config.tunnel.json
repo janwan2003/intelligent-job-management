@@ -2,7 +2,7 @@
   {
     "id": "matemagician",
     "isForProfiling": true,
-    "workerUrl": "http://host.docker.internal:8001",
+    "workerUrl": "http://localhost:8001",
     "cost": 0.10,
     "resources": [
       { "gpu_type": "QuadroP600", "gpu_count": 2 }
@@ -11,7 +11,7 @@
   {
     "id": "polimi-gpu",
     "isForProfiling": true,
-    "workerUrl": "http://host.docker.internal:8002",
+    "workerUrl": "http://localhost:8002",
     "cost": 0.30,
     "resources": [
       { "gpu_type": "A40", "gpu_count": 2 }
