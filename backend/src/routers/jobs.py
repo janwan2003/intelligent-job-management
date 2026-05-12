@@ -162,35 +162,48 @@ async def get_job(job_id: str) -> Job:
 
 @router.post("/jobs/{job_id}/stop", status_code=202)
 async def stop_job(job_id: str) -> dict[str, str]:
-    """Request job to be stopped."""
+    """Request job to be stopped (user-driven; sticky PREEMPTED state).
+
+    Atomicity contract: the DB flip to ``PREEMPTED`` happens *before* the
+    async container kill is dispatched.  Otherwise the optimizer's preempt
+    cycle, which selects victims by ``status IN ('RUNNING', 'PROFILING')``,
+    can race this endpoint and re-dispatch the row to a different node
+    before the worker's kill+persist lands — overwriting the user's
+    PREEMPTED intent with QUEUED.  Flipping status first removes the row
+    from the optimizer's preempt-target set immediately.
+    """
     runner = require_runner()
 
     logger.info("Received stop request for job: %s", job_id)
 
     async with state.get_conn() as conn:
-        # Atomic: try to mark QUEUED → PREEMPTED
-        cur = await conn.execute(
-            "UPDATE jobs SET status = %s, updated_at = %s WHERE id = %s AND status = %s RETURNING id",
-            (JobStatus.PREEMPTED, datetime.now(UTC), job_id, JobStatus.QUEUED),
-        )
-        if await cur.fetchone():
-            logger.info("Stopped QUEUED job %s directly (no container)", job_id[:8])
-            return {"status": "stopped", "job_id": job_id}
-
-        # Check if job exists and is in a stoppable status (RUNNING/PROFILING)
-        cur = await conn.execute("SELECT status FROM jobs WHERE id = %s", (job_id,))
-        row = await cur.fetchone()
-        if not row:
+        # SELECT FOR UPDATE + conditional UPDATE in one transaction —
+        # serializable against the optimizer's preempt-list build (which
+        # also reads + writes the row).  The row lock blocks the optimizer
+        # from racing in between our read and write.
+        cur = await conn.execute("SELECT status FROM jobs WHERE id = %s FOR UPDATE", (job_id,))
+        existing = await cur.fetchone()
+        if not existing:
             raise HTTPException(status_code=404, detail="Job not found")
-
-        current_status = row[0]
-        if current_status not in STOPPABLE_STATUSES:
+        prev_status = existing[0]
+        if prev_status not in STOPPABLE_STATUSES:
             raise HTTPException(
                 status_code=409,
-                detail=f"Cannot stop job with status {current_status}",
+                detail=f"Cannot stop job with status {prev_status}",
             )
+        await conn.execute(
+            "UPDATE jobs SET status = %s, updated_at = %s WHERE id = %s",
+            (JobStatus.PREEMPTED, datetime.now(UTC), job_id),
+        )
+        await conn.commit()
 
-    # RUNNING/PROFILING jobs: kill directly via job runner
+    if prev_status == JobStatus.QUEUED:
+        logger.info("Stopped QUEUED job %s directly (no container)", job_id[:8])
+        return {"status": "stopped", "job_id": job_id}
+
+    # RUNNING / PROFILING: status already flipped; now kill the container.
+    # Worker's /stop handler will see PREEMPTED and skip its own status
+    # update, but still kill + free the slot (see worker/app.py).
     await runner.stop(job_id)
     return {"status": "stop_requested", "job_id": job_id}
 

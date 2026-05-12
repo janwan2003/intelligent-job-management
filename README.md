@@ -111,23 +111,83 @@ Opens:
 
 `tunnel.sh` forwards 3 ports through matemagician: `5433` (postgres), `8001` (matemagician worker), `8002` (polimi-gpu worker via internal LAN). Close Terminal 1 to disconnect.
 
-### Building the runtime image on the server
+### Building the runtime images on the server
 
-The `runtime/` directory is not deployed to the server. Copy the runtime directory separately and build there:
+The `runtime/` directory is not deployed to the server. Copy it over and build there. **Two image variants are required per training script**:
+
+- `:latest` — built from [`runtime/Dockerfile`](runtime/Dockerfile) with PyTorch 2.6 + CUDA 12.4. Used on nodes with a modern NVIDIA driver (`555.x` or newer, supports CUDA 12.4+). E.g. polimi-gpu.
+- `:legacy` — built from [`runtime/Dockerfile.legacy`](runtime/Dockerfile.legacy) with PyTorch 1.5.1 + CUDA 10.1. Used on nodes whose driver caps at CUDA 10.1 (`418.x`). E.g. matemagician.
 
 ```bash
 rsync -av runtime/ polimi:~/ijm-runtime/
-ssh polimi "docker build -t wangrat/ijm-lstm-small:latest --build-arg SCRIPT=lstm_small.py ~/ijm-runtime/"
+ssh polimi 'cd ~/ijm-runtime &&
+  for s in lstm_small.py lstm_big.py convnet.py efficientnet.py; do
+    tag=${s%.py}; tag=${tag//_/-}
+    docker build --build-arg SCRIPT=$s -t wangrat/ijm-$tag:latest .
+    docker build -f Dockerfile.legacy --build-arg SCRIPT=$s -t wangrat/ijm-$tag:legacy .
+  done'
 ```
 
 If the node can't reach Docker Hub (Polimi firewall), build the image locally and transfer:
 
 ```bash
-docker save ijm-lstm-small:dev | gzip | ssh polimi "gunzip | docker load"
-ssh polimi "docker tag ijm-lstm-small:dev wangrat/ijm-lstm-small:latest"
+docker save wangrat/ijm-lstm-small:latest | gzip | ssh polimi "gunzip | docker load"
 ```
 
-### Rootless Docker
+To distribute the modern image from matemagician to polimi-gpu (which can't reach Docker Hub through its rootless network namespace), pipe over SSH:
+
+```bash
+ssh polimi 'docker save wangrat/ijm-lstm-small:latest | gzip' \
+  | ssh polimi-gpu 'gunzip | docker load'
+```
+
+#### Pre-staged MNIST/CIFAR-10 cache
+
+The legacy torchvision (0.6.1) bundled with `:legacy` looks up MNIST via its old `processed/{training,test}.pt` layout, so the shared `data/datasets/MNIST/` directory must contain *both* `raw/` and `processed/`. Preprocess once:
+
+```bash
+# On the primary node, materialise processed/ alongside raw/
+ssh polimi 'cp -r ~/ijm/data/datasets/MNIST /tmp/mnist-rw &&
+  docker run --rm -v /tmp/mnist-rw:/data wangrat/ijm-lstm-small:legacy \
+    python -c "from torchvision import datasets;
+               datasets.MNIST(\"/data\", train=True, download=True);
+               datasets.MNIST(\"/data\", train=False, download=True)" &&
+  cp -r /tmp/mnist-rw/MNIST/processed ~/ijm/data/datasets/MNIST/'
+```
+
+### GPU passthrough setup
+
+The worker passes one of `--gpus N`, `--device nvidia.com/gpu=<i>`, or no GPU flag based on `WORKER_GPU_MODE` (set per-deploy in `deploy.sh` / `deploy_native.sh`):
+
+| Mode | Flag emitted | When |
+|---|---|---|
+| `runtime` (default) | `--gpus N` | Rootful Docker with `nvidia` registered as the **default** runtime in `/etc/docker/daemon.json`. matemagician is configured this way. |
+| `cdi` | `--device nvidia.com/gpu=0 … nvidia.com/gpu=N-1` | Rootless Docker, where the nvidia OCI hook can't write to `/sys/fs/cgroup/devices/devices.allow`. polimi-gpu is configured this way. |
+| `none` | _(no flag)_ | Force CPU only. |
+
+`IMAGE_TAG_OVERRIDE=legacy` rewrites the job's `wangrat/ijm-*:latest` image to `:legacy`. Set on matemagician.
+
+#### Rootless Docker + CDI (polimi-gpu)
+
+```bash
+# 1. Generate a user-local CDI spec for the GPUs.  Run as the worker user.
+ssh polimi-gpu 'nvidia-ctk cdi generate --output=$HOME/.config/cdi/nvidia.yaml'
+
+# 2. Tell rootless dockerd where to find it and enable CDI.
+ssh polimi-gpu 'mkdir -p ~/.config/docker && cat > ~/.config/docker/daemon.json <<EOF
+{
+    "features": {"cdi": true},
+    "cdi-spec-dirs": ["/home/wangrat/.config/cdi"],
+    "runtimes": {
+        "nvidia": {"path": "nvidia-container-runtime", "args": []}
+    }
+}
+EOF
+systemctl --user restart docker'
+
+# 3. Smoke-test
+ssh polimi-gpu 'docker run --rm --device nvidia.com/gpu=0 nvidia/cuda:12.4.0-base-ubuntu22.04 nvidia-smi'
+```
 
 If your user isn't in the `docker` group on a node, install rootless Docker (no sudo needed beyond `loginctl enable-linger` for processes to survive logout):
 
@@ -138,6 +198,16 @@ echo 'export DOCKER_HOST=unix:///run/user/$(id -u)/docker.sock' >> ~/.bashrc
 ```
 
 Then deploy as usual — the worker compose detects `DOCKER_SOCK` env var to mount the rootless socket.
+
+### Per-node deploy summary
+
+```bash
+# matemagician (rootful docker, nvidia default runtime, CUDA-10.1 driver)
+NODE_ID=matemagician WORKER_GPU_MODE=runtime IMAGE_TAG_OVERRIDE=legacy ./infra/deploy.sh polimi
+
+# polimi-gpu (rootless docker, CDI mode, CUDA-12.5 driver)
+NODE_ID=polimi-gpu WORKER_GPU_MODE=cdi ./infra/deploy_native.sh polimi-gpu
+```
 
 ---
 

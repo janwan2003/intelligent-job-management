@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 """efficientNet: MBConv-based image classification on CIFAR-10."""
 
+from __future__ import annotations
+
 import logging
 import os
 

@@ -30,6 +30,20 @@ services:
       HOST_PROJECT_ROOT: /home/wangrat/ijm
       NODE_ID: ${NODE_ID}
       DOCKER_HOST: unix:///docker.sock
+      # ``WORKER_GPU_MODE`` selects how the worker exposes GPUs to training
+      # containers (``runtime`` for nvidia-default-runtime, ``cdi`` for
+      # rootless CDI mode, ``none`` for CPU-only).  ``IMAGE_TAG_OVERRIDE``
+      # rewrites the job's ``:latest`` image tag — matemagician needs
+      # ``legacy`` because its NVIDIA driver (418.x) is too old for the
+      # default CUDA-12.4 PyTorch build.
+      WORKER_GPU_MODE: ${WORKER_GPU_MODE}
+      IMAGE_TAG_OVERRIDE: ${IMAGE_TAG_OVERRIDE}
+      # ``NODE_TOTAL_GPUS`` is read by the worker's GPU allocator.  We must
+      # set it explicitly here because the worker runs in a non-GPU
+      # container under compose — ``nvidia-smi -L`` inside the container
+      # returns 0 and the allocator falls back to the lowest-index
+      # collision pattern that this fix exists to prevent.
+      NODE_TOTAL_GPUS: ${NODE_TOTAL_GPUS}
     volumes:
       - ${DOCKER_SOCK}:/docker.sock
       - .:/host

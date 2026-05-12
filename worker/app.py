@@ -184,29 +184,43 @@ async def _stop_job_impl(job_id: str, reason: str) -> dict[str, str]:
         # A genuinely-failed job (image error, OOM) won't see /stop running
         # because nothing else preempts a finished job, so this branch is
         # only reached when our /stop did the killing.
-        permanently_terminal = {JobStatus.SUCCEEDED, JobStatus.PREEMPTED}
-        if prev_status in permanently_terminal:
+        # SUCCEEDED is genuinely terminal — never touch it.  PREEMPTED is
+        # *almost* terminal but the user-/stop path now atomically flips the
+        # status to PREEMPTED in the API *before* we run, so for reason=user
+        # we treat PREEMPTED as "we got pre-flipped, container still needs
+        # killing and the slot still needs freeing".
+        if prev_status == JobStatus.SUCCEEDED:
             logger.info(
-                "/stop for %s ignored — row already %s",
+                "/stop for %s ignored — row already SUCCEEDED",
                 job_id[:JOB_ID_DISPLAY_LENGTH],
-                prev_status,
+            )
+            await c.commit()
+            return
+        pre_flipped_user_stop = prev_status == JobStatus.PREEMPTED and reason == "user"
+        if prev_status == JobStatus.PREEMPTED and reason != "user":
+            logger.info(
+                "/stop for %s (reason=%s) ignored — row already PREEMPTED by user-stop",
+                job_id[:JOB_ID_DISPLAY_LENGTH],
+                reason,
             )
             await c.commit()
             return
 
-        if clear_assignment:
+        if pre_flipped_user_stop:
+            # API already wrote status=PREEMPTED.  Skip our redundant update.
+            pass
+        elif clear_assignment:
             await update_job(
                 c, job_id, status=new_status, assigned_node=None, assigned_gpu_config=None, container_name=None
             )
         else:
             await update_job(c, job_id, status=new_status)
 
-        # Only NOTIFY if the slot was still claimed by this run (status was
-        # RUNNING/PROFILING when we read it).  For QUEUED rows the dispatch
-        # task — if any — will release its own permit when its enqueue()
-        # detects the cleared assigned_node and raises RuntimeError.  Emitting
-        # NOTIFY here for QUEUED would race the dispatch's own release.
-        notify_owns_slot = prev_status in (JobStatus.RUNNING, JobStatus.PROFILING)
+        # NOTIFY ijm_slot_freed when the slot was actually claimed by this
+        # run.  Includes the pre-flipped-by-API case: from the slot's
+        # perspective the container was alive and the row pointed at this
+        # node, so the API-side semaphore still needs explicit release.
+        notify_owns_slot = prev_status in (JobStatus.RUNNING, JobStatus.PROFILING) or pre_flipped_user_stop
         if prev_node and n_gpus > 0 and notify_owns_slot:
             # Use pg_notify() for safe payload parameterisation — node_id
             # is config-controlled but treating it as untrusted is cheap.
@@ -303,7 +317,12 @@ async def _stop_job_impl(job_id: str, reason: str) -> dict[str, str]:
             await _persist_stop(c)
             return {"status": "stopped", "reason": reason}
 
-        if job["status"] not in (JobStatus.RUNNING, JobStatus.PROFILING):
+        # PREEMPTED is allowed for reason=user: API atomically pre-flipped
+        # status to PREEMPTED, and we still need to kill the container +
+        # free the slot.  Auto-preempts must not touch a PREEMPTED row.
+        if job["status"] == JobStatus.PREEMPTED and reason != "user":
+            return {"status": "no_action"}
+        if job["status"] not in (JobStatus.RUNNING, JobStatus.PROFILING, JobStatus.PREEMPTED):
             return {"status": "no_action"}
 
         name = job["container_name"] or container_name_for(job_id)

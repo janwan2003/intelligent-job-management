@@ -61,6 +61,13 @@ export default function JobQueue() {
       enableSorting: false,
     },
     {
+      accessorKey: "job_id",
+      header: "Type",
+      cell: ({ getValue }) => (
+        <span className="font-mono text-xs">{(getValue() as string) ?? "—"}</span>
+      ),
+    },
+    {
       accessorKey: "image",
       header: "Image",
       cell: ({ getValue }) => (
@@ -129,8 +136,16 @@ export default function JobQueue() {
         {
           accessorKey: "assigned_node",
           header: "Node",
-          cell: ({ getValue }) => {
-            const v = getValue() as string | null | undefined;
+          cell: ({ row }) => {
+            const job = row.original;
+            // Only show node placement while it's actually claimed: RUNNING
+            // or PROFILING.  Terminal states (SUCCEEDED / FAILED / PREEMPTED)
+            // and QUEUED with a pending assignment keep the row mostly empty
+            // — the assignment is an internal scheduler detail until the
+            // container is actually live, and showing it for terminal rows
+            // misleads readers into thinking the slot is still occupied.
+            const showAssignment = job.status === "RUNNING" || job.status === "PROFILING";
+            const v = showAssignment ? job.assigned_node : null;
             return <span className="font-mono text-xs text-muted-foreground">{v ?? "—"}</span>;
           },
         },
@@ -144,7 +159,11 @@ export default function JobQueue() {
           header: "GPU Config",
           cell: ({ row }) => {
             const job = row.original;
-            if (!job.assigned_gpu_config) return <span className="font-mono text-xs text-muted-foreground">—</span>;
+            // Mirror the Node column: only show while RUNNING / PROFILING.
+            const showAssignment = job.status === "RUNNING" || job.status === "PROFILING";
+            if (!showAssignment || !job.assigned_gpu_config) {
+              return <span className="font-mono text-xs text-muted-foreground">—</span>;
+            }
             return (
               <span className="font-mono text-xs">
                 {formatGpuConfig(job.assigned_gpu_config)}

@@ -22,7 +22,7 @@ from shared.constants import (
 
 from constants import CHECKPOINT_DIR, JOB_ID_DISPLAY_LENGTH, NODE_ID, RUNNABLE_STATUSES, container_name_for
 from db import conn, fetch_job, update_job
-from docker import build_run_cmd, remove_container_if_exists
+from docker import build_run_cmd, remove_container_if_exists, total_gpus
 from profiling import handle_complete
 
 logger = logging.getLogger(__name__)
@@ -39,6 +39,15 @@ HOST_PROJECT_ROOT: str = os.path.normpath(os.getenv("HOST_PROJECT_ROOT", HOST_RO
 # Popen to materialize (or the placeholder to clear) before deciding what to
 # do; otherwise it would persist QUEUED while the container is about to be
 # launched, leaving the row lying about a live container.
+# Tracks which physical GPU indices each in-flight job has claimed on this
+# node.  Without this, ``--gpus N`` and ``--device nvidia.com/gpu=0`` both
+# default to GPU index 0 for every concurrent dispatch — two 1-GPU jobs on
+# the same node land on the same physical GPU while the other sits idle.
+# We pick concrete indices under a lock so each job ends up on a distinct
+# GPU; release on container exit.
+_claimed_gpus: dict[str, set[int]] = {}
+_gpu_claim_lock = asyncio.Lock()
+
 running_jobs: dict[str, subprocess.Popen[str] | None] = {}
 # Set when Phase 2 has either populated the Popen or bailed out (claim lost,
 # launch failure).  /stop awaits this Event instead of polling running_jobs,
@@ -97,6 +106,42 @@ def _prepare_checkpoint_dir(ckpt_local: Path, *, is_profiling: bool) -> None:
         ckpt_local.mkdir(parents=True, exist_ok=True)
         with contextlib.suppress(OSError):
             os.chmod(ckpt_local, 0o777)
+
+
+async def _claim_gpu_indices(job_id: str, n: int) -> list[int]:
+    """Reserve ``n`` distinct physical GPU indices for this job.  Held until
+    ``_release_gpu_indices(job_id)``.  If ``n`` exceeds free capacity (slot
+    accounting bug), fall back to the lowest ``n`` indices and warn — never
+    block the launch, but the operator-visible warning makes the bug obvious.
+    """
+    if n <= 0:
+        return []
+    async with _gpu_claim_lock:
+        total = total_gpus()
+        all_claimed: set[int] = set().union(*_claimed_gpus.values()) if _claimed_gpus else set()
+        free = [i for i in range(total) if i not in all_claimed]
+        if len(free) < n:
+            logger.warning(
+                "GPU allocator: requested %d but only %d free (claimed=%s, total=%d) — "
+                "falling back to lowest indices (slot-accounting bug upstream?)",
+                n,
+                len(free),
+                sorted(all_claimed),
+                total,
+            )
+            picked = list(range(n))
+        else:
+            picked = free[:n]
+        _claimed_gpus[job_id] = set(picked)
+        logger.info("GPU allocator: job %s claims indices %s", job_id[:JOB_ID_DISPLAY_LENGTH], picked)
+        return picked
+
+
+def _release_gpu_indices(job_id: str) -> None:
+    """Release the GPU indices held by ``job_id`` (no-op if never claimed)."""
+    indices = _claimed_gpus.pop(job_id, None)
+    if indices is not None:
+        logger.info("GPU allocator: job %s releases indices %s", job_id[:JOB_ID_DISPLAY_LENGTH], sorted(indices))
 
 
 def _build_env_vars(job: dict[str, Any]) -> dict[str, str]:
@@ -273,14 +318,25 @@ async def _run_job(job_id: str) -> None:
         if shared_data_local.exists():
             extra_volumes[str(shared_data_host)] = "/runs/data"
 
+        n_gpus = sum(int(v) for v in (job.get("assigned_gpu_config") or {}).values())
+        gpu_indices = await _claim_gpu_indices(job_id, n_gpus)
+        # Per-node image tag override.  matemagician's NVIDIA driver
+        # (418.x, CUDA 10.1) is too old for the default CUDA-12.4 PyTorch
+        # build, so the worker there sets ``IMAGE_TAG_OVERRIDE=legacy`` to
+        # rewrite ``:latest`` → ``:legacy`` (torch 1.5.1 + CUDA 10.1).
+        image = job["image"]
+        tag_override = os.getenv("IMAGE_TAG_OVERRIDE")
+        if tag_override and ":" in image:
+            image = f"{image.rsplit(':', 1)[0]}:{tag_override}"
         docker_cmd = build_run_cmd(
             name,
             str(ckpt_host_mount),
             str(runs_host),
-            job["image"],
+            image,
             job["command"],
             env_vars=_build_env_vars(job),
             extra_volumes=extra_volumes,
+            gpu_indices=gpu_indices,
         )
         logger.info("Starting job %s: %s", job_id[:JOB_ID_DISPLAY_LENGTH], " ".join(docker_cmd))
 
@@ -437,6 +493,7 @@ async def _run_job(job_id: str) -> None:
             logger.exception("Failed to update job %s status to FAILED", job_id)
     finally:
         running_jobs.pop(job_id, None)
+        _release_gpu_indices(job_id)
         # Always set so any /stop awaiting the dispatch placeholder unblocks
         # — even on early-bail paths (claim lost, launch error) where Phase 2
         # never reached the Popen line.

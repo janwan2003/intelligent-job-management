@@ -1,3 +1,6 @@
+# ``from __future__ import annotations`` keeps PEP 604 (``str | None``) and
+# PEP 585 (``tuple[X, Y]``) annotations stringified at runtime, so this file
+# stays importable on Python 3.7 (the legacy CUDA-10.1 image for matemagician).
 """Shared training infrastructure for all IJM training scripts.
 
 Provides the Trainer base class that handles:
@@ -9,12 +12,16 @@ Provides the Trainer base class that handles:
 Subclasses only need to define the model, dataset, and batch preprocessing.
 """
 
+from __future__ import annotations
+
 import contextlib
 import io
 import logging
 import os
+import sys
 import tempfile
 import time
+import warnings
 from abc import ABC, abstractmethod
 from pathlib import Path
 from typing import Any
@@ -24,17 +31,63 @@ import torch.nn as nn
 from torch.utils.data import DataLoader, Dataset
 from torchvision import datasets, transforms
 
+# cuDNN re-warns every forward under DataParallel because each replica's RNN
+# weights are non-leaf tensors and ``flatten_parameters()`` on the replica is
+# a no-op.  The call in LSTM.forward already handles the single-GPU case, so
+# this just silences the unfixable DP variant rather than masking real bugs.
+warnings.filterwarnings(
+    "ignore",
+    message="RNN module weights are not part of single contiguous chunk of memory.*",
+)
+
+# Legacy PyTorch 1.5.1 (matemagician's CUDA-10.1 image) emits this warning via
+# C++ ``std::cerr`` directly — the Python warnings bridge was added in 1.6, so
+# the filter above only covers newer images.  Wrap stderr with a line-level
+# filter so the noise is dropped at the source.
+_CUDNN_RNN_NOISE = (
+    "RNN module weights are not part of single contiguous chunk of memory"
+)
+
+
+class _FilteredStderr:
+    def __init__(self, inner: Any) -> None:
+        self._inner = inner
+        self._buf = ""
+
+    def write(self, data: str) -> int:
+        self._buf += data
+        out = []
+        while "\n" in self._buf:
+            line, self._buf = self._buf.split("\n", 1)
+            if _CUDNN_RNN_NOISE not in line:
+                out.append(line + "\n")
+        if out:
+            self._inner.write("".join(out))
+        return len(data)
+
+    def flush(self) -> None:
+        if self._buf and _CUDNN_RNN_NOISE not in self._buf:
+            self._inner.write(self._buf)
+        self._buf = ""
+        self._inner.flush()
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._inner, name)
+
+
+if not isinstance(sys.stderr, _FilteredStderr):
+    sys.stderr = _FilteredStderr(sys.stderr)
+
 logger = logging.getLogger(__name__)
 
 
 def download_dataset(dataset_cls: type, root: str, **kwargs: Any) -> Dataset[Any]:
     """Download a torchvision dataset with suppressed progress bars."""
-    with (
-        open(os.devnull, "w") as devnull,
-        contextlib.redirect_stdout(devnull),
-        contextlib.redirect_stderr(devnull),
-    ):
-        return dataset_cls(root=root, download=True, **kwargs)
+    # Nested ``with`` rather than the parenthesized form so this stays
+    # syntactically valid on Python 3.7 (the legacy CUDA-10.1 image).
+    with open(os.devnull, "w") as devnull:
+        with contextlib.redirect_stdout(devnull), contextlib.redirect_stderr(devnull):
+            return dataset_cls(root=root, download=True, **kwargs)
 
 
 class BaseTrainer(ABC):
@@ -58,6 +111,12 @@ class BaseTrainer(ABC):
         logger.info("Using device: %s", self.device)
 
         self.model = self._create_model().to(self.device)
+        if self.device.type == "cuda" and torch.cuda.device_count() > 1:
+            logger.info(
+                "Wrapping model in DataParallel across %d GPUs",
+                torch.cuda.device_count(),
+            )
+            self.model = nn.DataParallel(self.model)
         self.optimizer = torch.optim.Adam(self.model.parameters(), lr=0.001)
         self.criterion = nn.CrossEntropyLoss()
 
@@ -105,8 +164,21 @@ class BaseTrainer(ABC):
             # EPERM ("Operation not permitted").  Reading via plain read()
             # avoids those calls entirely and is cheap for our checkpoint sizes.
             buf = io.BytesIO(self.checkpoint_path.read_bytes())
-            checkpoint = torch.load(buf, weights_only=True, map_location=self.device)
-            self.model.load_state_dict(checkpoint["model_state_dict"])
+            # ``weights_only`` only exists on torch >= 1.13.  The legacy
+            # CUDA-10.1 image (matemagician) ships torch 1.5.1 and would
+            # reject the kwarg with TypeError; fall back to the older call.
+            try:
+                checkpoint = torch.load(
+                    buf, weights_only=True, map_location=self.device
+                )
+            except TypeError:
+                checkpoint = torch.load(buf, map_location=self.device)
+            inner = (
+                self.model.module
+                if isinstance(self.model, nn.DataParallel)
+                else self.model
+            )
+            inner.load_state_dict(checkpoint["model_state_dict"])
             self.optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
             self.current_epoch = checkpoint["epoch"]
             self.best_accuracy = checkpoint.get("best_accuracy", 0.0)
@@ -126,16 +198,27 @@ class BaseTrainer(ABC):
     def save_checkpoint(self) -> None:
         """Save current training state atomically."""
         self.checkpoint_dir.mkdir(parents=True, exist_ok=True)
+        inner = (
+            self.model.module if isinstance(self.model, nn.DataParallel) else self.model
+        )
         checkpoint = {
             "epoch": self.current_epoch,
-            "model_state_dict": self.model.state_dict(),
+            "model_state_dict": inner.state_dict(),
             "optimizer_state_dict": self.optimizer.state_dict(),
             "best_accuracy": self.best_accuracy,
         }
         fd, tmp_path = tempfile.mkstemp(dir=self.checkpoint_dir, suffix=".pt.tmp")
         os.close(fd)  # mkstemp opens the file; we let torch.save reopen by path
         try:
-            torch.save(checkpoint, tmp_path)
+            # Always save in the legacy (pre-1.6) tar+pickle format so the
+            # checkpoint stays cross-readable when a job migrates between
+            # nodes running different torch builds — matemagician's legacy
+            # image uses torch 1.5.1 (no zip-file support).  On torch <1.6
+            # this kwarg doesn't exist, so fall back to the default save.
+            try:
+                torch.save(checkpoint, tmp_path, _use_new_zipfile_serialization=False)
+            except TypeError:
+                torch.save(checkpoint, tmp_path)
             Path(tmp_path).replace(self.checkpoint_path)
             logger.info("Checkpoint saved at epoch %d", self.current_epoch)
         except Exception:

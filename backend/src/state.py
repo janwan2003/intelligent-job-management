@@ -30,6 +30,18 @@ dispatch_tasks: dict[str, asyncio.Task[None]] = {}
 # Serialises all scheduling decisions so two coroutines cannot assign the same node
 schedule_lock: asyncio.Lock = asyncio.Lock()
 
+# Jobs that ``_preempt_and_release`` has been spawned for but whose terminal
+# DB commit hasn't landed yet.  ``ProfilingScheduler.get_node_gpu_usage``
+# subtracts their (node, gpu_config) from the live usage map so scheduler
+# decisions reflect the post-eviction state immediately.  Without this,
+# profile-preempts that need to free 2+ GPUs race the staggered commits:
+# the first eviction commits, the scheduler re-runs, sees only N-1 slots
+# free, falls back to a 1-GPU standard placement on the same victim, and
+# the second eviction's commit lands into a re-occupied slot.
+# ``_preempt_and_release`` populates it before spawning the stop and
+# clears it after the stop commit lands.
+pending_evictions: dict[str, tuple[str, dict[str, int]]] = {}
+
 
 @asynccontextmanager
 async def get_conn() -> AsyncGenerator[psycopg.AsyncConnection[Any]]:

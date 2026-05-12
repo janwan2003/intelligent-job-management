@@ -240,14 +240,19 @@ async def optimize(
         remaining_epochs = max(1, total_epochs - current_epoch)
         job_meta[instance_id] = (job_type_id, remaining_epochs)
 
-        # Build ProfilingData with remaining execution times.
+        # Build ProfilingData with PER-EPOCH execution times.
         # ``duration`` is the mean per-epoch time (warmup excluded), recorded
-        # by the worker after a profiling run.
+        # by the worker after a profiling run.  We send it as-is; the GPUspb
+        # wrapper multiplies by ``Epochs``:
+        #   run_webService.py:213-215  sel_time = ProfilingData[gpu][n]
+        #                              sel_time *= int(job_data["Epochs"])
+        # Pre-multiplying here would double-count epochs and inflate the
+        # optimizer's execution_time / tardiness by remaining_epochs× (~20×
+        # for a freshly-submitted 20-epoch job), wrecking placement decisions.
         profiling_data: dict[str, dict[str, float]] = {}
         for gpu_config, duration in profiling_rows:
             for gpu_type, num_gpus in gpu_config.items():
-                remaining_time = duration * remaining_epochs
-                profiling_data.setdefault(gpu_type, {})[str(num_gpus)] = remaining_time
+                profiling_data.setdefault(gpu_type, {})[str(num_gpus)] = duration
 
         dl = deadline or created_at.replace(tzinfo=UTC) + timedelta(days=365)
         jobs_payload[instance_id] = {

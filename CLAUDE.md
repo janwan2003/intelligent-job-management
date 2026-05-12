@@ -48,7 +48,7 @@ pnpm lint                      # ESLint
    - Path alias: `@/` maps to `src/`
    - Key directories: `src/api/` (client + React Query hooks), `src/components/ui/` (shadcn primitives), `src/components/` (custom), `src/pages/`, `src/config/features.ts` (feature flags)
 
-3. **Runtime** (`runtime/`) — Training containers matching ANDREAS job types. Shared base class in `base.py`, individual scripts: `lstm_small.py`, `lstm_big.py`, `convnet.py`, `efficientnet.py`. Single Dockerfile with `SCRIPT` build arg. Each saves checkpoints after every epoch, loads on startup if exists. No SIGTERM handling — system kills containers between epochs (at most 1 epoch lost). Real datasets: MNIST (LSTM) and CIFAR-10 (CNN/EfficientNet).
+3. **Runtime** (`runtime/`) — Training containers matching ANDREAS job types. Shared base class in `base.py`, individual scripts: `lstm_small.py`, `lstm_big.py`, `convnet.py`, `efficientnet.py`. **Two Dockerfiles**: `Dockerfile` (PyTorch 2.6 + CUDA 12.4, default `:latest` tag) and `Dockerfile.legacy` (PyTorch 1.5.1 + CUDA 10.1, `:legacy` tag — used on matemagician whose driver maxes out at CUDA 10.1). Checkpoints are saved in the **legacy (pre-1.6) torch serialization format** so a job can resume across nodes regardless of torch version. `base.py` uses `from __future__ import annotations` to stay importable on Python 3.7 (the legacy image). Each script saves checkpoints after every epoch, loads on startup if exists. No SIGTERM handling — system kills containers between epochs (at most 1 epoch lost). Real datasets: MNIST (LSTM) and CIFAR-10 (CNN/EfficientNet). MNIST's `processed/` directory must be pre-staged alongside `raw/` for the legacy torchvision (0.6.1) lookup path; see README.
 
 ### Executor Abstraction
 Container execution is decoupled via `src/executors/`:
@@ -87,6 +87,8 @@ QUEUED → PROFILING → QUEUED (re-queued as standard run) → RUNNING → SUCC
 | `EXECUTOR` | API | `docker` (or `mock-slurm`) |
 | `OPTIMIZER_URL` | API | unset (greedy scheduler); set to `http://optimizer:8080` for batch optimizer |
 | `OPTIMIZER_SWITCH_PENALTY_S` | API | `60` — wall-time charged at the destination GPU's hourly rate when destination profiling data is missing. Drops optimizer-proposed migrations whose claimed energy savings don't pay for kill+drain+lost-epoch overhead (tardy jobs are exempt). |
+| `WORKER_GPU_MODE` | worker | `runtime` (other values: `cdi` for rootless docker on polimi-gpu, `none` for CPU only). Selects how `docker run` is told to expose GPUs to the training container. |
+| `IMAGE_TAG_OVERRIDE` | worker | unset. If set, rewrites the job's image tag (`:latest` → `:$IMAGE_TAG_OVERRIDE`). Used on matemagician (`legacy`) where the node's NVIDIA driver (418.x, CUDA 10.1 max) cannot run the default CUDA-12.4 PyTorch image. |
 
 ## Ports
 

@@ -24,6 +24,13 @@ class LSTMSmall(nn.Module):
         self.fc = nn.Linear(hidden_size, num_classes)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
+        # Re-pack weights into a contiguous buffer.  DataParallel replicates
+        # the module per device on every forward, which leaves cudnn's LSTM
+        # weight buffers fragmented and triggers a per-step re-pack + a noisy
+        # UserWarning.  Calling this inside forward keeps the call cheap on a
+        # single GPU (no-op when already flat) and silences/avoids the tax
+        # under DP.
+        self.lstm.flatten_parameters()
         out, _ = self.lstm(x)
         return self.fc(out[:, -1, :])
 

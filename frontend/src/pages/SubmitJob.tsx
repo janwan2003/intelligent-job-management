@@ -68,7 +68,7 @@ export default function SubmitJob() {
         ...(directoryToMount.trim() && { directoryToMount: directoryToMount.trim() }),
         // Deadline entered as a relative offset (hours + minutes from now)
         // and converted to an absolute UTC instant for the backend.
-        ...((deadlineHours ?? 0) + (deadlineMinutes ?? 0) > 0 && {
+        ...(((deadlineHours ?? 0) !== 0 || (deadlineMinutes ?? 0) !== 0) && {
           deadline: new Date(
             Date.now() + ((deadlineHours ?? 0) * 60 + (deadlineMinutes ?? 0)) * 60_000,
           ).toISOString(),
@@ -259,11 +259,10 @@ export default function SubmitJob() {
                       <Input
                         id="deadlineHours"
                         type="number"
-                        min={0}
                         placeholder="0"
                         value={deadlineHours ?? ""}
                         onChange={(e) =>
-                          setDeadlineHours(e.target.value === "" ? undefined : Math.max(0, Number(e.target.value)))
+                          setDeadlineHours(e.target.value === "" ? undefined : Number(e.target.value))
                         }
                         className="font-mono text-sm pr-8"
                       />
@@ -275,15 +274,18 @@ export default function SubmitJob() {
                       <Input
                         id="deadlineMinutes"
                         type="number"
-                        min={0}
+                        min={-59}
                         max={59}
                         placeholder="0"
                         value={deadlineMinutes ?? ""}
-                        onChange={(e) =>
-                          setDeadlineMinutes(
-                            e.target.value === "" ? undefined : Math.min(59, Math.max(0, Number(e.target.value))),
-                          )
-                        }
+                        onChange={(e) => {
+                          if (e.target.value === "") {
+                            setDeadlineMinutes(undefined);
+                            return;
+                          }
+                          const n = Number(e.target.value);
+                          setDeadlineMinutes(Math.max(-59, Math.min(59, n)));
+                        }}
                         className="font-mono text-sm pr-10"
                       />
                       <span className="absolute right-2 top-1/2 -translate-y-1/2 text-xs text-muted-foreground pointer-events-none">

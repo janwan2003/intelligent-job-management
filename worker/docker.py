@@ -66,6 +66,84 @@ def _host_data_owner() -> tuple[int, int] | None:
         return None
 
 
+_total_gpus_cache: int | None = None
+
+
+def total_gpus() -> int:
+    """Number of physical GPUs on this node, cached after the first call.
+
+    Resolution order:
+      1. ``NODE_TOTAL_GPUS`` env var — required for nodes where the worker
+         itself runs in a non-GPU container (e.g. matemagician's compose
+         deploy; the worker holds the docker socket but has no
+         ``--gpus`` of its own, so ``nvidia-smi -L`` fails inside it).
+      2. ``nvidia-smi -L`` — works for native deploys (polimi-gpu).
+      3. Fall back to 0 (handled by ``_gpu_flags`` as "emit no GPU flag").
+    """
+    global _total_gpus_cache
+    if _total_gpus_cache is not None:
+        return _total_gpus_cache
+    env_val = os.getenv("NODE_TOTAL_GPUS")
+    if env_val:
+        try:
+            _total_gpus_cache = max(0, int(env_val))
+            return _total_gpus_cache
+        except ValueError:
+            logger.warning("NODE_TOTAL_GPUS=%r is not an int; falling back to nvidia-smi", env_val)
+    try:
+        out = subprocess.check_output(["nvidia-smi", "-L"], text=True, timeout=10)
+        _total_gpus_cache = sum(1 for line in out.splitlines() if line.strip().startswith("GPU "))
+    except (OSError, subprocess.SubprocessError):
+        _total_gpus_cache = 0
+    return _total_gpus_cache
+
+
+def _gpu_flags(indices: list[int]) -> list[str]:
+    """Return the right ``docker run`` flags to expose the *specific*
+    physical GPUs in ``indices`` to the container.  Selected by
+    ``WORKER_GPU_MODE``:
+
+    - ``runtime`` (default): ``--gpus all -e NVIDIA_VISIBLE_DEVICES=<csv>``.
+      The env-var form pins specific physical devices; the bare
+      ``--gpus device=0,1`` form trips a docker CLI parser quirk that
+      sets both ``Count`` and ``DeviceIDs`` on the device request, and
+      the daemon errors with *"cannot set both Count and DeviceIDs on
+      device request"*.  Using ``--gpus all`` to gate the nvidia hook
+      and letting ``NVIDIA_VISIBLE_DEVICES`` narrow the device set is
+      the universally-compatible form.
+    - ``cdi``: ``--device nvidia.com/gpu=0 ...`` per index.  Required on
+      rootless docker; needs a CDI spec at ``~/.config/cdi/nvidia.yaml``
+      and ``features.cdi=true`` in the docker daemon config.
+    - ``none``: no flags — CPU only.  Used on nodes whose drivers are too
+      old for the runtime image's PyTorch build (e.g. matemagician's
+      driver 418.x, max CUDA 10.1, when the legacy image is unavailable).
+
+    Passing concrete indices (rather than a count) is what prevents two
+    concurrent 1-GPU jobs on the same node from both landing on physical
+    GPU 0 — a silent-but-severe correctness bug under both runtime and
+    CDI modes.
+    """
+    if not indices:
+        return []
+    mode = os.getenv("WORKER_GPU_MODE", "runtime").lower()
+    if mode == "none":
+        return []
+    if mode == "cdi":
+        flags: list[str] = []
+        for idx in indices:
+            flags += ["--device", f"nvidia.com/gpu={idx}"]
+        return flags
+    csv = ",".join(str(i) for i in indices)
+    # We deliberately do NOT pass ``--gpus all`` alongside the env var:
+    # ``--gpus all`` makes the nvidia runtime override ``NVIDIA_VISIBLE_DEVICES``
+    # and expose every GPU on the host, defeating the pinning that this
+    # function exists to enforce.  On hosts where ``nvidia`` is the default
+    # docker runtime (matemagician's config), the env var alone triggers
+    # the hook and pins exactly the listed indices.  On hosts where it's
+    # not, use ``WORKER_GPU_MODE=cdi`` instead.
+    return ["-e", f"NVIDIA_VISIBLE_DEVICES={csv}"]
+
+
 def build_run_cmd(
     container_name: str,
     ckpt_host_path: str,
@@ -74,6 +152,7 @@ def build_run_cmd(
     command: list[str],
     env_vars: dict[str, str] | None = None,
     extra_volumes: dict[str, str] | None = None,
+    gpu_indices: list[int] | None = None,
 ) -> list[str]:
     """Construct a ``docker run`` command with volume mounts and env vars."""
     cmd = [
@@ -83,6 +162,7 @@ def build_run_cmd(
         "--name",
         container_name,
     ]
+    cmd += _gpu_flags(gpu_indices or [])
     # Under rootless docker, container UID 0 already maps to the host user
     # that runs the daemon — pinning to a host UID instead lands writes
     # in the /etc/subuid remapped range (e.g. 1028 → 101027) which can't
@@ -115,10 +195,14 @@ def build_run_cmd(
     # MNIST + CIFAR-10 live there so trainers skip the download step —
     # critical on rootless-docker nodes (polimi-gpu) where slirp4netns
     # blocks DNS to public resolvers and the per-job download fails.
-    host_root = os.getenv("HOST_PROJECT_ROOT", os.getenv("HOST_ROOT", "/host"))
-    datasets_path = f"{host_root.rstrip('/')}/data/datasets"
-    if os.path.isdir(datasets_path):
-        cmd += ["-v", f"{datasets_path}:{RUNS_MOUNT_PATH}/data:ro"]
+    # ``HOST_ROOT`` is the in-container view (``/host`` under compose, equal
+    # to ``HOST_PROJECT_ROOT`` for the native worker on polimi-gpu).  Probe
+    # for the dataset dir there; the path passed to ``-v`` must always be
+    # the *host* path (``HOST_PROJECT_ROOT``) so the docker daemon can resolve it.
+    host_root = os.getenv("HOST_ROOT", "/host").rstrip("/")
+    host_project_root = os.getenv("HOST_PROJECT_ROOT", host_root).rstrip("/")
+    if os.path.isdir(f"{host_root}/data/datasets"):
+        cmd += ["-v", f"{host_project_root}/data/datasets:{RUNS_MOUNT_PATH}/data:ro"]
     for host_path, container_path in (extra_volumes or {}).items():
         cmd += ["-v", f"{host_path}:{container_path}"]
     for key, val in (env_vars or {}).items():

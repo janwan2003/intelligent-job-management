@@ -24,6 +24,25 @@ HOST="${1:-polimi-gpu}"
 REMOTE_DIR="${REMOTE_DIR:-/home/wangrat/ijm}"
 NODE_ID="${NODE_ID:-$HOST}"
 DB_URL="${DB_URL:-postgresql://postgres:postgres@matemagician.deib.polimi.it:5433/ijm}"
+# GPU access mode for ``docker run``:
+#   - runtime: ``--gpus N`` (nvidia is the default runtime)
+#   - cdi:     ``--device nvidia.com/gpu=0 ...`` (rootless docker)
+#   - none:    no GPU flags
+# polimi-gpu runs rootless docker, which requires CDI mode for GPU
+# passthrough (NVIDIA_VISIBLE_DEVICES is silently ignored under rootless,
+# causing trainer containers to fall back to CPU at 2-3× slower than the
+# expected GPU performance).  Default to ``cdi`` when targeting that host;
+# anywhere else default to ``runtime``.  Override via env var if you have
+# a non-standard setup.
+if [[ -z "${WORKER_GPU_MODE:-}" ]]; then
+    case "${1:-polimi-gpu}" in
+        polimi-gpu) WORKER_GPU_MODE=cdi ;;
+        *)          WORKER_GPU_MODE=runtime ;;
+    esac
+fi
+# Image tag override: ``:latest`` → ``:$IMAGE_TAG_OVERRIDE`` (per-node).
+# Used on matemagician where the legacy CUDA-10.1 image is needed.
+IMAGE_TAG_OVERRIDE="${IMAGE_TAG_OVERRIDE:-}"
 SOCKET="/tmp/ijm-native-deploy-$$"
 
 echo "==> Native deploy of worker to $HOST:$REMOTE_DIR (NODE_ID=$NODE_ID)"
@@ -61,6 +80,8 @@ $SSH "$HOST" "cd $REMOTE_DIR && \
     HOST_ROOT=$REMOTE_DIR \
     HOST_PROJECT_ROOT=$REMOTE_DIR \
     NODE_ID=$NODE_ID \
+    WORKER_GPU_MODE='$WORKER_GPU_MODE' \
+    IMAGE_TAG_OVERRIDE='$IMAGE_TAG_OVERRIDE' \
     setsid nohup .venv/bin/python -m uvicorn app:app --host 0.0.0.0 --port 8001 \
         > /tmp/ijm-worker.log 2>&1 < /dev/null & disown
     sleep 3

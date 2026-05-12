@@ -26,6 +26,9 @@ class LSTMBig(nn.Module):
         self.fc = nn.Linear(hidden_size, num_classes)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
+        # See LSTMSmall.forward — re-pack cudnn LSTM weights into a contiguous
+        # buffer to avoid the per-step re-pack DataParallel forces every call.
+        self.lstm.flatten_parameters()
         out, _ = self.lstm(x)
         return self.fc(out[:, -1, :])
 

@@ -24,7 +24,13 @@ NODE_A="${NODE_A:-polimi}"        # matemagician SSH alias
 NODE_B="${NODE_B:-polimi-gpu}"    # polimi-gpu SSH alias
 JOB_TYPE="${JOB_TYPE:-lstm-small}"
 IMAGE="${IMAGE:-wangrat/ijm-${JOB_TYPE}:latest}"
-EPOCHS="${EPOCHS:-20}"
+# Long-enough horizon that the fastest A40 epoch (~6s × EPOCHS) outlasts
+# the slow-node cold profile sweep (P600 lstm-small ≈ 30 s) — otherwise
+# the fast jobs SUCCEED before Stage 1's "all 4 RUNNING+progressed" wait
+# trips and there's no preempt victim for Stage 2.  40 epochs at ~6 s =
+# 240 s also gives the operator time to observe each stage when running
+# the scenario manually through the UI.
+EPOCHS="${EPOCHS:-40}"
 TERMINAL_TIMEOUT_S="${TERMINAL_TIMEOUT_S:-3600}"   # 60 min for everything to finish
 PRIORITY_MAX=5   # backend/src/constants.py:PRIORITY_MAX — max allowed by the API
 
@@ -83,22 +89,19 @@ wait_for() {
 
 log "Stage 0: cluster sanity"
 curl -fsS "$API/health" >/dev/null || fail "API at $API not reachable"
-# Deployment-agnostic worker check: hit each /health via its API-facing port
-# (whatever the API has configured in nodes_config).  Works for both docker
-# and native deployments.  We derive the worker URLs from /nodes — the API
-# tracks each node's ``workerUrl`` so we don't have to hard-code anything.
-worker_urls=$(curl -sS "$API/nodes" | jq -r '.[] | .id + " " + (.workerUrl // "")' || true)
-[[ -n "$worker_urls" ]] || fail "couldn't read worker URLs from /nodes"
-while read -r node_id worker_url; do
-    [[ -z "$node_id" ]] && continue
-    [[ -z "$worker_url" ]] && continue
-    # Translate the worker URL (which is what the API uses, e.g.
-    # http://localhost:8001 with the SSH tunnel) into a check we run from
-    # the e2e harness.  In tunneled deployments the API and the e2e share
-    # localhost via the same tunnel, so the URL works as-is.
+# Probe each worker /health directly.  The /nodes endpoint doesn't expose
+# worker URLs, so we read them from the config the API uses.  In tunneled
+# deployments the API and the e2e share the same localhost tunnel ports.
+WORKER_CONFIG="${WORKER_CONFIG:-$(dirname "$0")/../config/nodes_config.tunnel.json}"
+[[ -f "$WORKER_CONFIG" ]] || fail "worker config not found at $WORKER_CONFIG"
+mapfile -t worker_pairs < <(jq -r '.[] | "\(.id) \(.workerUrl)"' "$WORKER_CONFIG")
+[[ ${#worker_pairs[@]} -gt 0 ]] || fail "no workers in $WORKER_CONFIG"
+for pair in "${worker_pairs[@]}"; do
+    node_id="${pair%% *}"
+    worker_url="${pair#* }"
     curl -fsS --max-time 5 "$worker_url/health" | jq -e '.status == "ok"' >/dev/null \
         || fail "worker for node $node_id at $worker_url not healthy"
-done <<<"$worker_urls"
+done
 pass "API healthy, all workers reachable"
 
 log "Stage 0: clearing state"
@@ -107,23 +110,11 @@ ssh "$NODE_A" 'rm -rf ~/ijm/data/checkpoints/* ~/ijm/data/runs/*' 2>/dev/null ||
 [[ "$(count_status RUNNING)" == "0" ]] || warn "some jobs still RUNNING after Clear All — will continue"
 pass "DB cleared, on-disk state wiped"
 
-# Preseed profiling cache: without this, the optimizer's execution-time
-# estimates for lstm-small on each (node, GPU) pair are unknown on a cold
-# cluster, and the ProfilingScheduler trickles in one config per submission
-# — placement decisions for the first few jobs effectively use defaults
-# instead of measured times.  Pre-populating with the values observed in
-# previous live runs (A40 ≈ 13s/epoch, QuadroP600 ≈ 29s/epoch on lstm-small)
-# gives GPUspb realistic times from epoch 0 and makes the run reproducible.
-# Idempotent: ON CONFLICT DO UPDATE so re-runs refresh the durations.
-log "Stage 0: preseeding profiling cache"
-ssh "$NODE_A" "docker exec wangrat-ijm-postgres psql -U postgres -d ijm -q -c \"
-    INSERT INTO profiling_results (id, job_id, instance_id, gpu_config, node_id, duration_seconds, created_at)
-    VALUES
-        ('seed-lstm-small-a40-1',   'lstm-small', NULL, '{\\\"A40\\\": 1}'::jsonb,        'polimi-gpu',   13.3, now()),
-        ('seed-lstm-small-p600-1',  'lstm-small', NULL, '{\\\"QuadroP600\\\": 1}'::jsonb, 'matemagician', 29.2, now())
-    ON CONFLICT (job_id, gpu_config) DO UPDATE SET duration_seconds = EXCLUDED.duration_seconds;
-\"" >/dev/null
-pass "profiling cache preseeded for lstm-small (A40=13.3s, QuadroP600=29.2s)"
+# Profiling is NOT preseeded.  The ProfilingScheduler fills the cache from
+# real measurements as jobs run — first submissions of each type trigger
+# profile runs for every (node, GPU) config the policy wants to explore.
+# Keeping the script preseed-free means it mirrors what a user does in the
+# UI (Submit Job → wait), so the scenario is reproducible manually.
 
 # ---------------------------------------------------------------------------
 # Stage 1 — Four patient jobs
@@ -157,21 +148,34 @@ JOB3=$(submit_job 4 "$DL_MED");   sleep 5
 JOB4=$(submit_job 4 "$DL_LONG")
 log "  ids: target=${JOB1:0:8}  protected=${JOB2:0:8} ${JOB3:0:8} ${JOB4:0:8}"
 
-# Wait for every job to make progress — a more robust check than "no QUEUED".
-# The optimizer is allowed to consolidate jobs on a cheaper node and queue
-# the rest; that's not a test failure.  What we actually want to confirm is
-# that the dispatch path is functional for every submitted job, which is
-# witnessed by ``progress`` becoming non-null (the trainer wrote at least
-# one checkpoint).  A genuinely broken dispatch (worker unreachable, image
-# missing, slot leak) fails this because the affected job never trains.
-log "  waiting for every job to make progress (≤ 5 min)…"
-if ! wait_for "all progressed" 300 5 '[.[] | select(.progress == null)] | length == 0'; then
+# Require all 4 patient jobs to be SIMULTANEOUSLY RUNNING (status != PROFILING
+# / SUCCEEDED) with non-null progress, before submitting the urgent job.
+# Without this, the fast-node lstm-small can SUCCEED while the slow-node one
+# is still profiling, draining slots and leaving no preempt victim.  Generous
+# 10-min cap covers the cold-cache profile sweep (no preseed).
+log "  waiting for all 4 to be simultaneously RUNNING with progress (≤ 10 min)…"
+if ! wait_for "all 4 RUNNING+progressed" 600 5 \
+    '[.[] | select(.status == "RUNNING" and .progress != null)] | length == 4'; then
     log "  current state:"; all_jobs | jq '.[] | {id: .id[0:8], status, priority, node: .assigned_node, progress}'
-    fail "some jobs never advanced past epoch 0 within 5 min — dispatch broken"
+    fail "couldn't get all 4 patient jobs simultaneously RUNNING+progressed in 10 min"
 fi
-pass "all 4 jobs made progress at least once"
+pass "all 4 jobs RUNNING with progress (preempt target available)"
 
-# Informational only: how does the cluster look right now?
+# Print actual placement so the operator can compare against the
+# documented expected table (documentation/e2e-scenarios.md#stage-1):
+#   JOB1 prio=1 +8h  → matemagician (1× QuadroP600)
+#   JOB2 prio=4 +1h  → polimi-gpu   (1× A40)
+#   JOB3 prio=4 +2h  → polimi-gpu   (1× A40)
+#   JOB4 prio=4 +4h  → matemagician (1× QuadroP600)
+log "  steady-state placement (see e2e-scenarios.md for expected):"
+for label in JOB1 JOB2 JOB3 JOB4; do
+    jid_var="${label}"; jid="${!jid_var}"
+    node=$(job_field "$jid" assigned_node)
+    cfg=$(job_field "$jid" assigned_gpu_config)
+    prio=$(job_field "$jid" priority)
+    log "    $label=${jid:0:8} prio=$prio → $node $cfg"
+done
+
 running_count=$(all_jobs | jq '[.[] | select(.status == "RUNNING" or .status == "PROFILING")] | length')
 log "  current cluster: $running_count active (RUNNING/PROFILING)"
 
@@ -198,11 +202,11 @@ log "  id: ${JOB5:0:8}"
 
 log "  verifying optimizer kicks in within 30s (NOTIFY path, not 60s watcher)…"
 T0=$(date +%s)
-# Allow 30s rather than 20s: the new priority/deadline mix can require the
-# optimizer to issue *two* preempts back-to-back (e.g. evict + reassign a
-# protected job onto another node) before the urgent dispatch lands.  A
-# single round-trip is still ~6s; the budget is for two.
-if ! wait_for "job5 placed" 30 1 \
+# Budget: 30s.  Optimizer fires within ~1s of submission, plans urgent on
+# A40, /stop the victim → worker kill (~3-5s) → ijm_slot_freed NOTIFY →
+# dispatch acquires slot → /run.  ~10-15s in steady state.  30s gives
+# headroom for slow preempts.
+if ! wait_for "job5 placed" 60 1 \
     "[.[] | select(.id == \"$JOB5\" and (.status == \"RUNNING\" or .status == \"PROFILING\"))] | length >= 1"; then
     s=$(job_field "$JOB5" status)
     fail "job 5 still status=$s after 30s — NOTIFY-driven optimizer didn't fire (or preempt round-trip too slow)"
@@ -305,11 +309,106 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-# Stage 4 — Final state
+# Stage 4 — User /stop on a running job; a *pre-existing queued* job takes over
+# ---------------------------------------------------------------------------
+# Exercises the user-driven preempt path (reason=user, what the UI "Stop"
+# button does), which is the only way a profile run can be stopped and is
+# also the operator's manual override for standard runs.  Distinct from the
+# optimizer-driven preempt in Stage 2 in two ways:
+#   - The freed slot is filled by a job that was already QUEUED, not by an
+#     incoming urgent submission.  Validates the dispatch backfill loop.
+#   - The stopped row goes back through the standard re-queue path; we don't
+#     need a checkpoint resume verification because the test already covered
+#     that in Stage 3.
+
+# Submit JOB6 (priority=1, loose deadline) into the cluster.  Whether it
+# sits queued or runs immediately depends on the optimizer's instantaneous
+# decision (it may rotate jobs to place JOB6 and re-queue a different one).
+# Either way, by Stage 4's end at least one previously-queued job is the
+# "takeover" candidate, which is the path under test.
+log "Stage 4: submitting JOB6 (priority=1, loose deadline)"
+JOB6=$(submit_job 1 "$DL_LONG") || fail "POST /jobs JOB6 rejected"
+log "  id: ${JOB6:0:8}"
+
+# Settle: wait for the scheduler to acknowledge JOB6 (any non-terminal
+# state).  The user-stop below will free a slot regardless of whether JOB6
+# itself is queued or already running.
+if ! wait_for "JOB6 scheduled" 30 1 \
+    "[.[] | select(.id == \"$JOB6\" and (.status == \"QUEUED\" or .status == \"RUNNING\" or .status == \"PROFILING\"))] | length >= 1"; then
+    fail "JOB6 not visible to scheduler within 30s"
+fi
+pass "JOB6 accepted by scheduler"
+
+# Snapshot the QUEUED set BEFORE the user-stop so we can later assert that
+# at least one of those queued jobs took the freed slot.
+QUEUED_BEFORE=$(all_jobs | jq -c '[.[] | select(.status == "QUEUED" and .assigned_node == null) | .id]')
+log "  queued jobs before user-stop: $(echo "$QUEUED_BEFORE" | jq -r 'map(.[0:8]) | join(" ")')"
+
+# Pick the lowest-priority RUNNING job (excluding JOB6 itself) as user-stop victim.
+USER_VICTIM=$(all_jobs | jq -r --arg j6 "$JOB6" \
+    '[.[] | select(.status == "RUNNING" and .id != $j6)] | sort_by(.priority) | .[0].id')
+[[ -n "$USER_VICTIM" && "$USER_VICTIM" != "null" ]] || fail "no RUNNING job to user-stop"
+USER_VICTIM_NODE=$(job_field "$USER_VICTIM" "assigned_node")
+USER_VICTIM_PRIO=$(job_field "$USER_VICTIM" "priority")
+log "  user-stopping ${USER_VICTIM:0:8} (priority=$USER_VICTIM_PRIO @ $USER_VICTIM_NODE)"
+
+curl -fsS -X POST "$API/jobs/$USER_VICTIM/stop" >/dev/null \
+    || fail "POST /jobs/$USER_VICTIM/stop failed"
+
+# User-stop puts the row in PREEMPTED (sticky, awaits a manual /resume).
+# assigned_node is *preserved* on user-stop so /resume can prefer the same
+# node (warm checkpoint cache); only auto-stop clears it.
+if ! wait_for "user-victim PREEMPTED" 15 1 \
+    "[.[] | select(.id == \"$USER_VICTIM\" and .status == \"PREEMPTED\")] | length == 1"; then
+    fail "user-stopped job did not reach PREEMPTED within 15s"
+fi
+pass "user-stopped ${USER_VICTIM:0:8} is PREEMPTED"
+
+# Container must be gone from the origin node.  We poll up to 60s because
+# the worker HTTP /stop can be slow (SSH-tunnel latency, optimizer churn),
+# and the worker's stream-watcher may need a few seconds to detect the
+# status flip and tear the container down.
+container_deadline=$(( SECONDS + 60 ))
+while (( SECONDS < container_deadline )); do
+    victim_container_count=$(ssh "$USER_VICTIM_NODE" \
+        "docker ps --filter name=ijm-${USER_VICTIM:0:8} --format '{{.Names}}'" 2>/dev/null | wc -l)
+    [[ "$victim_container_count" -eq 0 ]] && break
+    sleep 3
+done
+[[ "$victim_container_count" -eq 0 ]] \
+    || fail "container ijm-${USER_VICTIM:0:8} still present on $USER_VICTIM_NODE after 60s"
+pass "victim's container removed from origin node $USER_VICTIM_NODE"
+
+# At least one of the previously-queued jobs takes the freed slot within
+# ~60s.  We don't insist on JOB6 specifically because the optimizer may
+# have rotated the queue — what matters is that the user-stop didn't strand
+# a slot idle: some pre-queued job is now running.
+if ! wait_for "queued job takes over" 60 2 \
+    "[.[] | select(.status == \"RUNNING\" or .status == \"PROFILING\") | .id] as \$running |
+     (${QUEUED_BEFORE}) as \$wasQ |
+     [\$wasQ[] | select(. as \$x | \$running | index(\$x))] | length >= 1"; then
+    log "  current state:"; all_jobs | jq '.[] | {id: .id[0:8], status, prio: .priority, node: .assigned_node}'
+    fail "no previously-queued job took the freed slot within 60s"
+fi
+NEW_RUNNING=$(all_jobs | jq -r --argjson q "$QUEUED_BEFORE" \
+    '[.[] | select((.status == "RUNNING" or .status == "PROFILING") and (.id | IN($q[]))) | .id[0:8]] | join(" ")')
+pass "previously-queued job(s) took the freed slot: $NEW_RUNNING"
+
+# Honor the user-stop contract: the row stays PREEMPTED until the operator
+# explicitly chooses to /resume it.  We do NOT auto-resume here — that
+# would mask the sticky semantics and races against the late-arriving
+# worker kill that lands seconds after the API's atomic flip.  Stage 5
+# expects exactly one PREEMPTED leftover (the user-victim).
+
+# ---------------------------------------------------------------------------
+# Stage 5 — Final state
 # ---------------------------------------------------------------------------
 
-log "Stage 5: waiting for all 5 jobs to terminate (≤ ${TERMINAL_TIMEOUT_S}s)…"
-if ! wait_for "all SUCCEEDED" "$TERMINAL_TIMEOUT_S" 15 \
+log "Stage 5: waiting for all jobs to terminate (≤ ${TERMINAL_TIMEOUT_S}s)…"
+# Terminal = SUCCEEDED, FAILED, or PREEMPTED (user-stop contract).
+# We expect exactly 1 PREEMPTED (the user-victim from Stage 4) plus the
+# rest SUCCEEDED.
+if ! wait_for "all terminal" "$TERMINAL_TIMEOUT_S" 15 \
     '[.[] | select(.status == "RUNNING" or .status == "QUEUED" or .status == "PROFILING")] | length == 0'; then
     log "  current state:"; all_jobs | jq '.[] | {id: .id[0:8], status, progress}'
     fail "jobs still pending after ${TERMINAL_TIMEOUT_S}s"
@@ -317,10 +416,13 @@ fi
 
 succeeded=$(count_status SUCCEEDED)
 failed=$(count_status FAILED)
+preempted=$(count_status PREEMPTED)
 total=$(all_jobs | jq 'length')
-log "  terminal counts: SUCCEEDED=$succeeded FAILED=$failed total=$total"
-(( succeeded == 5 )) || fail "expected 5 SUCCEEDED, got $succeeded (FAILED=$failed)"
-pass "all 5 jobs SUCCEEDED"
+log "  terminal counts: SUCCEEDED=$succeeded PREEMPTED=$preempted FAILED=$failed total=$total"
+(( failed == 0 )) || fail "expected 0 FAILED, got $failed"
+(( preempted == 1 )) || fail "expected exactly 1 PREEMPTED (user-victim), got $preempted"
+(( succeeded == total - 1 )) || fail "expected $(( total - 1 )) SUCCEEDED, got $succeeded"
+pass "$succeeded SUCCEEDED + 1 PREEMPTED (user-stopped, awaiting manual resume) — terminal"
 
 log "Stage 5: zombie & cache checks"
 # Match training-container names anchored at start (``ijm-<8-hex>``) to skip
@@ -337,6 +439,39 @@ prof_count=$(ssh "$NODE_A" "docker exec wangrat-ijm-postgres psql -U postgres -d
     | tr -d '[:space:]')
 (( prof_count >= 2 )) || fail "expected ≥2 profiling_results rows, got $prof_count"
 pass "profiling cache populated ($prof_count rows for $JOB_TYPE)"
+
+# Verify every node that ran a job actually used its GPU — silent CPU
+# fallback (driver/runtime mis-config, e.g. wrong WORKER_GPU_MODE) would
+# otherwise let the test pass while jobs run 5-10× slower than intended.
+# Check EVERY job that touched a GPU-capable node, regardless of its
+# terminal status (SUCCEEDED / PREEMPTED / FAILED all still produced a
+# trainer log we can inspect); a single CPU run on a GPU node is a fail.
+log "Stage 5: verifying GPU was actually used on every node that ran a job"
+nodes_used=$(all_jobs | jq -r '[.[].assigned_node] | unique | .[] | select(. != null)')
+for node in $nodes_used; do
+    # Iterate over every job that ever ran on this node and verify each
+    # trainer log shows "Using device: cuda".  A "Using device: cpu" on a
+    # GPU node means silent CUDA fallback — fail the scenario.
+    job_ids=$(all_jobs | jq -r --arg n "$node" '[.[] | select(.assigned_node == $n)] | .[] | .id')
+    [[ -z "$job_ids" ]] && { warn "no jobs ever ran on $node — skipping GPU check"; continue; }
+    cpu_seen=0
+    cuda_seen=0
+    while IFS= read -r jid; do
+        [[ -z "$jid" ]] && continue
+        log_text=$(curl -sS "$API/jobs/$jid/logs" 2>/dev/null || true)
+        if echo "$log_text" | grep -qE "Using device: cuda"; then
+            cuda_seen=1
+        elif echo "$log_text" | grep -qE "Using device: cpu"; then
+            cpu_seen=1
+            fail "$node: job ${jid:0:8} trainer log shows 'Using device: cpu' on a GPU node — silent CUDA fallback (check WORKER_GPU_MODE)"
+        fi
+    done <<<"$job_ids"
+    if (( cuda_seen == 1 )); then
+        pass "$node: every inspected trainer log shows 'Using device: cuda' (GPU was used)"
+    else
+        warn "$node: no trainer log on this node had a 'Using device:' line (probably no job got far enough to log)"
+    fi
+done
 
 echo
 echo "${C_OK}✓ E2E scenario passed${C_END}"

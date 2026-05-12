@@ -20,6 +20,7 @@ counts from a fresh DB query at startup, so an API restart loses nothing.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 import os
 from typing import Any
@@ -75,7 +76,15 @@ class NodeSlots:
             node_id = raw["id"]
             total = sum(int(r["gpu_count"]) for r in raw.get("resources", []))
             self._totals[node_id] = total
-            self._sems[node_id] = asyncio.Semaphore(total)
+            # BoundedSemaphore raises ValueError if release() pushes the
+            # internal counter above the initial value.  Critical: plain
+            # ``asyncio.Semaphore.release()`` is unbounded, so any over-
+            # release (double-NOTIFY during migration, reaper racing the
+            # dispatch task, drift recovery counting both directions) silently
+            # inflates capacity past total_gpus and the next acquires no
+            # longer block — the cluster oversubscribes.  ``release()`` below
+            # catches the ValueError and treats it as a logged no-op.
+            self._sems[node_id] = asyncio.BoundedSemaphore(total)
             self._used[node_id] = 0
             self._acquire_locks[node_id] = asyncio.Lock()
         logger.info(
@@ -159,17 +168,28 @@ class NodeSlots:
             logger.warning("release() for unknown node_id %s — ignored", node_id)
             return
         before_used = self._used.get(node_id, 0)
+        skipped = 0
         for _ in range(n):
-            sem.release()
+            try:
+                sem.release()
+            except ValueError:
+                # BoundedSemaphore refused: an earlier over-release already
+                # pushed the value to its cap, or this single release would.
+                # Drop it on the floor — the cap is the protection against
+                # oversubscription that plain ``asyncio.Semaphore`` lacks.
+                skipped += 1
+                continue
             self._used[node_id] = max(0, self._used.get(node_id, 0) - 1)
         total = self._totals.get(node_id, 0)
         self._metrics["release_count"] += 1
-        if before_used == 0:
+        if before_used == 0 or skipped > 0:
             self._metrics["release_underflow_count"] += 1
             logger.error(
-                "SLOT-UNDERFLOW: %s release(%d) called when used=0 (sem._value=%d)",
+                "SLOT-OVERRELEASE: %s release(%d) when used=%d (skipped=%d, sem._value=%d)",
                 node_id,
                 n,
+                before_used,
+                skipped,
                 sem._value,  # noqa: SLF001
             )
         logger.log(
@@ -322,7 +342,9 @@ class NodeSlots:
                     self._used[node_id] = self._used.get(node_id, 0) + 1
             else:
                 for _ in range(-delta):
-                    sem.release()
+                    # Bounded: capped at total.  Don't push further.
+                    with contextlib.suppress(ValueError):
+                        sem.release()
                     self._used[node_id] = max(0, self._used.get(node_id, 0) - 1)
             deltas[node_id] = delta
             self._metrics["drift_recovery_count"] += 1

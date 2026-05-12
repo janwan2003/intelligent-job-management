@@ -73,18 +73,31 @@ class ProfilingScheduler:
     async def get_node_gpu_usage(self, conn: psycopg.AsyncConnection[Any]) -> dict[str, dict[str, int]]:
         """Query allocated GPUs per node from currently running/profiling jobs.
 
+        Subtracts ``state.pending_evictions`` (jobs whose ``/stop`` is in
+        flight but the worker's terminal commit hasn't landed yet) so
+        scheduling decisions reflect the post-eviction state immediately.
+        Without this, a profile-preempt that needs to free 2+ GPUs
+        deadlocks: the first eviction commits, the scheduler re-runs,
+        sees N-1 slots free, falls back to a 1-GPU standard placement
+        on the same victim, and the second eviction's commit lands into
+        a re-occupied slot.
+
         Returns ``{node_id: {gpu_type: allocated_count, ...}, ...}``.
         """
+        from src import state
+
         async with conn.cursor() as cur:
             await cur.execute(
-                "SELECT assigned_node, assigned_gpu_config FROM jobs "
+                "SELECT id, assigned_node, assigned_gpu_config FROM jobs "
                 "WHERE status IN (%s, %s, %s) AND assigned_node IS NOT NULL AND assigned_gpu_config IS NOT NULL",
                 (JobStatus.RUNNING, JobStatus.PROFILING, JobStatus.QUEUED),
             )
             rows = await cur.fetchall()
 
         usage: dict[str, dict[str, int]] = {}
-        for node_id, gpu_config in rows:
+        for job_id, node_id, gpu_config in rows:
+            if job_id in state.pending_evictions:
+                continue  # treat the slot as already freed
             node_usage = usage.setdefault(node_id, {})
             for gpu_type, count in gpu_config.items():
                 node_usage[gpu_type] = node_usage.get(gpu_type, 0) + count
@@ -274,39 +287,168 @@ class ProfilingScheduler:
         return row[0] if row else 0
 
     async def _sweep_stale_claims(self, conn: psycopg.AsyncConnection[Any], type_id: str) -> int:
-        """Delete claim rows whose owning instance is terminal or missing.
+        """Backward-compat wrapper: sweep stale claims, scoped to one type.
 
-        A claim row is ``profiling_results.duration_seconds IS NULL`` written
-        by ``_persist_assignment`` to mark a config as in-flight.  If the
-        owning job instance never reached the worker (failed dispatch),
-        crashed, or finished without recording a duration, the row stays
-        with ``duration_seconds = NULL`` and ``instance_id`` pointing at a
-        terminal job — which makes ``get_profiled_configs`` count the
-        config as "profiled" even though no usable measurement exists.
-        That deadlocks scheduling: the optimizer/greedy can't use a NULL
-        duration, and the profiling scheduler refuses to re-profile.
-
-        Sweeping on every ``schedule_job`` keeps the table self-healing
-        without coupling profiling bookkeeping to the dispatch watchdog.
-        Returns the number of rows deleted (mainly for logging/tests).
+        New callers should prefer :meth:`sweep_all_stale_claims` (no type
+        scope) so claims for *every* type are reclaimed on every scheduler
+        round, not just on submission.
         """
+        return await self._sweep_stale_claims_filtered(conn, type_id=type_id)
+
+    async def sweep_all_stale_claims(self, conn: psycopg.AsyncConnection[Any]) -> int:
+        """Reclaim every stale profile claim across all types.
+
+        Called at the top of every ``_schedule_waiting_jobs`` round.
+        Sweeping on submission alone (the old behaviour) wasn't enough: if
+        a profile run got repurposed mid-flight (e.g., the optimizer
+        re-assigned its row to a standard run, so ``is_profiling_run``
+        flipped to FALSE), or the owning job finished while ``schedule_job``
+        wasn't being called for that type, the claim row sat forever and
+        ``remaining`` undercounted that config — permanently blocking
+        re-profile attempts.
+        """
+        return await self._sweep_stale_claims_filtered(conn, type_id=None)
+
+    async def _sweep_stale_claims_filtered(self, conn: psycopg.AsyncConnection[Any], *, type_id: str | None) -> int:
+        """Shared body for the scoped and unscoped sweeps.
+
+        A claim row (``duration_seconds IS NULL``) is stale when no live
+        profile run owns it.  "Live profile run" means a job that:
+          - exists, AND
+          - has ``is_profiling_run = TRUE``, AND
+          - is in QUEUED (claim written, awaiting dispatch) or PROFILING
+            (worker running the measurement) — *not* RUNNING (RUNNING is a
+            standard run, so the row was repurposed and the claim is stale).
+        Anything else: the claim is garbage and we delete it.
+        """
+        if type_id is None:
+            query = """DELETE FROM profiling_results pr
+                       WHERE pr.duration_seconds IS NULL
+                         AND (pr.instance_id IS NULL
+                              OR NOT EXISTS (
+                                  SELECT 1 FROM jobs j
+                                  WHERE j.id = pr.instance_id
+                                    AND j.is_profiling_run = TRUE
+                                    AND j.status IN (%s, %s)
+                              ))"""
+            params: tuple[Any, ...] = (JobStatus.QUEUED, JobStatus.PROFILING)
+            scope_desc = "all types"
+        else:
+            query = """DELETE FROM profiling_results pr
+                       WHERE pr.job_id = %s
+                         AND pr.duration_seconds IS NULL
+                         AND (pr.instance_id IS NULL
+                              OR NOT EXISTS (
+                                  SELECT 1 FROM jobs j
+                                  WHERE j.id = pr.instance_id
+                                    AND j.is_profiling_run = TRUE
+                                    AND j.status IN (%s, %s)
+                              ))"""
+            params = (type_id, JobStatus.QUEUED, JobStatus.PROFILING)
+            scope_desc = f"type {type_id}"
         async with conn.cursor() as cur:
-            await cur.execute(
-                """DELETE FROM profiling_results pr
-                   WHERE pr.job_id = %s
-                     AND pr.duration_seconds IS NULL
-                     AND (pr.instance_id IS NULL
-                          OR NOT EXISTS (
-                              SELECT 1 FROM jobs j
-                              WHERE j.id = pr.instance_id
-                                AND j.status IN (%s, %s, %s)
-                          ))""",
-                (type_id, JobStatus.QUEUED, JobStatus.RUNNING, JobStatus.PROFILING),
-            )
+            await cur.execute(query, params)
             deleted = getattr(cur, "rowcount", 0) or 0
         if deleted > 0:
-            logger.info("Cleared %d stale profiling claim(s) for type %s", deleted, type_id)
+            logger.info("Cleared %d stale profile claim(s) (%s)", deleted, scope_desc)
         return deleted
+
+    async def try_preempt_for_profile(
+        self,
+        conn: psycopg.AsyncConnection[Any],
+        instance_id: str,
+        type_id: str,
+    ) -> list[str]:
+        """Find the minimum set of running jobs to evict so this unprofiled
+        config can fit on a profiling-capable node.
+
+        Used by the scheduler loop's Phase 1c when a config is still
+        unprofiled for a job type and the cluster has no idle slot big enough
+        for it.  The user's policy is "profiling always wins": evict the
+        cheapest set of low-priority non-profiling jobs on a node whose
+        *total* capacity could host the target config, then let the next
+        scheduling round dispatch the profile run into the freed slots.
+
+        Returns the **list** of victim instance_ids (possibly empty if no
+        feasible eviction).  Multi-victim is required when the target config
+        wants more GPUs than any single victim holds — e.g. profiling
+        ``A40×2`` while both A40 slots on polimi-gpu are held by separate
+        ``A40×1`` jobs needs both jobs evicted.  The earlier single-victim
+        version was a silent ceiling on profile coverage: 2-GPU configs
+        could never claim slots once 1-GPU configs had each grabbed one.
+
+        HARD RULES (unchanged):
+        - Never evict ``status='PROFILING'`` rows (the filter is
+          ``status='RUNNING'`` only; defensive guard in
+          ``_preempt_and_release`` repeats the check).
+        - Only consider nodes whose *total* capacity could fit the target.
+        - Pick the cheapest set: lowest priority first, then least progress.
+        """
+        all_configs = self.get_valid_configurations()
+        profiled = await self.get_profiled_configs(conn, type_id)
+        profiled_keys = {config_key(c) for c in profiled}
+        remaining = [c for c in all_configs if config_key(c) not in profiled_keys]
+        if not remaining:
+            return []
+        target = remaining[0]
+
+        node_gpu_usage = await self.get_node_gpu_usage(conn)
+
+        # Walk profiling-capable nodes whose total capacity fits the target.
+        # For each, compute what's already free; evict only enough to cover
+        # the shortfall.  Stop at the first node where a feasible eviction
+        # set exists.
+        for raw in cluster.nodes:
+            node = NodeConfig.model_validate(raw)
+            if not node.is_for_profiling:
+                continue
+            totals = {res.gpu_type: res.gpu_count for res in node.resources}
+            if not all(totals.get(gt, 0) >= n for gt, n in target.items()):
+                continue
+            used = node_gpu_usage.get(node.id, {})
+            free = {gt: totals.get(gt, 0) - used.get(gt, 0) for gt in totals}
+            need = {gt: max(0, target.get(gt, 0) - free.get(gt, 0)) for gt in target}
+            if all(n == 0 for n in need.values()):
+                # Already fits — caller should just schedule it directly
+                # (this function is called when ``schedule_job`` already
+                # failed to find a node; in that case ``need`` will be > 0).
+                return []
+
+            async with conn.cursor() as cur:
+                await cur.execute(
+                    """SELECT id, priority, progress, assigned_gpu_config FROM jobs
+                       WHERE assigned_node = %s AND status = %s AND id != %s
+                       ORDER BY priority ASC NULLS FIRST, progress ASC NULLS FIRST""",
+                    (node.id, JobStatus.RUNNING, instance_id),
+                )
+                candidates = await cur.fetchall()
+
+            chosen: list[str] = []
+            freed = dict.fromkeys(need, 0)
+            for cid, _prio, _prog, cfg in candidates:
+                cfg = cfg or {}
+                # Skip victims that hold no GPU of any still-needed type.
+                if not any(cfg.get(gt, 0) > 0 and freed[gt] < need[gt] for gt in need):
+                    continue
+                chosen.append(str(cid))
+                for gt, cnt in cfg.items():
+                    if gt in freed:
+                        freed[gt] += int(cnt)
+                if all(freed[gt] >= need[gt] for gt in need):
+                    break
+
+            if all(freed[gt] >= need[gt] for gt in need):
+                logger.info(
+                    "Profile-preempt: evicting %d victim(s) on %s to free %s for unprofiled %s (target=%s)",
+                    len(chosen),
+                    node.id,
+                    need,
+                    type_id,
+                    target,
+                )
+                return chosen
+
+        return []
 
     async def schedule_job(
         self,
@@ -357,7 +499,8 @@ class ProfilingScheduler:
         mode = "standard"
         is_profiling_run = False
 
-        if remaining and profiled_this_round < self.configs_per_job:
+        explore_now = remaining and profiled_this_round < self.configs_per_job
+        if explore_now:
             # Exploration: pick the smallest un-profiled config (fewest total GPUs)
             candidate = remaining[0]
             candidate_node = self._find_node_for_config(candidate, is_for_profiling=True, node_gpu_usage=node_gpu_usage)
@@ -365,10 +508,14 @@ class ProfilingScheduler:
                 gpu_config, node = candidate, candidate_node
                 mode, is_profiling_run = "profiling", True
 
-        if not is_profiling_run:
-            # Either profiling-mode skipped, or the profiling candidate didn't
-            # fit on any node right now — fall through to a standard run on any
-            # already-profiled config that fits.
+        if not is_profiling_run and not explore_now:
+            # Only fall through to a standard run when there's no exploration
+            # owed — i.e. this type's config matrix is fully profiled (or this
+            # instance has spent its per-job profiling budget).  When there IS
+            # exploration owed but the smallest unprofiled config didn't fit
+            # right now, we leave the job QUEUED (no assignment) so that
+            # Phase 1c can evict a victim and the next scheduling round
+            # places the profile run — "profiling always wins" policy.
             available = await self._find_available_config(conn, type_id, node_gpu_usage)
             if available:
                 gpu_config, node = available

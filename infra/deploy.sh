@@ -14,6 +14,18 @@ HOST="${1:-polimi}"
 REMOTE_DIR="${REMOTE_DIR:-/home/wangrat/ijm}"
 NODE_ID="${NODE_ID:-$HOST}"
 DOCKER_CMD="${DOCKER_CMD:-docker-compose}"
+# GPU passthrough mode for ``docker run`` from the worker (one of:
+# ``runtime`` = ``--gpus N`` via nvidia default runtime;
+# ``cdi`` = ``--device nvidia.com/gpu=<n>`` via CDI for rootless docker;
+# ``none`` = CPU only).  Required for the container to see GPUs.
+WORKER_GPU_MODE="${WORKER_GPU_MODE:-runtime}"
+# Image tag rewrite (``:latest`` → ``:$IMAGE_TAG_OVERRIDE``).  Used on
+# matemagician where the legacy CUDA-10.1 image is needed.
+IMAGE_TAG_OVERRIDE="${IMAGE_TAG_OVERRIDE:-}"
+# Physical GPU count on the node — used by the worker's per-launch GPU
+# allocator.  Required because the matemagician worker runs in a non-GPU
+# container, so ``nvidia-smi -L`` from inside it reports 0.
+NODE_TOTAL_GPUS="${NODE_TOTAL_GPUS:-0}"
 SOCKET="/tmp/ijm-deploy-$$"
 
 echo "==> Deploying $([ "$WORKER_ONLY" = 1 ] && echo "worker-only" || echo "full stack") to $HOST:$REMOTE_DIR (NODE_ID=$NODE_ID)"
@@ -41,6 +53,6 @@ fi
 $SSH "$HOST" "printf 'data\n' > $REMOTE_DIR/.dockerignore"
 
 echo "==> Starting services"
-$SSH "$HOST" "cd $REMOTE_DIR && NODE_ID=$NODE_ID $DOCKER_CMD up --build -d"
+$SSH "$HOST" "cd $REMOTE_DIR && NODE_ID=$NODE_ID WORKER_GPU_MODE=$WORKER_GPU_MODE IMAGE_TAG_OVERRIDE=$IMAGE_TAG_OVERRIDE NODE_TOTAL_GPUS=$NODE_TOTAL_GPUS $DOCKER_CMD up --build -d"
 
 echo "==> Done."
