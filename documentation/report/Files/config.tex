@@ -11,11 +11,21 @@ Each entry describes a compute node with its GPU resources.
 \begin{lstlisting}[language={}, numbers=none]
 [
   {
-    "id": "node-a40-01",
-    "isForProfiling": false,
-    "cost": 0.15,
+    "id": "matemagician",
+    "isForProfiling": true,
+    "workerUrl": "http://localhost:8001",
+    "cost": 0.06,
     "resources": [
-      { "gpu_type": "A40", "gpu_count": 4 }
+      { "gpu_type": "QuadroP600", "gpu_count": 2 }
+    ]
+  },
+  {
+    "id": "polimi-gpu",
+    "isForProfiling": true,
+    "workerUrl": "http://localhost:8002",
+    "cost": 0.55,
+    "resources": [
+      { "gpu_type": "A40", "gpu_count": 2 }
     ]
   }
 ]
@@ -28,10 +38,11 @@ Each entry describes a compute node with its GPU resources.
 \textbf{Field} & \textbf{Type} & \textbf{Description} \\
 \hline
 \texttt{id} & string & Unique node identifier \\
-\texttt{isForProfiling} & bool & If \texttt{true}, the node is reserved exclusively for profiling runs \\
-\texttt{cost} & float & Idle cost of the node (EUR/h) \\
+\texttt{isForProfiling} & bool & If \texttt{true}, the node can host profiling runs.  Production jobs may still land on it; profiling jobs may only land on it \\
+\texttt{workerUrl} & string \textbar{} null & HTTP base URL of the worker on this node, typically reached through an SSH tunnel.  When \texttt{null}, dispatch falls through to the in-process \texttt{JobRunner} (only useful for the docker-compose all-in-one development setup) \\
+\texttt{cost} & float & Idle cost of the node ($\$$/h) used by the optimizer \\
 \texttt{resources} & array & GPU resources attached to the node \\
-\texttt{resources[].gpu\_type} & string & GPU model name (e.g.\ \texttt{A40}, \texttt{L40S}) \\
+\texttt{resources[].gpu\_type} & string & GPU model name (e.g.\ \texttt{A40}, \texttt{L40S}, \texttt{QuadroP600}) \\
 \texttt{resources[].gpu\_count} & int & Number of GPUs of this type \\
 \hline
 \end{tabularx}
@@ -40,7 +51,7 @@ Each entry describes a compute node with its GPU resources.
 \end{table}
 
 GPU type and count are declared explicitly in the configuration rather than auto-detected at runtime.
-This allows mixed-GPU nodes (e.g.\ a node with both A40 and L40S GPUs), which ANDREAS did not support.
+This allows mixed-GPU nodes (e.g.\ a node with both A40 and L40S GPUs), which ANDREAS did not support, and lets the operator declare nodes that aren't physically attached to the API host --- the API only ever talks to workers over HTTP.
 
 \subsubsection{GPU Energy Costs (\texttt{gpu\_energy\_costs.json})}
 
@@ -155,5 +166,33 @@ Interactive documentation is available at \texttt{/docs} (Swagger~UI) and \textt
 \label{tab:api-endpoints}
 \end{table}
 
-All scheduling, profiling, and job execution are consolidated into a single FastAPI service, in contrast to ANDREAS which split these across a Java Jobs Manager and a C++ Jobs Optimizer.
+All scheduling, profiling, and dispatch decisions are consolidated into a single FastAPI service, in contrast to ANDREAS which split these across a Java Jobs Manager and a C++ Jobs Optimizer.
+The actual execution lives in per-node \emph{workers} (also FastAPI), which the API reaches over HTTP through SSH tunnels.  An optional external GPUspb optimizer is reached the same way: when its URL is unset the system falls back to the in-API greedy scheduler.
 IJM exposes explicit \texttt{stop}, \texttt{resume}, \texttt{logs}, and \texttt{delete} endpoints, as well as \texttt{/profiling-results} and \texttt{/configurations} to give users visibility into the scheduler's state.
+
+\subsection{Runtime environment}
+
+The most important runtime knobs (all set in the API process unless noted otherwise) are:
+
+\begin{table}[H]
+\centering
+\begin{tabularx}{\textwidth}{l l X}
+\hline
+\textbf{Variable} & \textbf{Default} & \textbf{Description} \\
+\hline
+\texttt{DATABASE\_URL}                  & \texttt{postgresql://\ldots/ijm} & PostgreSQL DSN, reached via SSH tunnel \\
+\texttt{OPTIMIZER\_URL}                 & unset & When set, the API delegates placement to the GPUspb HTTP service.  Unset $\Rightarrow$ greedy scheduler only \\
+\texttt{OPTIMIZER\_METHOD}              & \texttt{RG} & GPUspb solver method passed in the request body \\
+\texttt{OPTIMIZER\_VERBOSE}             & 0 & GPUspb per-call log verbosity (0--3) \\
+\texttt{OPTIMIZER\_SWITCH\_PENALTY\_S}  & 60 & Wall-time penalty (s) charged when judging optimizer migrations without destination profiling data \\
+\texttt{IJM\_OPTIMIZER\_GUARD\_MIGRATIONS} & unset & When set, re-enables the local cost-benefit filter on optimizer-proposed migrations (default trusts GPUspb) \\
+\texttt{PROFILING\_CONFIGS\_PER\_JOB}   & 1 & How many distinct GPU configs a single job \emph{instance} profiles before falling through to a standard run \\
+\texttt{EXECUTOR}                       & \texttt{docker} & Executor backend for the in-process \texttt{JobRunner}: \texttt{docker} or \texttt{mock-slurm} (workers always use the docker CLI) \\
+\texttt{WORKER\_GPU\_MODE}              & \texttt{runtime} & Worker-side; how Docker exposes GPUs to training containers: \texttt{runtime} / \texttt{cdi} (rootless) / \texttt{none} \\
+\texttt{IMAGE\_TAG\_OVERRIDE}           & unset & Worker-side; rewrites \texttt{:latest} to the given tag.  Used on matemagician to pick the CUDA-10.1-compatible \texttt{:legacy} image \\
+\texttt{HOST\_ROOT}, \texttt{HOST\_PROJECT\_ROOT} & \texttt{/host}, \texttt{\$\{PWD\}/..} & Resolve container-internal vs.\ host paths for Docker bind mounts \\
+\hline
+\end{tabularx}
+\caption{Key environment variables.}
+\label{tab:env-vars}
+\end{table}

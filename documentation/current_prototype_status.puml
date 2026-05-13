@@ -1,69 +1,78 @@
 @startuml CurrentPrototype
-title Current Prototype Architecture
+title Current Prototype Architecture (distributed)
 
 skinparam shadowing false
 skinparam componentStyle rectangle
 
 actor User
 
-package "Frontend (nginx)" {
-    rectangle "React SPA" as UI
+package "User machine" {
+    rectangle "React SPA\n(Vite dev / nginx)" as UI
+    rectangle "REST API (FastAPI)\n+ ProfilingScheduler\n+ JobDispatcher\n+ NodeSlots (per-node semaphores)\n+ Optimizer client" as API
+    rectangle "GPUspb Optimizer\n(HTTP, optional)" as OPT
 }
 
-package "API (FastAPI)" {
-    rectangle "REST API\n+ ProfilingScheduler\n+ JobDispatcher" as API
-    database "PostgreSQL" as DB
+cloud "SSH tunnels\n(ports 5432, 800x)" as SSH
+
+package "Remote GPU node A\n(matemagician — legacy CUDA 10.1)" {
+    rectangle "Worker (FastAPI HTTP)" as WorkerA
+    rectangle "Docker containers\n(:legacy image)" as DockerA
+    folder "Checkpoints / Run logs\n(shared rclone-SFTP mount)" as FSA
 }
 
-package "Worker (FastAPI, per GPU node)" {
-    rectangle "Job Worker\n(HTTP server)" as JobWorker
+package "Remote GPU node B\n(polimi-gpu — A40)" {
+    rectangle "Worker (FastAPI HTTP)" as WorkerB
+    rectangle "Docker containers\n(:latest image)" as DockerB
+    folder "Checkpoints / Run logs\n(shared rclone-SFTP mount)" as FSB
 }
 
-package "Execution" {
-    rectangle "Docker\nContainers" as Docker
-    folder "Checkpoints" as Checkpoints
-    folder "Run logs" as Logs
-}
+database "PostgreSQL\n(on a GPU node)" as DB
 
 ' Interactions
-User --> UI : submit/stop/resume
+User --> UI
 UI --> API : HTTP (CORS-gated)
-API --> DB : connection pool\n(psycopg-pool)
-API --> JobWorker : POST /jobs/{id}/run\nPOST /jobs/{id}/stop
-JobWorker --> Docker : run containers
-JobWorker --> DB : progress + status updates\nNOTIFY ijm_schedule
-Docker --> Checkpoints : save/load
-Docker --> Logs : stdout capture
+
+API --> OPT : POST /optimizer/v5\n(jobs + currentScheduling)
+API --> SSH
+SSH --> WorkerA : POST /jobs/{id}/run\nPOST /jobs/{id}/stop?reason=user|auto
+SSH --> WorkerB : POST /jobs/{id}/run\nPOST /jobs/{id}/stop?reason=user|auto
+SSH --> DB
+
+WorkerA --> DockerA : run / kill\n(per-job container)
+WorkerB --> DockerB : run / kill
+DockerA --> FSA : save/load
+DockerB --> FSB : save/load
+
+WorkerA --> DB : status / progress\nNOTIFY ijm_schedule\nNOTIFY ijm_slot_freed
+WorkerB --> DB : status / progress\nNOTIFY ijm_schedule\nNOTIFY ijm_slot_freed
 
 note right of API
-    • Job CRUD + pagination
-    • Atomic stop/resume (no TOCTOU)
-    • Image name validation
-    • Path traversal protection
-    • Health check (DB)
-    • GPU-aware profiling scheduler
-    • PG LISTEN/NOTIFY for instant wakeup
+    • Job CRUD, stop/resume, log proxy
+    • Profile-always policy (1 cfg / instance)
+    • Two-tier scheduling:
+        Phase 1a — sweep stale claims, reset stuck QUEUED
+        Phase 1b — optimizer ⇒ assignments + preempts
+        Phase 1c — proactive profile-preempt
+        Greedy fallback for un-optimized jobs
+    • LISTEN ijm_schedule (wake scheduler)
+    • LISTEN ijm_slot_freed (release semaphores)
+    • Periodic drift watcher (5 min)
 end note
 
-note right of JobWorker
-    • HTTP endpoints (FastAPI)
-    • Concurrent job execution
-    • Async subprocess (non-blocking)
-    • State reconciliation on startup
-    • Job timeout (configurable, default 24h)
-    • NOTIFY scheduler on preempt/profiling done
-    • GET /jobs/{id}/logs for log proxying
+note right of WorkerA
+    • Atomic Phase 1 claim of QUEUED row
+    • Dispatch + stream logs in subprocess
+    • Stale-stop guard (assigned_node ≠ self)
+    • Pre-flipped PREEMPTED handling
+    • Zombie release on kill failure
+    • Cross-version stderr filter
 end note
 
-note right of Docker
-    • Resumable execution (checkpoints)
-    • Profiling isolation (separate ckpt dir)
-
-    → Evolves to: K8s Jobs / Pods
-end note
-
-note right of Checkpoints
-    → Evolves to: S3 (distributed storage)
+note bottom of FSA
+    Checkpoints stored in legacy
+    pre-1.6 torch format so a job can
+    resume across nodes regardless of
+    the running torch version.
 end note
 
 @enduml

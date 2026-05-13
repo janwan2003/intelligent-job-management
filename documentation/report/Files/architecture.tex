@@ -1,103 +1,212 @@
-\subsection{Profiling}
+\subsection{Deployment topology}
 
-The profiling subsystem incrementally benchmarks GPU configurations before committing to a full training run.
-Each time a job is submitted, the \texttt{ProfilingScheduler} selects one untested configuration (fewest total GPUs first), runs the training script for a small number of epochs on a dedicated profiling node, and records the measured duration.
-Profiling results are keyed by the user-provided \texttt{job\_id} (a reusable type identifier, e.g.\ \texttt{LSTM-small}), not the per-submission instance UUID.
-This means submitting the same \texttt{job\_id} multiple times incrementally builds profiling data across submissions.
-Once enough configurations have been profiled (controlled by the \texttt{PROFILING\_CONFIGS\_PER\_JOB} environment variable, default~1), the job is re-queued as a standard run on the best available production node.
+IJM runs as a small distributed system.
+The FastAPI \emph{API} (which also hosts the \texttt{ProfilingScheduler}, \texttt{JobDispatcher}, \texttt{NodeSlots} semaphores and the optimizer client) runs on the operator's machine.
+A lightweight FastAPI \emph{worker} runs on every GPU node and owns the local Docker daemon.
+PostgreSQL runs on one of the GPU nodes.
+Communication is plain HTTP over SSH tunnels, so the API reaches each worker at a stable \texttt{http://localhost:800x} alias regardless of where it actually sits.
+An optional GPUspb \emph{optimizer} HTTP service is reached from the API.
 
-Figure~\ref{fig:seq-submit} shows what happens when a user submits a job.
-Figure~\ref{fig:seq-profiling-loop} shows the profiling cycle that follows when the scheduler decides to profile.
+\begin{figure}[H]
+\centering
+\includegraphics[width=\textwidth]{Images/CurrentPrototype.png}
+\caption{Distributed prototype: SPA + API + optimizer on the operator's machine, workers + Docker on each GPU node, PostgreSQL on a GPU node, all glued together over SSH-tunneled HTTP.  Checkpoints written by one node are visible from the other via a shared rclone-over-SFTP mount.}
+\label{fig:prototype}
+\end{figure}
+
+Single-process \texttt{docker compose} on the operator's machine is supported for development but is not the deployment target: any tradeoff between local-dev simplicity and distributed correctness resolves toward the distributed topology.
+
+\subsection{Scheduling pipeline}
+
+A single scheduling pass --- \texttt{\_schedule\_waiting\_jobs} in \texttt{app.py} --- handles every dispatch decision.  It is invoked whenever a job is submitted, a profiling run finishes, a slot is freed, or every 60~s by a watchdog.  Notifies are coalesced through a single \texttt{asyncio.Event} and rate-limited to at most one pass every five seconds so the cluster has time to apply the previous plan before the next one is computed.
+
+The pass walks four phases under a single \texttt{schedule\_lock}:
+
+\begin{itemize}
+  \item[\textbf{Phase 0}] Sweep stale profile claims (rows in \texttt{profiling\_results} with \texttt{duration\_seconds IS NULL} whose owning instance no longer exists or was repurposed) and reset stuck \texttt{QUEUED} rows whose \texttt{assigned\_node} was set $\geq 30$~s ago without the worker advancing them.
+  \item[\textbf{Phase 1b}] Call the optimizer (outside the lock for its 30~s HTTP timeout) and apply its assignments via conditional \texttt{UPDATE \ldots WHERE assigned\_node IS NULL}; collect its preempt list.
+  \item[\textbf{Greedy fallback}] For \texttt{QUEUED} rows the optimizer did not place (typically rows still owing a profile run), the \texttt{ProfilingScheduler} picks one profile config or a profiled standard slot.
+  \item[\textbf{Phase 1c}] If a row still has no slot and still owes a profile, find the cheapest set of low-priority \texttt{RUNNING} jobs whose eviction would free enough GPUs for the next unprofiled config (the \emph{profile-always} policy).
+\end{itemize}
+
+Outside the lock the pass spawns one task per preempt and one per dispatch.  Each dispatch goes through \texttt{JobDispatcher.dispatch\_with\_slot}, which acquires the destination's \texttt{NodeSlots} permit before sending \texttt{POST /jobs/\{id\}/run} to the right worker.  Permits are released when the worker emits a \texttt{NOTIFY ijm\_slot\_freed} carrying the freed \texttt{(node\_id, n\_gpus)} pair.
+
+Figure~\ref{fig:seq-submit} shows the submission path, Figure~\ref{fig:seq-profiling-loop} the cross-instance profile cycle, Figure~\ref{fig:seq-optimizer-cycle} an optimizer-driven preempt+migrate round, and Figure~\ref{fig:seq-standard-run} the standard run.
 
 \begin{figure}[H]
 \centering
 \footnotesize
-\setlength{\unitlength}{0.9cm}
+\setlength{\unitlength}{0.7cm}
+\resizebox{\textwidth}{!}{%
 \begin{sequencediagram}
   \newthread{user}{User}
-  \newinst[2]{api}{API + Scheduler}
-  \newinst[2]{db}{PostgreSQL}
-  \newinst[2]{runner}{JobRunner}
+  \newinst[1.5]{api}{API}
+  \newinst[1.5]{sched}{Scheduler}
+  \newinst[1.5]{opt}{Optimizer}
+  \newinst[1.5]{db}{PostgreSQL}
+  \newinst[1.5]{worker}{Worker}
 
   \begin{call}{user}{\textsc{post} /jobs \{job\_id, dockerImage, \ldots\}}{api}{instance\_id}
-    \begin{call}{api}{INSERT INTO jobs}{db}{}
+    \begin{call}{api}{INSERT INTO jobs (status=QUEUED)}{db}{}
     \end{call}
-    \begin{call}{api}{SELECT profiling\_results WHERE job\_id}{db}{profiled configs}
-    \end{call}
-    \begin{call}{api}{SELECT running jobs (node usage)}{db}{busy nodes}
-    \end{call}
-    \begin{callself}{api}{decide: profile or standard run}{}
-    \end{callself}
-    \begin{call}{api}{UPDATE jobs SET assignment}{db}{}
-    \end{call}
-    \begin{messcall}{api}{enqueue(instance\_id)}{runner}
+    \begin{messcall}{api}{NOTIFY ijm\_schedule}{db}
     \end{messcall}
   \end{call}
-\end{sequencediagram}
-\caption{Job submission and scheduling.  The API inserts the job, queries existing profiling results and current node usage from PostgreSQL, then decides the mode: if untested GPU configurations remain and the per-submission profiling budget is not exhausted, the job is assigned to a profiling node; otherwise it is assigned to a production node for a standard run.  The decision is persisted and the job is enqueued for execution.}
+  \begin{sdblock}{schedule pass}{coalesced, $\geq 5$s apart}
+    \begin{call}{sched}{sweep stale claims; reset stuck QUEUED}{db}{}
+    \end{call}
+    \begin{call}{sched}{optimize(active jobs, currentScheduling)}{opt}{assignments, preempts}
+    \end{call}
+    \begin{call}{sched}{UPDATE assigned\_node WHERE NULL}{db}{}
+    \end{call}
+    \begin{callself}{sched}{greedy fallback + profile-preempt scan}{}
+    \end{callself}
+    \begin{messcall}{sched}{dispatch\_with\_slot $\rightarrow$ acquire permit $\rightarrow$ POST /run}{worker}
+    \end{messcall}
+  \end{sdblock}
+\end{sequencediagram}}
+\caption{Submission and scheduling.  The API only writes the row and notifies the scheduler; placement is decided by the next scheduling pass.  The optimizer call is made outside the schedule lock so its 30~s HTTP timeout cannot block other passes; stale optimizer suggestions are safely filtered by Phase~1b's conditional update.  Slot semaphores ensure that no more containers than GPUs are dispatched to any worker.}
 \label{fig:seq-submit}
 \end{figure}
 
 \begin{figure}[H]
 \centering
 \footnotesize
-\setlength{\unitlength}{0.9cm}
+\setlength{\unitlength}{0.7cm}
+\resizebox{\textwidth}{!}{%
 \begin{sequencediagram}
-  \newthread{runner}{JobRunner}
-  \newinst[1]{exec}{Executor}
-  \newinst[1]{api}{API + Scheduler}
-  \newinst[1]{db}{PostgreSQL}
+  \newthread{worker}{Worker}
+  \newinst[1.5]{docker}{Docker}
+  \newinst[1.5]{api}{API}
+  \newinst[1.5]{sched}{Scheduler}
+  \newinst[1.5]{db}{PostgreSQL}
 
-  \begin{sdblock}{loop}{while profiled this round $<$ \texttt{CONFIGS\_PER\_JOB} and untested configs remain}
-    \begin{call}{runner}{UPDATE status = PROFILING}{db}{}
-    \end{call}
-    \begin{call}{runner}{run(container, image, env)}{exec}{exit code}
-    \end{call}
-    \begin{call}{runner}{on\_profiling\_complete(duration)}{api}{}
-      \begin{call}{api}{INSERT profiling\_results}{db}{}
-      \end{call}
-      \begin{call}{api}{SELECT profiled count since submission}{db}{count}
-      \end{call}
-      \begin{call}{api}{SELECT node usage}{db}{busy nodes}
-      \end{call}
-      \begin{callself}{api}{decide: profile next config or standard run}{}
-      \end{callself}
-      \begin{call}{api}{UPDATE jobs SET QUEUED + new assignment}{db}{}
+  \begin{call}{worker}{atomic claim: UPDATE \ldots status=PROFILING}{db}{ok}
+  \end{call}
+  \begin{call}{worker}{docker run (profile container, isolated ckpt dir)}{docker}{exit code}
+  \end{call}
+  \begin{call}{worker}{UPDATE jobs SET status=QUEUED, is\_profiling=false}{db}{}
+    \begin{call}{api}{report mean per-epoch duration (warmup excluded)}{db}{}
+      \begin{call}{api}{UPDATE profiling\_results SET duration\_seconds}{db}{}
       \end{call}
     \end{call}
-    \begin{messcall}{api}{enqueue(instance\_id)}{runner}
-    \end{messcall}
+  \end{call}
+  \begin{messcall}{worker}{NOTIFY ijm\_schedule}{db}
+  \end{messcall}
+  \begin{sdblock}{next scheduling pass}{}
+    \begin{callself}{sched}{place this row as standard run, or pick next config to profile}{}
+    \end{callself}
   \end{sdblock}
-\end{sequencediagram}
-\caption[Profiling cycle.]{Profiling cycle.  After each profiling container exits, the \texttt{JobRunner} reports the measured duration to the API.  The API records the result, then re-runs the same scheduling logic as Figure~\ref{fig:seq-submit}: it checks the profiled count for this submission against \texttt{CONFIGS\_PER\_JOB} and whether untested configurations remain.  If the budget allows, the next untested config is assigned and the loop repeats; otherwise the job transitions to a standard run on the best profiled configuration.}
+\end{sequencediagram}}
+\caption[Profiling cycle.]{Profiling cycle.  Profiling results are keyed by the (job-type, gpu-config) pair and shared across submissions of the same type.  Each instance contributes one profile run by default (\texttt{PROFILING\_\allowbreak CONFIGS\_\allowbreak PER\_\allowbreak JOB}); the per-instance claim row guards against duplicate measurements.  Mean per-epoch time is computed from monotonic timestamps with the first (warmup) epoch excluded.}
 \label{fig:seq-profiling-loop}
 \end{figure}
-
-Figure~\ref{fig:seq-standard-run} shows the standard run execution, which follows once profiling is complete (or is skipped entirely if all configurations are already profiled).
 
 \begin{figure}[H]
 \centering
 \footnotesize
-\setlength{\unitlength}{0.9cm}
+\setlength{\unitlength}{0.7cm}
+\resizebox{\textwidth}{!}{%
 \begin{sequencediagram}
-  \newthread{runner}{JobRunner}
-  \newinst[1]{exec}{Executor}
-  \newinst[1]{api}{API + Scheduler}
-  \newinst[1]{db}{PostgreSQL}
+  \newthread{sched}{Scheduler}
+  \newinst[1.5]{opt}{Optimizer}
+  \newinst[1.5]{db}{PostgreSQL}
+  \newinst[1.5]{victim}{Worker (victim)}
+  \newinst[1.5]{target}{Worker (target)}
 
-  \begin{call}{runner}{UPDATE status = RUNNING}{db}{}
+  \begin{call}{sched}{POST /optimizer/v5 \{jobs, nodes, currentScheduling\}}{opt}{assignments + preempts}
   \end{call}
-  \begin{call}{runner}{run(container, image, env)}{exec}{exit code}
+  \begin{call}{sched}{record pending\_evictions (in-memory)}{db}{}
   \end{call}
-  \begin{call}{runner}{on\_job\_completed(exit\_code)}{api}{}
-    \begin{call}{api}{UPDATE jobs SET SUCCEEDED/FAILED}{db}{}
+  \begin{messcall}{sched}{POST /stop?reason=auto}{victim}
+  \end{messcall}
+  \begin{call}{victim}{kill container, drain run task}{db}{}
+    \begin{call}{victim}{UPDATE jobs SET status=QUEUED, assigned\_node=NULL}{db}{}
     \end{call}
-    \begin{call}{api}{SELECT QUEUED jobs}{db}{waiting jobs}
-    \end{call}
-    \begin{callself}{api}{schedule waiting jobs on freed node}{}
+    \begin{messcall}{victim}{NOTIFY ijm\_slot\_freed "node:n"}{db}
+    \end{messcall}
+  \end{call}
+  \begin{callself}{sched}{release NodeSlots permit on LISTEN}{}
+  \end{callself}
+  \begin{call}{sched}{Phase 1b apply new placement (assigned\_node was NULL)}{db}{}
+  \end{call}
+  \begin{messcall}{sched}{dispatch\_with\_slot $\rightarrow$ POST /run}{target}
+  \end{messcall}
+\end{sequencediagram}}
+\caption[Optimizer cycle.]{Optimizer-driven preempt and migrate.  The API trusts GPUspb's plan: any job in \texttt{currentScheduling} that the optimizer drops or moves to a different slot is preempted with \texttt{reason=auto}, which clears its assignment so Phase~1b can re-apply the new placement.  An in-memory pending-evictions map makes freshly-evicted slots visible to the scheduler before the worker's slot-freed commit lands, so multi-victim profile preempts do not deadlock.}
+\label{fig:seq-optimizer-cycle}
+\end{figure}
+
+\begin{figure}[H]
+\centering
+\footnotesize
+\setlength{\unitlength}{0.7cm}
+\resizebox{\textwidth}{!}{%
+\begin{sequencediagram}
+  \newthread{worker}{Worker}
+  \newinst[1.5]{docker}{Docker}
+  \newinst[1.5]{sched}{Scheduler}
+  \newinst[1.5]{db}{PostgreSQL}
+
+  \begin{call}{worker}{atomic claim: UPDATE \ldots status=RUNNING}{db}{ok}
+  \end{call}
+  \begin{call}{worker}{docker run (training container)}{docker}{exit code}
+  \end{call}
+  \begin{call}{worker}{UPDATE jobs SET SUCCEEDED/FAILED}{db}{}
+  \end{call}
+  \begin{messcall}{worker}{NOTIFY ijm\_slot\_freed "node:n"; NOTIFY ijm\_schedule}{db}
+  \end{messcall}
+  \begin{sdblock}{next scheduling pass}{}
+    \begin{callself}{sched}{place a waiting job on the freed slot}{}
     \end{callself}
-  \end{call}
-\end{sequencediagram}
-\caption{Standard run execution.  The \texttt{JobRunner} launches the training container via the \texttt{Executor} and waits for it to exit.  On completion, the API sets the final status (SUCCEEDED or FAILED) and attempts to schedule any waiting QUEUED jobs onto the now-free node.}
+  \end{sdblock}
+\end{sequencediagram}}
+\caption{Standard run execution.  The worker performs an atomic conditional \texttt{UPDATE \ldots WHERE status = ANY(RUNNABLE\_STATUSES)} so concurrent stops / duplicate dispatches cannot race a row into \texttt{RUNNING}.  On exit the worker fires both \texttt{ijm\_slot\_freed} (which releases the API's NodeSlots permit) and \texttt{ijm\_schedule} (which wakes the scheduler) in the same transaction.}
 \label{fig:seq-standard-run}
 \end{figure}
+
+\subsection{State machine}
+
+A job moves through the following states.  All transitions are driven by atomic conditional \texttt{UPDATE}s so concurrent stop / dispatch / completion paths cannot clobber each other's work.
+
+\begin{center}
+\footnotesize
+\begin{tabular}{l l p{8.5cm}}
+\hline
+\textbf{From} & \textbf{To} & \textbf{Trigger} \\
+\hline
+\texttt{QUEUED}     & \texttt{PROFILING} / \texttt{RUNNING} & Worker Phase~1 atomic claim \\
+\texttt{PROFILING}  & \texttt{QUEUED}     & Profile run finished; \texttt{is\_profiling\_run} flips to \texttt{false} \\
+\texttt{RUNNING}    & \texttt{SUCCEEDED} / \texttt{FAILED} & Container exit \\
+\texttt{RUNNING}    & \texttt{PREEMPTED}  & User \texttt{POST /jobs/\{id\}/stop?reason=user} \\
+\texttt{RUNNING}    & \texttt{QUEUED}     & Auto-preempt \texttt{reason=auto}: clears \texttt{assigned\_node} so the next pass can place elsewhere \\
+\texttt{PREEMPTED} / \texttt{FAILED} & \texttt{QUEUED} & \texttt{POST /jobs/\{id\}/resume} \\
+\hline
+\end{tabular}
+\end{center}
+
+Two distinct stop reasons separate \emph{user-initiated} preemption (sticky \texttt{PREEMPTED}, the user must explicitly resume) from \emph{scheduler-initiated} preemption (\texttt{QUEUED} with cleared assignment, picked up automatically on the next scheduling pass).  The worker enforces this distinction and is also responsible for ignoring stale \texttt{/stop} calls aimed at a row that has since been re-assigned to a different node.
+
+\subsection{Concurrency invariants}
+
+The control plane relies on three invariants, each defended in code:
+
+\begin{itemize}
+  \item \textbf{No GPU oversubscription.}  Every dispatch goes through \texttt{NodeSlots.acquire(node\_id, n\_gpus)}.  On startup the semaphores are reconciled from the DB (rows in \texttt{RUNNING}/\texttt{PROFILING} or \texttt{QUEUED} with an assigned node pre-acquire their permits).  A periodic drift watcher recomputes the authoritative count every five minutes and corrects any divergence.
+  \item \textbf{No duplicate containers per row.}  Both the worker (Phase~1 claim, \texttt{running\_jobs[job\_id]} check) and the API (\texttt{dispatch\_tasks[instance\_id]} deduplication) refuse a second concurrent dispatch for the same instance.  The reaper that resets stuck \texttt{QUEUED} rows cancels any live dispatch task instead of double-releasing its permit.
+  \item \textbf{Profiling is sacred.}  Auto-preempt (\texttt{\_preempt\_and\_release}) refuses to act on \texttt{is\_profiling\_run=TRUE}; profile-preempt (Phase~1c) filters victims by \texttt{status='RUNNING'} only.  Only an explicit user \texttt{/stop?reason=user} can cancel an in-flight measurement.
+\end{itemize}
+
+\subsection{Cross-node checkpoints and image variants}
+
+Two GPU generations are supported.  The \texttt{matemagician} node is pinned to driver 418.x (CUDA 10.1 max), so it runs a separate \texttt{:legacy} image built on PyTorch 1.5.1 + Python 3.7.  Newer nodes run the default \texttt{:latest} image on PyTorch 2.6 + CUDA 12.4.  Checkpoints are saved in the legacy pre-1.6 torch serialization format on every node so that a job can resume across nodes regardless of which torch version produced the file.
+
+The shared \texttt{data/} directory is mounted on every node via rclone over SFTP and contains:
+
+\begin{itemize}
+  \item \texttt{data/checkpoints/\{job\_id\}/} --- per-job checkpoints, mounted into the container at \texttt{/checkpoints};
+  \item \texttt{data/runs/\{job\_id\}/} --- captured stdout (\texttt{output.log}) and TensorBoard artifacts, mounted at \texttt{/runs};
+  \item \texttt{data/shared/data/} --- read-only dataset cache (MNIST, CIFAR-10), mounted at \texttt{/runs/data}.
+\end{itemize}
+
+Worker-side environment variables \texttt{WORKER\_GPU\_MODE} (\texttt{runtime} | \texttt{cdi} | \texttt{none}) and \texttt{IMAGE\_TAG\_OVERRIDE} let the same nodes\_config drive heterogeneous nodes: the polimi-gpu rootless daemon uses CDI device injection, matemagician rewrites \texttt{:latest} to \texttt{:legacy}, and a CPU-only sandbox can be added by setting \texttt{WORKER\_GPU\_MODE=none}.

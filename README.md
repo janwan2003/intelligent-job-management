@@ -17,7 +17,10 @@ docker build -t ijm-lstm-small:dev --build-arg SCRIPT=lstm_small.py runtime/
 docker build -t ijm-lstm-big:dev   --build-arg SCRIPT=lstm_big.py   runtime/
 docker build -t ijm-convnet:dev    --build-arg SCRIPT=convnet.py    runtime/
 docker build -t ijm-efficientnet:dev --build-arg SCRIPT=efficientnet.py runtime/
+docker build -t ijm-cnn_big:dev    --build-arg SCRIPT=cnn_big.py    runtime/   # heavy CNN, 2-GPU-beneficial
 ```
+
+`cnn_big` is a deep CNN (10 conv blocks, channels grow up to 512, 128×128×3 synthetic-tensor input, batch 32) deliberately sized so per-step compute amortises the DataParallel sync overhead on both GPU classes — see `tab:e2e-2gpu` in `documentation/report` for the measured per-bundle epoch times (P600×2 is **1.68× faster** than P600×1, A40×2 is 1.12× faster than A40×1).
 
 ### 2. Create data directories
 
@@ -96,20 +99,36 @@ NFS works too if you have admin access.
 
 ### Client side — run API + frontend locally against the cluster
 
-```bash
-# Terminal 1: open SSH tunnels (keep running)
-./infra/tunnel.sh
+The supported path is `infra/launch.sh tunnel --with-guard` (single command, handles tunnels + dockerised optimizer/frontend + native API in one go):
 
-# Terminal 2: start API + frontend (+ optimizer)
-cd infra && docker compose -f docker-compose.tunnel.yml up --build
+```bash
+# Terminal 1: open SSH tunnels (keep running, ServerAliveInterval=30 to survive overnight)
+ssh -fN -o ServerAliveInterval=30 -o ServerAliveCountMax=3 \
+    -L 0.0.0.0:5433:localhost:5433 \
+    -L 0.0.0.0:8001:localhost:8001 \
+    -L 0.0.0.0:8002:10.79.23.173:8001 polimi
+
+# Terminal 2: native API + dockerised optimizer/frontend, migration guard ON
+bash infra/launch.sh tunnel --with-guard
 ```
+
+`--with-guard` exports `IJM_OPTIMIZER_GUARD_MIGRATIONS=1` which suppresses unprofitable migrations (kill+drain+lost-epoch penalty > energy savings). Without it the optimizer thrashes on flat cost surfaces — for instance `cnn_big` where P600×1 and A40×1 differ by only ~$0.005 per 40 epochs, so the optimizer keeps re-picking cost-equivalent plans and the cluster oscillates forever.
 
 Opens:
 - **Frontend** → http://localhost:5173
-- **API** → http://localhost:8000
+- **API** → http://localhost:8000  (native uvicorn, logs at `/tmp/api.log`)
 - **Optimizer** → localhost:8080
 
-`tunnel.sh` forwards 3 ports through matemagician: `5433` (postgres), `8001` (matemagician worker), `8002` (polimi-gpu worker via internal LAN). Close Terminal 1 to disconnect.
+### End-to-end scenarios
+
+Two scripts exercise the full submission → profile-sweep → URGENT preempt → cross-node resume → user-stop → drain pipeline:
+
+```bash
+bash infra/e2e_scenario.sh         # single-type (lstm-small only)
+bash infra/e2e_scenario_2types.sh  # lstm-small + cnn_big, 2 URGENT preempts, both cross-node resume
+```
+
+Both clear DB state at Stage 0 and rely on the live profile sweep to fill the cache. The 2-types scenario uses `EPOCHS_SMALL=400` by default to keep lstm-small alive long enough to overlap with cnn_big's 30-min P600 standard run; override via env if you have a faster cluster.
 
 ### Building the runtime images on the server
 
@@ -121,12 +140,14 @@ The `runtime/` directory is not deployed to the server. Copy it over and build t
 ```bash
 rsync -av runtime/ polimi:~/ijm-runtime/
 ssh polimi 'cd ~/ijm-runtime &&
-  for s in lstm_small.py lstm_big.py convnet.py efficientnet.py; do
+  for s in lstm_small.py lstm_big.py convnet.py efficientnet.py cnn_big.py; do
     tag=${s%.py}; tag=${tag//_/-}
     docker build --build-arg SCRIPT=$s -t wangrat/ijm-$tag:latest .
     docker build -f Dockerfile.legacy --build-arg SCRIPT=$s -t wangrat/ijm-$tag:legacy .
   done'
 ```
+
+Note: the image-name convention uses dashes (`lstm-small`, `cnn-big`) but the python sources keep underscores (`lstm_small.py`, `cnn_big.py`). The scenarios submit with the **tag** in image+job_id, e.g.\ `wangrat/ijm-cnn_big:latest` — that's a tag that intentionally keeps the underscore (the worker / API don't care which separator the type uses; they just propagate it verbatim).
 
 If the node can't reach Docker Hub (Polimi firewall), build the image locally and transfer:
 

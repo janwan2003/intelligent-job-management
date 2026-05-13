@@ -61,13 +61,22 @@ class ProfilingScheduler:
     def get_valid_configurations(self) -> list[dict[str, int]]:
         """Derive GPU configurations worth profiling: intersection of profiling and production node capabilities.
 
-        Returns a deduplicated list sorted by total GPU count ascending.
+        Returns a deduplicated list sorted (1) by total GPU count ascending,
+        then (2) by GPU type name alphabetically.  The secondary sort is
+        load-bearing for scenario determinism: ``profiling.keys() &
+        production.keys()`` is a ``set`` whose iteration order is not
+        insertion-stable, so without the secondary key two equal-sum configs
+        (e.g. ``QuadroP600$\times$1`` and ``A40$\times$1``) could come back
+        in different order across runs / Python versions, and the
+        e2e "which config gets profiled first" prediction would flip.
+        Alphabetical = ``A40`` < ``QuadroP600``, so single-GPU A40 ranks
+        before single-GPU P600.
         """
         production = self._node_configs(is_for_profiling=False)
         profiling = self._node_configs(is_for_profiling=True)
 
         configs = [profiling[key] for key in profiling.keys() & production.keys()]
-        configs.sort(key=lambda c: sum(c.values()))
+        configs.sort(key=lambda c: (sum(c.values()), sorted(c.keys())))
         return configs
 
     async def get_node_gpu_usage(self, conn: psycopg.AsyncConnection[Any]) -> dict[str, dict[str, int]]:
@@ -175,13 +184,20 @@ class ProfilingScheduler:
         job_id: str,
         node_gpu_usage: dict[str, dict[str, int]] | None = None,
     ) -> tuple[dict[str, int], NodeConfig] | None:
-        """Find any profiled config that has an available production node.
+        """Find a profiled config that has an available production node.
 
-        Returns the first ``(config, node)`` pair for which a non-profiling
-        node can be found, or ``None`` when no profiling results exist or no
-        node is currently available for any profiled config.
+        Iterates profiled configs in canonical sort order (fewest GPUs first,
+        then GPU type name alphabetically — same key
+        :py:meth:`get_valid_configurations` uses) and returns the first
+        ``(config, node)`` pair for which a non-profiling node has room.
+        The sort matters: without it, the iteration order is whatever the
+        DB returns for ``SELECT DISTINCT gpu_config``, which can land the
+        scheduler on a strictly-worse multi-GPU placement (e.g.
+        ``lstm-small`` on ``A40$\times$2`` when both A40 slots are free,
+        even though ``A40$\times$1`` finishes faster AND is cheaper).
         """
         profiled = await self.get_profiled_configs(conn, job_id, completed_only=True)
+        profiled.sort(key=lambda c: (sum(c.values()), sorted(c.keys())))
         for gpu_config in profiled:
             node = self._find_node_for_config(gpu_config, is_for_profiling=False, node_gpu_usage=node_gpu_usage)
             if node:
@@ -358,7 +374,7 @@ class ProfilingScheduler:
         conn: psycopg.AsyncConnection[Any],
         instance_id: str,
         type_id: str,
-    ) -> list[str]:
+    ) -> tuple[list[str], str | None, dict[str, int] | None]:
         """Find the minimum set of running jobs to evict so this unprofiled
         config can fit on a profiling-capable node.
 
@@ -389,7 +405,7 @@ class ProfilingScheduler:
         profiled_keys = {config_key(c) for c in profiled}
         remaining = [c for c in all_configs if config_key(c) not in profiled_keys]
         if not remaining:
-            return []
+            return [], None, None
         target = remaining[0]
 
         node_gpu_usage = await self.get_node_gpu_usage(conn)
@@ -412,7 +428,7 @@ class ProfilingScheduler:
                 # Already fits — caller should just schedule it directly
                 # (this function is called when ``schedule_job`` already
                 # failed to find a node; in that case ``need`` will be > 0).
-                return []
+                return [], None, None
 
             async with conn.cursor() as cur:
                 await cur.execute(
@@ -446,9 +462,9 @@ class ProfilingScheduler:
                     type_id,
                     target,
                 )
-                return chosen
+                return chosen, node.id, target
 
-        return []
+        return [], None, None
 
     async def schedule_job(
         self,
@@ -501,21 +517,30 @@ class ProfilingScheduler:
 
         explore_now = remaining and profiled_this_round < self.configs_per_job
         if explore_now:
-            # Exploration: pick the smallest un-profiled config (fewest total GPUs)
-            candidate = remaining[0]
-            candidate_node = self._find_node_for_config(candidate, is_for_profiling=True, node_gpu_usage=node_gpu_usage)
-            if candidate_node is not None:
-                gpu_config, node = candidate, candidate_node
-                mode, is_profiling_run = "profiling", True
+            # Exploration: try each unprofiled config in order (smallest first)
+            # and pick the first one that fits on a profiling-capable node.
+            # Without this fallback, the scheduler would stall on
+            # ``remaining[0]`` whenever its target node was busy — even when
+            # a different unprofiled config could start immediately on an
+            # idle node.  Phase 1c will still be invoked for the smallest
+            # config that didn't fit, so we don't lose the "profile-evicts"
+            # behaviour; this just opportunistically uses idle capacity
+            # first instead of waiting on an eviction.
+            for candidate in remaining:
+                candidate_node = self._find_node_for_config(
+                    candidate, is_for_profiling=True, node_gpu_usage=node_gpu_usage
+                )
+                if candidate_node is not None:
+                    gpu_config, node = candidate, candidate_node
+                    mode, is_profiling_run = "profiling", True
+                    break
 
         if not is_profiling_run and not explore_now:
-            # Only fall through to a standard run when there's no exploration
-            # owed — i.e. this type's config matrix is fully profiled (or this
-            # instance has spent its per-job profiling budget).  When there IS
-            # exploration owed but the smallest unprofiled config didn't fit
-            # right now, we leave the job QUEUED (no assignment) so that
-            # Phase 1c can evict a victim and the next scheduling round
-            # places the profile run — "profiling always wins" policy.
+            # Greedy standard-placement fallback: when no exploration is owed
+            # and the optimizer hasn't (yet) placed this row, opportunistically
+            # pick the smallest-cost profiled config that fits on an available
+            # production node.  Keeps idle slots from sitting empty between
+            # optimizer rounds.
             available = await self._find_available_config(conn, type_id, node_gpu_usage)
             if available:
                 gpu_config, node = available

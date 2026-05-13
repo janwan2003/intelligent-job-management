@@ -10,7 +10,24 @@ Intelligent Job Management (IJM) — a job management system for GPU deep learni
 
 ## Common Commands
 
-### Full stack (Docker Compose)
+### Full stack (distributed cluster — the supported path)
+```bash
+# 1. SSH tunnels to remote postgres + workers (one-shot, leave running)
+bash infra/tunnel.sh polimi   # forwards 5433, 8001, 8002 with ServerAlive*
+
+# 2. Native API + dockerised optimizer + frontend.  ``--with-guard`` is
+#    recommended: enables IJM_OPTIMIZER_GUARD_MIGRATIONS=1 which suppresses
+#    unprofitable migrations and stops the optimizer from thrashing under
+#    flat cost surfaces (e.g.\ cnn_big where P600x1/A40x1 only differ by
+#    ~$0.005).
+bash infra/launch.sh tunnel --with-guard
+
+# 3. Run scenarios
+bash infra/e2e_scenario.sh                # single-type (lstm-small) sweep
+bash infra/e2e_scenario_2types.sh         # lstm-small + cnn_big, urgent preempts, cross-node resume
+```
+
+### Full stack (Docker Compose, local-only — dev / smoke tests)
 ```bash
 docker build -t ijm-lstm-small:dev --build-arg SCRIPT=lstm_small.py runtime/  # Build runtime image (needed first)
 mkdir -p data/pg data/checkpoints data/runs   # Create data dirs
@@ -48,7 +65,9 @@ pnpm lint                      # ESLint
    - Path alias: `@/` maps to `src/`
    - Key directories: `src/api/` (client + React Query hooks), `src/components/ui/` (shadcn primitives), `src/components/` (custom), `src/pages/`, `src/config/features.ts` (feature flags)
 
-3. **Runtime** (`runtime/`) — Training containers matching ANDREAS job types. Shared base class in `base.py`, individual scripts: `lstm_small.py`, `lstm_big.py`, `convnet.py`, `efficientnet.py`. **Two Dockerfiles**: `Dockerfile` (PyTorch 2.6 + CUDA 12.4, default `:latest` tag) and `Dockerfile.legacy` (PyTorch 1.5.1 + CUDA 10.1, `:legacy` tag — used on matemagician whose driver maxes out at CUDA 10.1). Checkpoints are saved in the **legacy (pre-1.6) torch serialization format** so a job can resume across nodes regardless of torch version. `base.py` uses `from __future__ import annotations` to stay importable on Python 3.7 (the legacy image). Each script saves checkpoints after every epoch, loads on startup if exists. No SIGTERM handling — system kills containers between epochs (at most 1 epoch lost). Real datasets: MNIST (LSTM) and CIFAR-10 (CNN/EfficientNet). MNIST's `processed/` directory must be pre-staged alongside `raw/` for the legacy torchvision (0.6.1) lookup path; see README.
+3. **Runtime** (`runtime/`) — Training containers matching ANDREAS job types. Shared base class in `base.py`, individual scripts: `lstm_small.py`, `lstm_big.py`, `convnet.py`, `efficientnet.py`, `cnn_big.py`. **Two Dockerfiles**: `Dockerfile` (PyTorch 2.6 + CUDA 12.4, default `:latest` tag) and `Dockerfile.legacy` (PyTorch 1.5.1 + CUDA 10.1, `:legacy` tag — used on matemagician whose driver maxes out at CUDA 10.1). Checkpoints are saved in the **legacy (pre-1.6) torch serialization format** and loaded with `strict=False` + try/except around the optimizer-state dict, so a job can resume across nodes regardless of torch version (cnn_big specifically migrates between modern A40 and legacy P600 workers and needs this). `base.py` uses `from __future__ import annotations` to stay importable on Python 3.7 (the legacy image). `download_dataset` first tries `download=False` (uses pre-staged data at `data/datasets/MNIST/`, `data/datasets/cifar-10-batches-py/`) and only falls back to `download=True` on RuntimeError, which sidesteps the rootless-docker DNS flakiness on polimi-gpu. Each script saves checkpoints after every epoch, loads on startup if exists. No SIGTERM handling — system kills containers between epochs (at most 1 epoch lost). Real datasets: MNIST (LSTM) and CIFAR-10 (CNN/EfficientNet); synthetic 128×128×3 tensors for cnn_big (no torchvision dependency at all).
+
+**The cnn_big type** is a deep CNN (10 conv blocks, channels $3{\to}64{\to}128{\to}256{\to}384{\to}512$, $128{\times}128{\times}3$ input, batch 32) designed so per-step compute amortises the DataParallel sync overhead on \emph{both} GPU classes — measured profile: A40×1=6.29 s/epoch vs A40×2=5.63 s/epoch (1.12× faster on 2 GPUs); P600×1=51.06 s/epoch vs P600×2=30.32 s/epoch (1.68× faster). It is the type that exercises Scenario 2's 2-GPU placement-choice path.
 
 ### Executor Abstraction
 Container execution is decoupled via `src/executors/`:
@@ -87,6 +106,8 @@ QUEUED → PROFILING → QUEUED (re-queued as standard run) → RUNNING → SUCC
 | `EXECUTOR` | API | `docker` (or `mock-slurm`) |
 | `OPTIMIZER_URL` | API | unset (greedy scheduler); set to `http://optimizer:8080` for batch optimizer |
 | `OPTIMIZER_SWITCH_PENALTY_S` | API | `60` — wall-time charged at the destination GPU's hourly rate when destination profiling data is missing. Drops optimizer-proposed migrations whose claimed energy savings don't pay for kill+drain+lost-epoch overhead (tardy jobs are exempt). |
+| `IJM_OPTIMIZER_GUARD_MIGRATIONS` | API | unset (off). Setting `=1` (recommended; `launch.sh --with-guard` does this) activates the cost-benefit migration filter: non-tardy migrations whose energy savings don't beat the kill+drain+lost-epoch penalty get suppressed. Without it the optimizer can thrash on flat cost surfaces (e.g.\ cnn_big where P600×1 and A40×1 differ by only ~\$0.005) — every round it picks a cost-equivalent plan, the API honours it as preempt+re-dispatch, and the cluster oscillates indefinitely. |
+| `IJM_DRIFT_HEARTBEAT_S` | API | `15` — period of the slot-tracker drift heartbeat that reconciles `mem_used` against `db_used` per node.  Lower = faster recovery from acquire/release races, higher = less per-round overhead.  Counted in the `drift_recovery_count` metric exposed at `/admin/slots`. |
 | `WORKER_GPU_MODE` | worker | `runtime` (other values: `cdi` for rootless docker on polimi-gpu, `none` for CPU only). Selects how `docker run` is told to expose GPUs to the training container. |
 | `IMAGE_TAG_OVERRIDE` | worker | unset. If set, rewrites the job's image tag (`:latest` → `:$IMAGE_TAG_OVERRIDE`). Used on matemagician (`legacy`) where the node's NVIDIA driver (418.x, CUDA 10.1 max) cannot run the default CUDA-12.4 PyTorch image. |
 

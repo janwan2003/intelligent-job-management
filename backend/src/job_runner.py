@@ -361,7 +361,10 @@ class JobRunner:
                         progress = f"{epoch_num}/{match.group(2)}"
                         async with self.get_conn() as conn:
                             await self._update_job(conn, job_id, progress=progress)
-                        if is_profiling:
+                        # Only record profiling timestamps on epoch *completion*
+                        # (the "- Loss:" line), not the "- starting" line that
+                        # is emitted before the work runs.
+                        if is_profiling and "Loss" in stripped:
                             epoch_timestamps.append((epoch_num, time.monotonic()))
         except Exception:
             # An error here means we lose the rest of the container output and
@@ -400,8 +403,12 @@ class JobRunner:
                 run_start_time = datetime.now(UTC)
                 container_name = f"{CONTAINER_NAME_PREFIX}{job_id[:JOB_ID_DISPLAY_LENGTH]}"
 
+                # Reset `progress` on each (re)start so the UI doesn't show a
+                # stale value (e.g. lingering "3/3" from a just-finished
+                # profiling phase) until the new container reports its first
+                # epoch.
                 cur = await conn.execute(
-                    "UPDATE jobs SET status = %s, container_name = %s, updated_at = %s "
+                    "UPDATE jobs SET status = %s, container_name = %s, progress = NULL, updated_at = %s "
                     "WHERE id = %s AND status = ANY(%s) RETURNING id",
                     (run_status, container_name, run_start_time, job_id, list(RUNNABLE_STATUSES)),
                 )

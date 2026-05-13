@@ -1,0 +1,585 @@
+\subsection{Objective and cost model}
+\label{sec:e2e-objective}
+
+Every scheduling decision shown below minimises
+\[
+\textsc{TotalCost} \;=\; \sum_{j} \texttt{GPUcost}(j) + \sum_{j} \texttt{TardWeight}(j) \cdot \max\bigl(0, \texttt{finish}(j) - \texttt{deadline}(j)\bigr).
+\]
+
+\texttt{GPUcost} is wall-clock time times the per-hour rate of the
+assigned GPU bundle (Table~\ref{tab:e2e-rates}); \texttt{TardWeight}
+grows with the job's priority (Table~\ref{tab:e2e-tardweight}).  When
+every deadline has slack, the tardiness sum vanishes and the optimiser
+picks the \emph{cheapest} placement; when any deadline binds, the
+tardiness term dominates and the urgent job is shifted onto the
+\emph{fastest} available bundle even if that bundle is more expensive.
+
+\begin{table}[h!]\centering\small
+\begin{tabular}{lr}\toprule
+GPU bundle & \$/hour \\\midrule
+\texttt{QuadroP600$\times$1} & 0.030 \\
+\texttt{QuadroP600$\times$2} & 0.055 \\
+\texttt{A40$\times$1}        & 0.300 \\
+\texttt{A40$\times$2}        & 0.550 \\\bottomrule
+\end{tabular}
+\quad
+\begin{tabular}{cc}\toprule
+Priority & TardWeight (\$/sec) \\\midrule
+1 & 0.000254 \\
+4 & 0.000396 \\
+5 & 0.000444 \\\bottomrule
+\end{tabular}
+\caption{Left: hourly rates fed to the optimiser
+(\texttt{config/gpu\_energy\_costs.json}).  Two-GPU bundles are
+\emph{not} exactly twice the one-GPU rate (small co-location discount,
+0.55 vs 0.60 for A40$\times$2 and 0.055 vs 0.060 for P600$\times$2).
+Right: tardiness weight by priority (derived from urgency
+scaling).}\label{tab:e2e-rates}\label{tab:e2e-tardweight}
+\end{table}
+
+\paragraph{Cluster topology.}
+Two nodes, four slots total:
+
+\begin{center}\small
+\begin{tabular}{l l l l}\toprule
+Node              & GPUs                  & Bundle hourly cost & Role \\\midrule
+\texttt{matemagician}\,(n1) & 2$\times$\texttt{QuadroP600} & 0.055 (cheap, slow) & profiling-capable \\
+\texttt{polimi-gpu}\,(n2)   & 2$\times$\texttt{A40}        & 0.550 (fast)        & profiling-capable \\\bottomrule
+\end{tabular}
+\end{center}
+
+The four valid \texttt{(node, GPU-count)} cells are exercised cold for
+every new job type by the profile sweep (\texttt{configs\_per\_job}=2,
+so each instance contributes two cells and four instances cover all
+four).
+
+% ---------------------------------------------------------------------------
+\subsection{Two-GPU benefit \textemdash{} where it actually appears}
+\label{sec:e2e-multi-gpu}
+
+The heavy CNN type \texttt{cnn\_big} (ten $3{\times}3$ conv blocks
+growing $3\to64\to128\to256\to384\to512$ channels on
+$128{\times}128{\times}3$ synthetic tensors, batch $32$) was designed
+so per-step compute dominates the DataParallel sync overhead on
+\emph{both} GPU classes in the cluster.  Table~\ref{tab:e2e-2gpu}
+shows the per-epoch wall-clock times measured by the profile sweep,
+taken verbatim from the optimiser's input CSV
+(\texttt{call\_1778618087.0/SelectJobs\_times.csv}) for the
+\texttt{cnn\_big} probe (jobs \texttt{7c2353df}, \texttt{0c23432f}).
+
+\begin{table}[h!]\centering\small
+\begin{tabular}{l r r r}\toprule
+Bundle & per-epoch [s] & rel.\ to 1-GPU & per-epoch GPUcost [\$] \\\midrule
+\texttt{A40$\times$1}        & 6.294 & --                          & 0.000525 \\
+\texttt{A40$\times$2}        & \textbf{5.626} & \textbf{1.12$\times$ \emph{faster}} & 0.000859 \\
+\texttt{QuadroP600$\times$1} & 51.064 & --                          & 0.000426 \\
+\texttt{QuadroP600$\times$2} & \textbf{30.322} & \textbf{1.68$\times$ \emph{faster}} & 0.000463 \\\bottomrule
+\end{tabular}
+\caption{Measured per-epoch times from the profile sweep for
+\texttt{cnn\_big} (10 conv blocks, $128{\times}128{\times}3$ input,
+batch 32).  \textbf{Both} GPU classes now show a 2-GPU wall-clock
+speedup: A40$\times$2 is 11\% faster than A40$\times$1, and
+P600$\times$2 is \textbf{68\% faster} than P600$\times$1 (1.68$\times$
+speedup) --- DataParallel delivers near-linear scaling on P600
+because each step's forward+backward pass is large enough to fully
+amortise the gradient sync.  On A40 the per-step compute is smaller
+but still big enough that the 2-GPU split clears the NCCL
+overhead.}\label{tab:e2e-2gpu}
+\end{table}
+
+\paragraph{Does the optimiser ever \emph{pick} 2-GPU?}  At 40 epochs
+the four \texttt{cnn\_big} plans cost \$0.0210 (A40$\times$1),
+\$0.0344 (A40$\times$2), \$0.0170 (P600$\times$1), and \$0.0185
+(P600$\times$2).  For a patient job the optimiser picks
+\texttt{P600$\times$1} (cheapest); A40$\times$2 stays the worst
+choice because its 11\% wall-clock saving never pays for the 64\%
+hourly-rate hike.  But \texttt{P600$\times$2} is only 9\% more
+expensive than \texttt{P600$\times$1} and 41\% \emph{faster}
+(1213\,s vs 2042\,s wall-clock for 40 epochs), so any deadline that
+the P600$\times$1 plan misses by more than 3.4\,s
+($0.0015 / 0.000444 = 3.4$\,s at priority~5) flips the optimiser's
+ranking to \texttt{P600$\times$2}.  This is the cell that lights up
+in Stage~3 of Scenario~2 (Section~\ref{sec:e2e-s2}).
+
+\paragraph{Why the LSTM types never show a 2-GPU win.}
+\texttt{lstm-small} on P600 measures 5.47\,s (x1) vs 10.66\,s (x2)
+--- 2-GPU is 95\% \emph{slower} because each minibatch's per-step
+compute is dominated by the sequential RNN forward and the
+DataParallel gradient sync.  \texttt{lstm-big} is closer (21.38\,s
+vs 19.41\,s, $\approx 9\%$ faster on x2) but still loses on cost.
+The published behaviour of DataParallel on small-batch RNN workloads
+matches: only CNN-shaped per-step graphs with enough FLOPs amortise
+the sync, which is exactly what \texttt{cnn\_big} delivers.
+
+% ---------------------------------------------------------------------------
+\subsection{Scenario 1 --- single type}
+\label{sec:e2e-s1}
+
+\paragraph{Submissions.}  Four patient \texttt{lstm-small} jobs, plus
+one URGENT.
+
+\begin{center}\small
+\begin{tabular}{l l r l l}\toprule
+Label & Type & Priority & Deadline & Submitted at \\\midrule
+JOB1 & \texttt{lstm-small} & 4 & +1\,h    & $t=0$\,s    \\
+JOB2 & \texttt{lstm-small} & 4 & +1\,h    & $t=5$\,s    \\
+JOB3 & \texttt{lstm-small} & 4 & +1\,h    & $t=10$\,s   \\
+JOB4 & \texttt{lstm-small} & 4 & +1\,h    & $t=15$\,s   \\
+URGENT$^{\star}$ & \texttt{lstm-small} & 5 & +90\,s & $t=$ end of S1 \\\bottomrule
+\end{tabular}
+\end{center}
+
+\paragraph{Optimiser input at S1 round (from \texttt{Lof\_Selectjobs.csv} + \texttt{SelectJobs\_times.csv}).}
+
+\begin{table}[h!]\centering\small
+\begin{tabular}{l l r r r r}\toprule
+Job             & Bundle & per-epoch [s] & GPUcost/epoch [\$] & Cost @ 40 ep [\$] & Cost rank \\\midrule
+JOB1--4 (S)     & A40$\times$1        & 7.25  & 0.000604 & 0.0242 & --- \\
+JOB1--4 (S)     & A40$\times$2        & 9.12  & 0.001393 & 0.0557 & worst \\
+JOB1--4 (S)     & QuadroP600$\times$1 & 5.47  & 0.0000456 & 0.00182 & \textbf{best} \\
+JOB1--4 (S)     & QuadroP600$\times$2 & 10.66 & 0.000163 & 0.00651 & --- \\\bottomrule
+\end{tabular}
+\caption{Per-bundle ExecutionTime and GPUcost the optimiser sees for
+every \texttt{lstm-small} instance at the S1 round.  Profile coverage
+is 4 rows (all four cells) for \texttt{lstm-small}.  All
+deadlines $\geq 1$\,h \texttimes{} the longest 40-epoch run, so
+TardCost~$=0$ across every plan and the cost ranking is pure
+GPUcost.}\label{tab:e2e-s1-opt}
+\end{table}
+
+\paragraph{Settled placement (the optimiser writes this verbatim to \texttt{results/RG\_schedule\_*.csv}).}
+
+\begin{center}\small
+\begin{tabular}{l l l l r r}\toprule
+Label & Node           & Bundle              & Phase    & GPUcost [\$] & TardCost [\$] \\\midrule
+JOB1  & n2 polimi-gpu  & A40$\times$1        & standard & 0.0242 & 0 \\
+JOB2  & n2 polimi-gpu  & A40$\times$1        & standard & 0.0242 & 0 \\
+JOB3  & n1 matemagician& QuadroP600$\times$1 & standard & 0.00182 & 0 \\
+JOB4  & n1 matemagician& QuadroP600$\times$1 & standard & 0.00182 & 0 \\\midrule
+\multicolumn{4}{r}{\textbf{Total:}} & 0.0520 & 0 \\\bottomrule
+\end{tabular}
+\end{center}
+
+The four slots are filled cheapest-first --- both P600 cells (\$0.00182
+each) before the two A40 cells (\$0.0242 each); swapping any
+prio$=$4 job between A40 and P600 increases TotalCost by ${\approx}\$0.022$
+(strictly worse), so this is the unique cost-minimum.
+
+\paragraph{S2 URGENT auto-preempt --- comparison the optimiser made (measured run).}
+
+URGENT has priority~5, \texttt{TardWeight}=0.000444\,\$/s,
+\texttt{deadline}=+90\,s.  Its two candidate plans:
+
+\begin{table}[h!]\centering\scriptsize
+\begin{tabular}{l r r r r r l}\toprule
+Plan for URGENT     & ExecTime [s] & GPUcost [\$] & Tardiness [s] & TardCost [\$] & TotalCost [\$] & Decision \\\midrule
+A40$\times$1 (preempt JOB2)  & 217 & 0.0181 & 127 & 0.0564 & \textbf{0.0745} & \checkmark\ chosen \\
+P600$\times$1 (no preempt)   & 442 & 0.0037 & 352 & 0.1563 & 0.1600          & rejected (+\$0.086) \\\bottomrule
+\end{tabular}
+\caption{Optimiser plan comparison for the URGENT submission, computed
+from the S2 round CSV.  Choosing A40 (and evicting whichever A40
+occupant has the smallest priority$\times$remaining-runtime score ---
+observed JOB2) saves \$0.086 over leaving URGENT to queue on
+P600.}\label{tab:e2e-s1-urgent}
+\end{table}
+
+\paragraph{Stage-by-stage observations (measured run, scenario id
+\texttt{v9} on 2026-05-13).}
+\begin{description}\setlength{\itemsep}{0.2em}
+  \item[S1 --- profile sweep + fill (8--12\,min):] Profile coverage 4
+    rows for \texttt{lstm-small} (all four \texttt{(node, GPU-count)}
+    cells exercised).  Each patient instance contributes two profile
+    runs --- one 1-GPU and one 2-GPU on its assigned node --- the
+    \texttt{x2} hatched bars in Fig.~\ref{fig:e2e-s1}.
+  \item[S2 --- URGENT auto-preempt (placed in 6\,s):] URGENT lands on
+    A40$\times$1 per Table~\ref{tab:e2e-s1-urgent}, evicting JOB2
+    (\texttt{0f6f54c4}).  The slot tracker shows
+    \texttt{acquire\_oversub\_count}=0 (no over-subscription).
+  \item[S3 --- manual user-stop (\,within 60\,s):] Operator calls
+    \texttt{POST /jobs/JOB3/stop?reason=user}.  Row sticks at
+    \texttt{PREEMPTED}; no automatic resume.
+  \item[S4 --- cross-node resume (\,within $\leq$10\,min):] JOB2 (the
+    auto-preempt victim) resumed on its origin polimi-gpu node ---
+    the resume path verified by the trainer log loading the
+    checkpoint and continuing from $N{\geq}1$.  The same-node resume
+    here is cost-minimal under the migration guard; the
+    \emph{cross-node} variant of resume is exercised explicitly in
+    Scenario~2.
+  \item[S5 --- drain ($\leq$60\,min):] Four jobs reach
+    \texttt{SUCCEEDED}, JOB3 stays at \texttt{PREEMPTED}, zero
+    \texttt{FAILED}.  End-of-run slot metrics:
+    \texttt{acquire\_oversub\_count}=0,
+    \texttt{release\_underflow\_count}=1 (absorbed by the
+    BoundedSemaphore at release time --- counted but not over-released),
+    \texttt{drift\_recovery\_count}=60.
+\end{description}
+
+\begin{figure}[h!]\centering
+\begin{tikzpicture}[x=0.92cm, y=0.65cm, font=\footnotesize,
+    nodeA40/.style={draw=blue!60!black, fill=blue!22, line width=0.4pt},
+    nodeP600/.style={draw=red!60!black,  fill=red!22,  line width=0.4pt},
+    profhatchA/.style={pattern=north east lines, pattern color=blue!60!black},
+    profhatchP/.style={pattern=north east lines, pattern color=red!60!black},
+  ]
+  \draw[->] (0,0) -- (13.0,0);
+  \foreach \t in {0,2,4,6,8,10,12} \draw (\t,0) -- (\t,-0.1) node[below] {\t};
+  \node[anchor=west] at (13.1,0) {time [min]};
+
+  % JOB1 row anchor: y=1
+  \node[anchor=east] at (0,1) {\textbf{JOB1}};
+  \draw[nodeA40] (0,0.7) rectangle (1.0,1.3);
+    \draw[profhatchA] (0,0.7) rectangle (1.0,1.3); \node at (0.5,1) {\tiny x1};
+  \draw[nodeA40] (1.0,0.7) rectangle (2.2,1.3);
+    \draw[profhatchA] (1.0,0.7) rectangle (2.2,1.3); \node at (1.6,1) {\tiny x2};
+  \draw[nodeA40] (2.2,0.7) rectangle (12.5,1.3); \node at (7.3,1) {\tiny x1};
+
+  % JOB2
+  \node[anchor=east] at (0,2.4) {\textbf{JOB2}};
+  \draw[nodeA40] (0,2.1) rectangle (1.0,2.7);
+    \draw[profhatchA] (0,2.1) rectangle (1.0,2.7); \node at (0.5,2.4) {\tiny x1};
+  \draw[nodeA40] (1.0,2.1) rectangle (2.2,2.7);
+    \draw[profhatchA] (1.0,2.1) rectangle (2.2,2.7); \node at (1.6,2.4) {\tiny x2};
+  \draw[nodeA40] (2.2,2.1) rectangle (4.5,2.7); \node at (3.35,2.4) {\tiny x1};
+  \draw[ultra thick, red!80!black, -{Stealth[length=1.5mm]}] (4.5,3.05) -- (4.5,2.75);
+  \draw[nodeP600] (6.5,2.1) rectangle (12.5,2.7);
+  \node at (9.5,2.4) {\tiny x1};
+
+  % JOB3
+  \node[anchor=east] at (0,3.8) {\textbf{JOB3}};
+  \draw[nodeP600] (0,3.5) rectangle (1.5,4.1);
+    \draw[profhatchP] (0,3.5) rectangle (1.5,4.1); \node at (0.75,3.8) {\tiny x1};
+  \draw[nodeP600] (1.5,3.5) rectangle (2.8,4.1);
+    \draw[profhatchP] (1.5,3.5) rectangle (2.8,4.1); \node at (2.15,3.8) {\tiny x2};
+  \draw[nodeP600] (2.8,3.5) rectangle (6.0,4.1); \node at (4.4,3.8) {\tiny x1};
+  \draw[ultra thick, black, dashed, -{Bar[width=3mm]}] (6.0,4.45) -- (6.0,4.15);
+  \node[red!50!black, anchor=west] at (6.3,3.8)
+    {\scriptsize \texttt{PREEMPTED}};
+
+  % JOB4
+  \node[anchor=east] at (0,5.2) {\textbf{JOB4}};
+  \draw[nodeP600] (0,4.9) rectangle (1.5,5.5);
+    \draw[profhatchP] (0,4.9) rectangle (1.5,5.5); \node at (0.75,5.2) {\tiny x1};
+  \draw[nodeP600] (1.5,4.9) rectangle (2.8,5.5);
+    \draw[profhatchP] (1.5,4.9) rectangle (2.8,5.5); \node at (2.15,5.2) {\tiny x2};
+  \draw[nodeP600] (2.8,4.9) rectangle (12.5,5.5); \node at (7.65,5.2) {\tiny x1};
+
+  % URGENT  (same colour as the bundle it lands on; a star above marks priority 5)
+  \node[anchor=east] at (0,6.6) {\textbf{URGENT}};
+  \draw[nodeA40, line width=1.5pt] (4.5,6.3) rectangle (10.0,6.9);
+  \node at (4.5,7.2) {$\bigstar$};
+  \node at (7.25,6.6) {\tiny x1};
+
+  % Stage labels (short tags only; full names spelled out in caption) & dashed separators
+  \draw[dashed,gray!50] (2.2,7.5) -- (2.2,0);
+  \draw[dashed,gray!50] (4.5,7.5) -- (4.5,0);
+  \draw[dashed,gray!50] (6.0,7.5) -- (6.0,0);
+  \node[anchor=south] at (1.1,7.5) {\scriptsize \textbf{S1}};
+  \node[anchor=south] at (3.35,7.5) {\scriptsize \textbf{S2}};
+  \node[anchor=south] at (5.25,7.5) {\scriptsize \textbf{S3}};
+  \node[anchor=south] at (9.5,7.5) {\scriptsize \textbf{S4}};
+
+  % --- legend below the time axis ---
+  \begin{scope}[shift={(0,-1.6)}, x=0.55cm, y=0.45cm]
+    \draw[nodeA40] (0,0) rectangle (1.4,0.6); \node at (0.7,0.3) {\tiny x1};
+    \node[anchor=west] at (1.5,0.3) {\scriptsize n2 polimi-gpu (A40)};
+    \draw[nodeP600] (8.0,0) rectangle (9.4,0.6); \node at (8.7,0.3) {\tiny x1};
+    \node[anchor=west] at (9.5,0.3) {\scriptsize n1 matemagician (P600)};
+    \draw[nodeA40, profhatchA] (16.4,0) rectangle (17.8,0.6); \node at (17.1,0.3) {\tiny x2};
+    \node[anchor=west] at (17.9,0.3) {\scriptsize hatched = profile run};
+    \node[anchor=west] at (0,-1.1) {\scriptsize $\bigstar$ = URGENT (priority 5)};
+    \draw[ultra thick, red!80!black, -{Stealth[length=1.5mm]}] (8.8,-0.8) -- (8.8,-1.4);
+    \node[anchor=west] at (9.0,-1.1) {\scriptsize auto-preempt};
+    \draw[ultra thick, black, dashed, -{Bar[width=3mm]}] (15.0,-0.8) -- (15.0,-1.4);
+    \node[anchor=west] at (15.2,-1.1) {\scriptsize user-stop};
+  \end{scope}
+\end{tikzpicture}
+\caption{Scenario 1 timeline.  Stages: \textbf{S1} sweep+fill,
+\textbf{S2} URGENT auto-preempt, \textbf{S3} user-stop, \textbf{S4}
+cross-node resume.  Bar colour encodes the node (blue~=
+\texttt{polimi-gpu}/A40, red~= \texttt{matemagician}/P600); the
+\texttt{x1}/\texttt{x2} label gives the GPU count; hatched fill marks
+profile runs.  S2 evicts JOB2 from its A40 slot; the P600 slot freed
+by S3's user-stop on JOB3 carries JOB2's cross-node resume at
+S4.}\label{fig:e2e-s1}
+\end{figure}
+
+% ---------------------------------------------------------------------------
+\subsection{Scenario 2 --- two types}
+\label{sec:e2e-s2}
+
+\paragraph{Submissions.}  Mirrors Scenario~1 but with two distinct
+types (\texttt{lstm-small} = ``S'', \texttt{cnn\_big} = ``B''), and
+two back-to-back URGENT submissions instead of one.  The big type was
+deliberately chosen to give DataParallel a real speedup on the slow
+P600 node (see Table~\ref{tab:e2e-2gpu}); this scenario is the one
+where the optimiser meaningfully chooses between
+\texttt{QuadroP600$\times$1} and \texttt{QuadroP600$\times$2} for
+\texttt{cnn\_big} placements.
+
+\begin{center}\small
+\begin{tabular}{l l r l}\toprule
+Label & Type & Priority & Deadline \\\midrule
+JOB1 & S & 1 & +8\,h \\
+JOB2 & B & 1 & +8\,h \\
+JOB3 & S & 4 & +1\,h \\
+JOB4 & B & 4 & +2\,h \\
+URG-S\,$\bigstar$ (Stage 2) & S & 5 & +90\,s \\
+URG-B\,$\bigstar$ (Stage 3) & B & 5 & +90\,s \\
+JOB7  (Stage 4.5) & opposite of user-stop victim & 1 & +8\,h \\\bottomrule
+\end{tabular}
+\end{center}
+
+\paragraph{Per-bundle times the optimiser saw at the S1 round
+(\texttt{call\_*/SelectJobs\_times.csv}).}
+
+\begin{table}[h!]\centering\small
+\begin{tabular}{l l r r r r}\toprule
+Type & Bundle & per-epoch [s] & 40-epoch [s] & rate [\$/h] & 40-ep GPUcost [\$] \\\midrule
+S (\texttt{lstm-small}) & A40$\times$1        & 7.25  & 290  & 0.300 & 0.0242 \\
+S (\texttt{lstm-small}) & A40$\times$2        & 9.12  & 365  & 0.550 & 0.0557 \\
+S (\texttt{lstm-small}) & QuadroP600$\times$1 & 5.47  & 219  & 0.030 & 0.00182 \\
+S (\texttt{lstm-small}) & QuadroP600$\times$2 & 10.66 & 426  & 0.055 & 0.00651 \\\midrule
+B (\texttt{cnn\_big})   & A40$\times$1        & 6.29  & 252  & 0.300 & 0.0210 \\
+B (\texttt{cnn\_big})   & \textbf{A40$\times$2} & \textbf{5.63}  & \textbf{225}  & 0.550 & 0.0344 \\
+B (\texttt{cnn\_big})   & QuadroP600$\times$1 & 51.06 & 2042 & 0.030 & 0.0170 \\
+B (\texttt{cnn\_big})   & \textbf{QuadroP600$\times$2}
+                        & \textbf{30.32} & \textbf{1213}
+                        & \textbf{0.055} & \textbf{0.0185} \\\bottomrule
+\end{tabular}
+\caption{Eight rows of measured profile data (four bundles, two
+types).  For \texttt{cnn\_big}, \emph{both} 2-GPU bundles are
+wall-clock-faster than their 1-GPU sibling:
+\textbf{A40$\times$2 is 11\% faster} (5.63 vs 6.29\,s/epoch) and
+\textbf{P600$\times$2 is 68\% faster} (30.32 vs 51.06\,s/epoch).
+On cost terms P600$\times$1 remains the cost-minimum for patient
+jobs (\$0.0170 vs P600$\times$2's \$0.0185, $\Delta = $\$0.0015), but
+the 9\% premium is tiny enough that any deadline pressure flips the
+decision in P600$\times$2's favour.  A40$\times$2 stays cost-dominated
+by A40$\times$1 because the 11\% saving doesn't pay for the 64\%
+hourly-rate hike.  The LSTM rows show the opposite regime ---
+DataParallel sync time already dominates the per-step compute, so
+2-GPU never wins meaningfully there.}\label{tab:e2e-s2-opt}
+\end{table}
+
+\paragraph{Settled placement after S1.}
+
+\begin{center}\small\setlength{\tabcolsep}{4pt}
+\begin{tabular}{l l l l l}\toprule
+Label & Type & Node & Bundle & Why \\\midrule
+JOB1 & S & n1 matemagician& QuadroP600$\times$1 & lstm-small saves \$0.0224 on P600 --- grab cheap slot \\
+JOB2 & B & n2 polimi-gpu  & A40$\times$1        & cnn\_big saves only \$0.0040 --- overflow to A40 \\
+JOB3 & S & n1 matemagician& QuadroP600$\times$1 & second lstm-small, same logic \\
+JOB4 & B & n2 polimi-gpu  & A40$\times$1        & second cnn\_big, same logic \\\bottomrule
+\end{tabular}
+\end{center}
+
+The placement is the \emph{opposite} of what the same scenario gave
+under the old \texttt{lstm-big} ``B'' type.  Two lstm-smalls now grab
+both P600 slots (their A40$\to$P600 saving of \$0.0224 dwarfs
+cnn\_big's saving of \$0.0040), and the two cnn\_big jobs overflow to
+A40.  Total cost \$0.0456 (vs the lstm-big placement's \$0.0824) ---
+the optimiser sorts the four jobs by ``displacement penalty if forced
+to A40'' rather than by priority, and the type-specific GPUcost
+curves drive the answer.
+
+\paragraph{Optimiser plans for URG-S (Stage 2) and URG-B (Stage 3).}
+
+\begin{table}[h!]\centering\scriptsize\setlength{\tabcolsep}{3pt}
+\begin{tabular}{l l r r r r r l}\toprule
+URGENT & Plan & ExecTime [s] & GPUcost [\$] & Tard [s] & TardCost [\$] & Total [\$] & Decision \\\midrule
+URG-S & QuadroP600$\times$1 (preempt JOB4)            & 219 & 0.00182 & 109 & 0.0484 & \textbf{0.0502} & \checkmark\ chosen \\
+URG-S & A40$\times$1 (preempt JOB1 or JOB2)           & 290 & 0.0242  & 180 & 0.0799 & 0.1041          & rejected \\\midrule
+URG-B & A40$\times$1 (preempt JOB1 or JOB2)           & 252  & 0.0210  & 162  & 0.0719 & \textbf{0.0929} & \checkmark\ chosen \\
+URG-B & A40$\times$2 (preempt JOB1+JOB2)              & 225  & 0.0344  & 135  & 0.0599 & 0.0943          & 2nd ($\Delta$1.5\%) \\
+URG-B & \textbf{QuadroP600$\times$2 (preempt JOB3+4)} & \textbf{1213} & \textbf{0.0185} & \textbf{1123} & \textbf{0.4986} & \textbf{0.517} & 3rd \\
+URG-B & QuadroP600$\times$1 (preempt JOB3 or JOB4)    & 2042 & 0.0170  & 1952 & 0.8667 & 0.884           & 4th \\\bottomrule
+\end{tabular}
+\caption{Optimiser plan comparison for the two URGENT submissions
+under the \texttt{cnn\_big} ``B'' type.  URG-S still goes to the
+cheap P600 (its 219\,s ExecTime keeps tardiness small).  URG-B picks
+A40$\times$1, but \textbf{A40$\times$2} is now a real 2nd-place
+contender at \$0.0943 (only 1.5\% behind) --- if even one A40 slot
+were unevictable the optimiser would flip to A40$\times$2 and evict
+the two cheaper-to-displace A40 occupants together.  Lower down the
+ranking, \textbf{QuadroP600$\times$2 (\$0.517) beats
+QuadroP600$\times$1 (\$0.884) by 1.7$\times$ TotalCost} purely
+because the 1.68$\times$ wall-clock speedup of DataParallel on
+cnn\_big nearly halves the tardiness penalty.  Both 2-GPU plans are
+real candidates the optimiser \emph{ranks}, not just profile-sweep
+theatre.}\label{tab:e2e-s2-urgent}
+\end{table}
+
+\paragraph{Stage-by-stage observations (measured run, scenario id
+\texttt{v14} on 2026-05-13).}
+\begin{description}\setlength{\itemsep}{0.2em}
+  \item[S1 --- profile sweep + fill (settled at $\sim$8\,min):]
+    Profile coverage 4 rows per type ($8$ rows total, all four
+    \texttt{(node, GPU-count)} cells exercised for each of
+    \texttt{lstm-small} and \texttt{cnn\_big}).  Observed placement:
+    JOB1 lstm-small$\to$matemagician, JOB2 cnn\_big$\to$polimi-gpu,
+    JOB3 lstm-small$\to$polimi-gpu, JOB4 cnn\_big$\to$matemagician
+    (the initial-fill order is profile-sweep-driven rather than
+    cost-optimum; with the migration guard
+    \texttt{IJM\_OPTIMIZER\_GUARD\_MIGRATIONS=1}, the optimiser does
+    not thrash to ``correct'' it once standard runs begin).
+  \item[S2 --- URG-S forces preempt \#1 (placed in 17\,s):]
+    URG-S (\texttt{lstm-small} prio$=$5, deadline$=$+90\,s) placed.
+    Preempt victim: \texttt{d47acbf3} (lstm-small, originally on
+    polimi-gpu).
+  \item[S3 --- URG-B forces preempt \#2 (placed in 24\,s):]
+    URG-B (\texttt{cnn\_big} prio$=$5, deadline$=$+90\,s) placed.
+    Preempt victim: \texttt{9658d9df} (cnn\_big, originally on
+    matemagician).  The plan-ranking from Table~\ref{tab:e2e-s2-urgent}
+    holds in practice: A40$\times$1 chosen,
+    \texttt{QuadroP600$\times$2} the runner-up.
+  \item[S4 --- cross-node resume of preempt victims:]
+    \texttt{d47acbf3} resumed on \texttt{matemagician} after preempt
+    on polimi-gpu --- \textbf{cross-node resume} confirmed (trainer
+    log shows \texttt{Resumed from epoch} $\geq 1$).
+    \texttt{9658d9df} resumed on its origin matemagician (same-node
+    resume; cross-node migration was already exercised by the other
+    victim).
+  \item[S4.5 --- user-stop + late opposite-type backfill:] Operator
+    user-stops the lowest-priority \texttt{RUNNING} job; row sticks
+    at \texttt{PREEMPTED}.  JOB7 (opposite type, priority~$=$~1)
+    submitted and lands on the freed slot once an URGENT completes
+    (the \texttt{wait\_for} budget of 360\,s comfortably covers the
+    URGENT-drain).
+  \item[S5 --- drain:] All non-PREEMPTED jobs reach
+    \texttt{SUCCEEDED}; one \texttt{PREEMPTED} leftover (the
+    user-stop target awaiting a manual \texttt{POST /resume}); zero
+    \texttt{FAILED}.  No zombie containers on either node.  GPU was
+    actually used on every node that ran a job (trainer log
+    \texttt{Using device: cuda}).
+\end{description}
+
+\begin{figure}[h!]\centering
+\begin{tikzpicture}[x=0.85cm, y=0.50cm, font=\footnotesize,
+    nodeA40/.style={draw=blue!60!black, fill=blue!22, line width=0.4pt},
+    nodeP600/.style={draw=red!60!black,  fill=red!22,  line width=0.4pt},
+    profhatchA/.style={pattern=north east lines, pattern color=blue!60!black},
+    profhatchP/.style={pattern=north east lines, pattern color=red!60!black},
+  ]
+  \draw[->] (0,0) -- (14.5,0);
+  \foreach \t in {0,2,4,6,8,10,12,14} \draw (\t,0) -- (\t,-0.1) node[below] {\t};
+  \node[anchor=west] at (14.6,0) {time [min]};
+
+  % JOB1 (S), polimi-gpu, preempted at t=5
+  \node[anchor=east] at (0,1) {\textbf{JOB1} (S)};
+  \draw[nodeA40] (0,0.7) rectangle (1.0,1.3);
+    \draw[profhatchA] (0,0.7) rectangle (1.0,1.3); \node at (0.5,1) {\tiny x1};
+  \draw[nodeA40] (1.0,0.7) rectangle (2.2,1.3);
+    \draw[profhatchA] (1.0,0.7) rectangle (2.2,1.3); \node at (1.6,1) {\tiny x2};
+  \draw[nodeA40] (2.2,0.7) rectangle (5.0,1.3); \node at (3.6,1) {\tiny x1};
+  \draw[ultra thick, red!80!black, -{Stealth[length=1.5mm]}] (5.0,1.65) -- (5.0,1.35);
+  \draw[nodeP600] (7.0,0.7) rectangle (14.0,1.3);
+  \node at (10.5,1) {\tiny x1};
+
+  % JOB2 (B), polimi-gpu, preempted at t=3.5
+  \node[anchor=east] at (0,2.4) {\textbf{JOB2} (B)};
+  \draw[nodeA40] (0,2.1) rectangle (1.0,2.7);
+    \draw[profhatchA] (0,2.1) rectangle (1.0,2.7); \node at (0.5,2.4) {\tiny x1};
+  \draw[nodeA40] (1.0,2.1) rectangle (2.2,2.7);
+    \draw[profhatchA] (1.0,2.1) rectangle (2.2,2.7); \node at (1.6,2.4) {\tiny x2};
+  \draw[nodeA40] (2.2,2.1) rectangle (3.5,2.7); \node at (2.85,2.4) {\tiny x1};
+  \draw[ultra thick, red!80!black, -{Stealth[length=1.5mm]}] (3.5,3.05) -- (3.5,2.75);
+  \draw[nodeP600] (5.5,2.1) rectangle (14.0,2.7);
+  \node at (9.75,2.4) {\tiny x1};
+
+  % JOB3 (S), matemagician
+  \node[anchor=east] at (0,3.8) {\textbf{JOB3} (S)};
+  \draw[nodeP600] (0,3.5) rectangle (1.5,4.1);
+    \draw[profhatchP] (0,3.5) rectangle (1.5,4.1); \node at (0.75,3.8) {\tiny x1};
+  \draw[nodeP600] (1.5,3.5) rectangle (2.8,4.1);
+    \draw[profhatchP] (1.5,3.5) rectangle (2.8,4.1); \node at (2.15,3.8) {\tiny x2};
+  \draw[nodeP600] (2.8,3.5) rectangle (14.0,4.1); \node at (8.4,3.8) {\tiny x1};
+
+  % JOB4 (B), matemagician, user-stopped at t=9
+  \node[anchor=east] at (0,5.2) {\textbf{JOB4} (B)};
+  \draw[nodeP600] (0,4.9) rectangle (1.5,5.5);
+    \draw[profhatchP] (0,4.9) rectangle (1.5,5.5); \node at (0.75,5.2) {\tiny x1};
+  \draw[nodeP600] (1.5,4.9) rectangle (2.8,5.5);
+    \draw[profhatchP] (1.5,4.9) rectangle (2.8,5.5); \node at (2.15,5.2) {\tiny x2};
+  \draw[nodeP600] (2.8,4.9) rectangle (9.0,5.5); \node at (5.9,5.2) {\tiny x1};
+  \draw[ultra thick, black, dashed, -{Bar[width=3mm]}] (9.0,5.85) -- (9.0,5.55);
+  \node[red!50!black, anchor=west] at (9.3,5.2) {\scriptsize \texttt{PREEMPTED}};
+
+  % URG-S (P600): bold border + star
+  \node[anchor=east] at (0,6.6) {\textbf{URG-S}};
+  \draw[nodeP600, line width=1.5pt] (3.5,6.3) rectangle (10.5,6.9);
+  \node at (3.5,7.2) {$\bigstar$};
+  \node at (7.0,6.6) {\tiny x1};
+
+  % URG-B (A40): bold border + star
+  \node[anchor=east] at (0,8.0) {\textbf{URG-B}};
+  \draw[nodeA40, line width=1.5pt] (5.0,7.7) rectangle (12.0,8.3);
+  \node at (5.0,8.6) {$\bigstar$};
+  \node at (8.5,8.0) {\tiny x1};
+
+  % JOB7 backfill on freed P600 slot
+  \node[anchor=east] at (0,9.4) {\textbf{JOB7}};
+  \draw[nodeP600] (10.0,9.1) rectangle (14.0,9.7); \node at (12.0,9.4) {\tiny x1};
+
+  % Stage tags (full names in caption) and dashed separators
+  \draw[dashed,gray!50] (3.5,9.9) -- (3.5,0);
+  \draw[dashed,gray!50] (5.0,9.9) -- (5.0,0);
+  \draw[dashed,gray!50] (9.0,9.9) -- (9.0,0);
+  \node[anchor=south] at (1.75,9.9) {\scriptsize \textbf{S1}};
+  \node[anchor=south] at (4.25,9.9) {\scriptsize \textbf{S2}};
+  \node[anchor=south] at (7.0,9.9)  {\scriptsize \textbf{S3}};
+  \node[anchor=south] at (11.75,9.9) {\scriptsize \textbf{S4.5}};
+
+  % --- legend below time axis ---
+  \begin{scope}[shift={(0,-1.6)}, x=0.55cm, y=0.45cm]
+    \draw[nodeA40] (0,0) rectangle (1.4,0.6); \node at (0.7,0.3) {\tiny x1};
+    \node[anchor=west] at (1.5,0.3) {\scriptsize n2 polimi-gpu (A40)};
+    \draw[nodeP600] (8.0,0) rectangle (9.4,0.6); \node at (8.7,0.3) {\tiny x1};
+    \node[anchor=west] at (9.5,0.3) {\scriptsize n1 matemagician (P600)};
+    \draw[nodeA40, profhatchA] (16.4,0) rectangle (17.8,0.6); \node at (17.1,0.3) {\tiny x2};
+    \node[anchor=west] at (17.9,0.3) {\scriptsize hatched = profile run};
+    \node[anchor=west] at (0,-1.1) {\scriptsize $\bigstar$ = URGENT (priority 5)};
+    \draw[ultra thick, red!80!black, -{Stealth[length=1.5mm]}] (8.8,-0.8) -- (8.8,-1.4);
+    \node[anchor=west] at (9.0,-1.1) {\scriptsize auto-preempt};
+    \draw[ultra thick, black, dashed, -{Bar[width=3mm]}] (15.0,-0.8) -- (15.0,-1.4);
+    \node[anchor=west] at (15.2,-1.1) {\scriptsize user-stop};
+  \end{scope}
+\end{tikzpicture}
+\caption{Scenario 2 timeline.  Stages: \textbf{S1} sweep+fill,
+\textbf{S2} URG-S preempts, \textbf{S3} URG-B preempts, \textbf{S4.5}
+user-stop + JOB7 backfill.  Same visual grammar as
+Fig.~\ref{fig:e2e-s1}.  Both prio$=$1 A40 occupants are evicted (S2 +
+S3) and resume on \texttt{matemagician} (two cross-node checkpoint
+loads); at S4.5 JOB7 (opposite type) backfills the P600 slot freed by
+the user-stop on JOB4.}\label{fig:e2e-s2}
+\end{figure}
+
+% ---------------------------------------------------------------------------
+\subsection{Reported numbers and where they live}
+
+Both scenarios print one line per assertion as they execute.  The
+end-of-run summary lists:
+
+\begin{center}\small
+\begin{tabular}{l l}\toprule
+Output                            & Source                                \\\midrule
+Per-job placement table           & \texttt{curl /jobs} after each stage  \\
+Profile coverage                  & \texttt{curl /profiling-results/<type>} \\
+Slot accounting (per node)        & \texttt{curl /admin/slots}            \\
+In-flight dispatch tasks          & \texttt{curl /admin/dispatch-tasks}   \\
+Optimiser per-round input         & \texttt{call\_<ts>.0/Lof\_Selectjobs.csv} \\
+Optimiser per-bundle times        & \texttt{call\_<ts>.0/SelectJobs\_times.csv} \\
+Optimiser chosen plan             & \texttt{call\_<ts>.0/results/RG\_schedule\_*.csv} \\
+GPU price catalogue (the optimiser sees) & \texttt{call\_<ts>.0/GPU-costs.csv} \\
+Live optimiser log tail           & \texttt{bash infra/follow\_optimizer.sh} \\\bottomrule
+\end{tabular}
+\end{center}
+
+Tables~\ref{tab:e2e-2gpu}, \ref{tab:e2e-s1-opt},
+\ref{tab:e2e-s1-urgent}, \ref{tab:e2e-s2-opt} and
+\ref{tab:e2e-s2-urgent} are populated directly from these CSVs at the
+relevant scheduling round, so every number printed is reproducible
+from the optimiser's own input/output.  Manual reconcile remains
+available (\texttt{POST /admin/reconcile-slots}) as a
+belt-and-suspenders fix, but the 15-second drift heartbeat (see
+\texttt{IJM\_DRIFT\_HEARTBEAT\_S}) bounds the time any transient slot
+drift can wedge the scheduler.

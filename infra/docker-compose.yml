@@ -40,6 +40,20 @@ services:
       HOST_PROJECT_ROOT: ${HOST_PROJECT_ROOT:-${PWD}/..}
       EXECUTOR: docker
       OPTIMIZER_URL: ${OPTIMIZER_URL:-http://optimizer:8080}
+      # 0=cost summary, 1=per step, 2=per-job analysis, 3=heuristic internals.
+      # Forwarded verbatim to the optimizer's request body so the per-call
+      # log file (/opt/code-optimizer/build/logs/log_<ts>.log inside the
+      # ijm-optimizer container) gets the matching detail level.  Tail with
+      # ./infra/follow_optimizer.sh.
+      OPTIMIZER_VERBOSE: ${OPTIMIZER_VERBOSE:-2}
+      # Local cost-benefit migration filter (off by default — turn on via
+      # ``IJM_OPTIMIZER_GUARD_MIGRATIONS=1 docker compose up``).  Drops
+      # GPUspb-proposed migrations whose claimed energy savings don't pay
+      # for kill+drain+lost-epoch overhead.  Used to dampen oscillation
+      # in cost-flat / slack-only regimes; not strictly required for
+      # well-conditioned scenarios.  See the comment above the gate in
+      # backend/src/optimizer.py for the math.
+      IJM_OPTIMIZER_GUARD_MIGRATIONS: ${IJM_OPTIMIZER_GUARD_MIGRATIONS:-}
       NODES_CONFIG: ${NODES_CONFIG:-config/nodes_config.json}
     ports:
       - "${IJM_API_PORT:-8000}:8000"

@@ -104,7 +104,19 @@ async def create_job(job_request: JobCreate) -> Job:
         # permit.  Calling enqueue directly here was a long-standing bug:
         # direct submissions and resumes bypassed the slot invariant and let
         # more containers run on a node than it had GPUs for.
-        await runner.dispatch_with_slot(instance_id, schedule_result.node_id, schedule_result.gpu_config)
+        # Failures here (worker 409 because the chosen slot just got taken by
+        # a concurrent dispatch, network blip, etc.) must NOT bubble up as a
+        # 500 — the row is already inserted as QUEUED with an assigned_node,
+        # and the scheduler watcher will retry dispatch on the next round.
+        try:
+            await runner.dispatch_with_slot(instance_id, schedule_result.node_id, schedule_result.gpu_config)
+        except Exception as e:  # noqa: BLE001
+            logger.warning(
+                "Initial dispatch for new job %s on %s failed (%s); leaving QUEUED for scheduler retry",
+                instance_id[:8],
+                schedule_result.node_id,
+                e,
+            )
     else:
         logger.info("No node available for new job %s — notified scheduler for optimizer pass", instance_id[:8])
 

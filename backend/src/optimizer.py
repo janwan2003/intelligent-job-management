@@ -205,6 +205,42 @@ async def optimize(
     for type_id, gpu_config, duration in all_profiling:
         profiling_by_type.setdefault(type_id, []).append((gpu_config, duration))
 
+    # Per-instance profile-owing gate.  An instance is "profile-owing" if it
+    # hasn't completed its ``configs_per_job`` profile budget AND the type
+    # still has unprofiled configs the instance could claim.  Profile-owing
+    # instances are NEVER placed by the optimizer — they wait in QUEUED for
+    # the profiling scheduler / Phase 1c to grant them a profile slot.
+    #
+    # Without this filter, once any one config for a type has a profile row
+    # the optimizer would happily standard-place the remaining same-type
+    # submissions on the profiled config, defeating "profile must come first"
+    # for every instance.
+    from src.profiling import scheduler  # local import to avoid cycle
+    from src.utils.gpu import config_key
+
+    async with conn.cursor() as cur:
+        await cur.execute(
+            "SELECT instance_id, COUNT(*) FROM profiling_results WHERE instance_id = ANY(%s) GROUP BY instance_id",
+            ([row[0] for row in active_jobs],),
+        )
+        profiled_count_by_instance: dict[str, int] = {row[0]: row[1] for row in await cur.fetchall()}
+
+    # All configs the system would consider profiling; subtract per-type
+    # profiled set to learn which types still have unprofiled candidates.
+    all_configs = scheduler.get_valid_configurations()
+    all_config_keys = {config_key(c) for c in all_configs}
+    profiled_keys_by_type: dict[str, set[str]] = {}
+    async with conn.cursor() as cur:
+        await cur.execute(
+            "SELECT DISTINCT job_id, gpu_config FROM profiling_results WHERE job_id = ANY(%s)",
+            (type_ids,),
+        )
+        for tid, cfg in await cur.fetchall():
+            profiled_keys_by_type.setdefault(tid, set()).add(config_key(cfg))
+    type_has_unprofiled: dict[str, bool] = {
+        tid: bool(all_config_keys - profiled_keys_by_type.get(tid, set())) for tid in type_ids
+    }
+
     nodes_payload = _build_nodes_payload(node_gpu_usage)
     if not nodes_payload:
         return OptimizerResult()
@@ -229,6 +265,12 @@ async def optimize(
         profiling_rows = profiling_by_type.get(job_type_id)
         if not profiling_rows:
             continue  # No profiling data → greedy scheduler handles it
+
+        # Per-instance profile gate: skip instances that still owe a profile
+        # and could still claim one (type has unprofiled configs left).
+        owes_profile = profiled_count_by_instance.get(instance_id, 0) < scheduler.configs_per_job
+        if owes_profile and type_has_unprofiled.get(job_type_id, False):
+            continue
 
         total_epochs = epochs_total or DEFAULT_EPOCHS_TOTAL
 
@@ -382,6 +424,13 @@ async def optimize(
 
     preempt: list[str] = []
     keep_assignments: list[Assignment] = []
+    # Track (real_node, gpu_type, n_gpus) tuples whose freeing was suppressed
+    # by the migration guard.  Post-loop we drop any *new* assignment whose
+    # destination matches a still-occupied slot — those assignments
+    # depended on the suppressed migration releasing the slot, and without
+    # that they'd write ``assigned_node`` to a row that the dispatcher
+    # then waits on forever (idle slot elsewhere goes unused).
+    suppressed_release_slots: set[tuple[str, str, int]] = set()
     for a in assignments:
         existing = current_scheduling.get(a.instance_id)
         if existing is None:
@@ -402,18 +451,18 @@ async def optimize(
                 {existing["GPUtype"]: existing["nGPUs"]},
             )
             continue
-        # Cost-benefit migration filter — DISABLED.
+        # Cost-benefit migration filter (enabled via IJM_OPTIMIZER_GUARD_MIGRATIONS).
         #
-        # Previously we second-guessed GPUspb here: for non-tardy jobs, if
-        # our local estimate said the kill+drain+lost-epoch penalty was
-        # bigger than the energy savings, we suppressed the migration.
-        # Disabled because the operator wants GPUspb's plan to go through
-        # unfiltered ("the optimiser is god").  GPUspb already includes
-        # a node-on / GPU cost term in its objective, so migrations it
-        # proposes have already cleared its own cost-benefit gate.
+        # For non-tardy jobs, suppress the migration if the local estimate
+        # says the kill+drain+lost-epoch penalty is bigger than the energy
+        # savings.  Tardy jobs are always exempt — when a deadline binds,
+        # GPUspb's tardiness term swamps the noise threshold and migrations
+        # need to go through.
         #
-        # Re-enable by setting IJM_OPTIMIZER_GUARD_MIGRATIONS=1 in the API
-        # env if you want this safety net back without recompiling.
+        # Without this filter the optimizer thrashes in slack-only regimes
+        # where the cost surface is roughly flat: every round it picks a
+        # cost-equivalent plan, the API honours it as a preempt + re-
+        # dispatch, and the cluster oscillates forever.
         if os.getenv("IJM_OPTIMIZER_GUARD_MIGRATIONS"):
             tardiness = tardiness_by_id.get(a.instance_id, 0.0)
             if tardiness <= 0:
@@ -437,6 +486,9 @@ async def optimize(
                             benefit,
                             penalty,
                         )
+                        # Remember the slot the suppressed migration would
+                        # have freed — see post-filter pass below.
+                        suppressed_release_slots.add((cur_real, cur_gtype, cur_n))
                         continue
         # Migration: preempt + let Phase 1b reapply with new placement.
         preempt.append(a.instance_id)
@@ -448,6 +500,37 @@ async def optimize(
     for job_id in current_scheduling:
         if job_id not in assignment_by_id:
             preempt.append(job_id)
+
+    # Post-filter pass: drop *new* assignments that would land on slots whose
+    # freeing-migration was suppressed by the guard.  The dispatcher would
+    # otherwise wait on a slot semaphore that never frees, leaving an
+    # actually-idle slot elsewhere unused.  Dropping the assignment lets the
+    # next scheduler round (or the greedy fallback in this round) place the
+    # job on whatever's actually free.
+    if suppressed_release_slots:
+        final_assignments = []
+        for a in keep_assignments:
+            new_gpu_type = next(iter(a.gpu_config))
+            new_n = a.gpu_config[new_gpu_type]
+            # Was this a NEW assignment (i.e. instance was not previously
+            # scheduled)?  Migrations are handled separately above — they
+            # carry their own source slot.  For new assignments, "depends on
+            # a suppressed release" means the target slot exists in
+            # ``suppressed_release_slots``.
+            if a.instance_id in current_scheduling:
+                final_assignments.append(a)
+                continue
+            if (a.node_id, new_gpu_type, new_n) in suppressed_release_slots:
+                logger.info(
+                    "Dropping new assignment %s → %s %s — depends on a suppressed migration",
+                    a.instance_id[:8],
+                    a.node_id,
+                    {new_gpu_type: new_n},
+                )
+                continue
+            final_assignments.append(a)
+        keep_assignments = final_assignments
+
     assignments = keep_assignments
 
     logger.info(

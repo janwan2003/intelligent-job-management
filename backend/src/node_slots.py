@@ -156,6 +156,74 @@ class NodeSlots:
             sem._value,  # noqa: SLF001
         )
 
+    async def transition(self, node_id: str, old_n: int, new_n: int) -> None:
+        """Atomically release ``old_n`` permits and acquire ``new_n``.
+
+        This is the same-node analogue of release-then-acquire that profile
+        → standard transitions and config changes need.  Doing the two steps
+        under the same per-node lock eliminates the race where a worker's
+        ``NOTIFY ijm_slot_freed`` for the old slot and a fresh
+        ``acquire(new_n)`` for the new slot can interleave and leave
+        ``_used`` out of sync with the bounded semaphore (the symptom we
+        see as ``drift=true`` on ``/admin/slots`` after profile config
+        switches).
+
+        Cancel-safe: if the acquire half is cancelled mid-loop, the partial
+        permits are released and the original ``old_n`` permits are put
+        back so the cluster ends in the pre-call state (modulo the worker
+        having already killed the container, which is the caller's
+        responsibility to handle).
+        """
+        sem = self._sems.get(node_id)
+        if sem is None:
+            raise KeyError(f"unknown node_id {node_id!r}")
+        lock = self._acquire_locks[node_id]
+        async with lock:
+            # Release old_n first under the lock so no other op sees a
+            # transient where both halves are owed.
+            released = 0
+            for _ in range(old_n):
+                try:
+                    sem.release()
+                except ValueError:
+                    self._metrics["release_underflow_count"] += 1
+                    logger.error(
+                        "SLOT-OVERRELEASE in transition: %s release would exceed cap",
+                        node_id,
+                    )
+                    continue
+                released += 1
+                self._used[node_id] = max(0, self._used.get(node_id, 0) - 1)
+            # Now acquire new_n.  Roll back fully on cancel.
+            taken = 0
+            try:
+                for _ in range(new_n):
+                    await sem.acquire()
+                    taken += 1
+                    self._used[node_id] = self._used.get(node_id, 0) + 1
+            except BaseException:
+                for _ in range(taken):
+                    sem.release()
+                    self._used[node_id] = max(0, self._used.get(node_id, 0) - 1)
+                # Re-acquire the released-half so the cluster returns to
+                # the pre-transition state on cancellation.
+                for _ in range(released):
+                    await sem.acquire()
+                    self._used[node_id] = self._used.get(node_id, 0) + 1
+                raise
+        self._metrics["acquire_count"] += 1
+        self._metrics["release_count"] += 1
+        logger.log(
+            _SLOT_LOG_LEVEL,
+            "slot.transition %s old=%d new=%d → used=%d/%d sem._value=%d",
+            node_id,
+            old_n,
+            new_n,
+            self._used.get(node_id, 0),
+            self._totals.get(node_id, 0),
+            sem._value,  # noqa: SLF001
+        )
+
     def release(self, node_id: str, n: int = 1) -> None:
         """Return *n* permits to *node_id*'s pool.
 

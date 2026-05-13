@@ -56,6 +56,7 @@
 \usepackage{tabularx}
 \usepackage{ltablex}
 \usepackage{longtable}
+\usepackage{booktabs} % \toprule \midrule \bottomrule for E2E scenario tables
 \usepackage{float} % To allow the use of H modifier in long tables
 
 %landscape mode
@@ -132,6 +133,23 @@
 
 %UML sequence diagrams
 \usepackage{pgf-umlsd}
+
+%TikZ Gantt-style scenario timelines (one row per job, time on x-axis,
+%coloured bars per slot).  Mirrors Fig.~6 of the Path Relinking paper.
+\usepackage{tikz}
+\usetikzlibrary{positioning, arrows.meta, calc, patterns, backgrounds}
+
+%Improve line breaking — font expansion + character protrusion dramatically
+%reduce overfull \hbox warnings on captions containing unbreakable \texttt{...}.
+\usepackage{microtype}
+
+%Allow looser line breaking so long \texttt{} runs and captions don't overfill the line.
+\sloppy
+\emergencystretch=6em
+\tolerance=2000
+\hbadness=10000
+\vbadness=10000
+\hfuzz=3pt
 
 %Code highlighting with listings (minted requires -shell-escape, use listings for tectonic)
 \usepackage{listings}

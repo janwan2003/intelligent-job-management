@@ -37,14 +37,18 @@ PRIORITY_MAX = 5
 DEFAULT_EPOCHS_TOTAL = 20
 # How many profile configs a single job *instance* may explore before it
 # switches to standard runs.  The scheduler still picks at most one config
-# per ``schedule_job`` call (= one profile run at a time per instance), but
-# after that profile completes the same instance becomes the natural
-# vehicle for the next un-profiled config.  Setting this above 1 means
-# profiling for a type *converges* — every config the cluster physically
-# supports eventually gets a profile row, instead of stalling at the first
-# config that doesn't fit.  Profile-preempt in [src/app.py] Phase 1c
-# frees slots if needed.  Override via ``PROFILING_CONFIGS_PER_JOB``.
-DEFAULT_PROFILING_CONFIGS_PER_JOB = 8
+# per ``schedule_job`` call (= one profile run at a time per instance).
+# Default 2: with two instances per type submitted at the start of a
+# scenario (2-types e2e), every type gets its full (type × config) profile
+# matrix filled during the initial profile sweep — 2 instances × 2 configs
+# each = 4 profile rows covering all 4 valid configs (P600×1, P600×2,
+# A40×1, A40×2).  After the sweep no new profile is needed for that type,
+# so later urgent submissions of the same type can standard-run
+# immediately (no profile-gate stall).  Override via
+# ``PROFILING_CONFIGS_PER_JOB``: set to 1 for strict one-profile-per-
+# instance semantics (profile coverage then depends on having enough
+# instances), or higher to push coverage even further per submission.
+DEFAULT_PROFILING_CONFIGS_PER_JOB = 2
 
 DEFAULT_DATABASE_URL = "postgresql://postgres:postgres@localhost:5432/ijm"
 

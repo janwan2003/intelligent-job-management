@@ -8,6 +8,7 @@ from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from uuid import uuid4
 
 import psycopg
 from fastapi import FastAPI
@@ -299,6 +300,7 @@ async def lifespan(_app: FastAPI) -> AsyncGenerator[None]:
             )
             stuck = await cur.fetchall()
             tasks_to_await: list[asyncio.Task[None]] = []
+            needs_drift_recover = False
             for jid, node, gpu_config in stuck:
                 n = sum(int(v) for v in (gpu_config or {}).values())
                 # Conditional UPDATE so we don't race with a fresh dispatch
@@ -332,13 +334,19 @@ async def lifespan(_app: FastAPI) -> AsyncGenerator[None]:
                         gpu_config,
                     )
                 else:
-                    # No live task (e.g. crashed or pre-restart). Release
-                    # directly — this is the only safe path that doesn't
-                    # race anyone.
-                    if state.node_slots is not None and node and n > 0:
-                        state.node_slots.release(node, n)
+                    # No live task (e.g. crashed or pre-restart, or a
+                    # Phase 1c reservation that never spawned a
+                    # dispatch).  Don't call ``release()`` directly —
+                    # if the dispatch never actually acquired, the
+                    # release would underflow the semaphore.  Instead
+                    # mark for a drift-recovery sweep at end of loop:
+                    # ``recover_from_drift`` rebases ``_used`` to the
+                    # DB authoritative count and handles both cases
+                    # (slot was acquired and never released, OR slot
+                    # was never acquired) symmetrically.
+                    needs_drift_recover = True
                     logger.warning(
-                        "Reset stuck QUEUED job %s on %s (%dx %s) — no dispatch task; slot released",
+                        "Reset stuck QUEUED job %s on %s (%dx %s) — no dispatch task; queuing drift-recover sweep",
                         jid[:8],
                         node,
                         n,
@@ -351,6 +359,18 @@ async def lifespan(_app: FastAPI) -> AsyncGenerator[None]:
         # immediate) or in a quick post-acquire await.
         if tasks_to_await:
             await asyncio.gather(*tasks_to_await, return_exceptions=True)
+
+        # Symmetric drift recovery for stuck rows that had no live dispatch
+        # task — covers Phase 1c reservations that never actually acquired
+        # (where a direct ``release()`` would underflow) AND legacy crashed
+        # dispatch tasks that did acquire but never released (where a
+        # direct ``release()`` was correct).  ``recover_from_drift`` reads
+        # the DB authority and rebases ``_used`` either way.
+        if needs_drift_recover and state.node_slots is not None:
+            try:
+                await state.node_slots.recover_from_drift(state.get_conn)
+            except Exception:
+                logger.exception("Reaper drift-recover sweep failed")
 
     async def _schedule_waiting_jobs() -> None:
         """Run the optimizer + greedy scheduler, then spawn parallel
@@ -493,18 +513,93 @@ async def lifespan(_app: FastAPI) -> AsyncGenerator[None]:
                     already_profiled = await scheduler._count_profiled_this_round(conn, instance_id)
                     if already_profiled >= scheduler.configs_per_job:
                         continue
-                    victims = await scheduler.try_preempt_for_profile(conn, instance_id, type_id)
+                    victims, target_node, target_config = await scheduler.try_preempt_for_profile(
+                        conn, instance_id, type_id
+                    )
+                    if not victims or target_node is None or target_config is None:
+                        continue
+                    # Reserve the soon-to-be-free slot for the profile-owing
+                    # instance BEFORE issuing the eviction kill.  Writing
+                    # ``assigned_node`` + ``assigned_gpu_config`` +
+                    # ``is_profiling_run = TRUE`` on the same row achieves
+                    # three things atomically:
+                    #   1. ``get_node_gpu_usage`` (which counts QUEUED rows
+                    #      with non-null assignment) sees the GPU as "in
+                    #      use" by this profile, so the *next* scheduling
+                    #      round's optimizer call won't re-dispatch the
+                    #      victim onto the same slot.
+                    #   2. The optimizer's active-jobs query filters out
+                    #      ``is_profiling_run = TRUE``, so this row is
+                    #      invisible to optimizer placement.
+                    #   3. The dispatch task spawned below uses the same
+                    #      ``Assignment`` schema as the optimizer's; it
+                    #      waits on ``NodeSlots`` for the slot to free,
+                    #      then fires ``/run`` against the worker — exactly
+                    #      the path that already handles the post-eviction
+                    #      release via the ``ijm_slot_freed`` NOTIFY.
+                    # Without this reservation the victim re-queues, the
+                    # optimizer in the next round re-dispatches it onto
+                    # the same slot, Phase 1c evicts it again, and we
+                    # thrash.
+                    now2 = datetime.now(UTC)
+                    cur2 = await conn.execute(
+                        """UPDATE jobs
+                           SET assigned_node = %s, assigned_gpu_config = %s,
+                               is_profiling_run = TRUE, updated_at = %s
+                           WHERE id = %s AND status = %s AND assigned_node IS NULL
+                           RETURNING id""",
+                        (target_node, Json(target_config), now2, instance_id, JobStatus.QUEUED),
+                    )
+                    if not await cur2.fetchone():
+                        # Lost a race: someone else assigned this row between
+                        # ``still_unassigned`` snapshot and here.  Skip and
+                        # let the next round re-evaluate.
+                        continue
+                    # Insert the in-flight profile claim row.  Without this,
+                    # the worker's ``_record_profile_result`` UPDATE (which
+                    # matches on ``instance_id AND duration IS NULL``) would
+                    # silently miss when the trainer finishes — the duration
+                    # never lands and the scheduler thinks this config is
+                    # still unprofiled, triggering Phase 1c again and again
+                    # in a thrash that restarts the trainer from epoch 0
+                    # each time.  ``_persist_assignment`` does the same
+                    # insert for the normal explore path; Phase 1c reserves
+                    # outside that helper so we have to mirror the insert.
+                    await conn.execute(
+                        """INSERT INTO profiling_results
+                               (id, job_id, instance_id, gpu_config, node_id, duration_seconds, created_at)
+                           VALUES (%s, %s, %s, %s, %s, NULL, %s)
+                           ON CONFLICT (job_id, gpu_config) DO NOTHING""",
+                        (
+                            str(uuid4()),
+                            type_id,
+                            instance_id,
+                            Json(target_config),
+                            target_node,
+                            now2,
+                        ),
+                    )
+                    new_dispatches.append(
+                        Assignment(
+                            instance_id=instance_id,
+                            node_id=target_node,
+                            gpu_config=target_config,
+                        )
+                    )
                     for victim in victims:
                         if victim in evicted_in_round:
                             continue
                         profile_evictions.append(victim)
                         evicted_in_round.add(victim)
-                        logger.info(
-                            "Profile-preempt (unprofiled type): evicting %s for unprofiled %s (type=%s)",
-                            victim[:8],
-                            instance_id[:8],
-                            type_id,
-                        )
+                    logger.info(
+                        "Profile-preempt (unprofiled type): reserving %s %s for %s (type=%s); evicting %d victim(s) [%s]",
+                        target_node,
+                        target_config,
+                        instance_id[:8],
+                        type_id,
+                        len(victims),
+                        ",".join(v[:8] for v in victims),
+                    )
                 await conn.commit()
 
         # Spawn preempt + dispatch tasks OUTSIDE the lock.  Each runs
@@ -661,12 +756,13 @@ async def lifespan(_app: FastAPI) -> AsyncGenerator[None]:
         """Periodic drift heartbeat — corrects in-memory ``_used`` if it has
         diverged from the DB authoritative count.  Catches anything the
         listener missed: leftover containers from pre-fix runs completing,
-        bugs in new release paths, etc.  At 5 min cadence it's cheap and
-        the warnings double as an alerting signal — drift in steady state
-        means a code path is leaking somewhere worth investigating.
+        races between profile→standard transitions, etc.  Bounds the time
+        any single drift episode can wedge the scheduler.  Period
+        configurable via IJM_DRIFT_HEARTBEAT_S (default 15s).
         """
+        period_s = float(os.getenv("IJM_DRIFT_HEARTBEAT_S", "15"))
         while True:
-            await asyncio.sleep(300)
+            await asyncio.sleep(period_s)
             try:
                 if state.node_slots is None:
                     continue

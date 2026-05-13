@@ -18,7 +18,6 @@ import contextlib
 import io
 import logging
 import os
-import sys
 import tempfile
 import time
 import warnings
@@ -41,53 +40,80 @@ warnings.filterwarnings(
 )
 
 # Legacy PyTorch 1.5.1 (matemagician's CUDA-10.1 image) emits this warning via
-# C++ ``std::cerr`` directly — the Python warnings bridge was added in 1.6, so
-# the filter above only covers newer images.  Wrap stderr with a line-level
-# filter so the noise is dropped at the source.
+# C++ ``std::cerr`` (fd 2) directly — bypassing both Python's ``warnings``
+# module AND any ``sys.stderr`` wrapper, because the write is at the C
+# library level.  Suppress it by redirecting fd 2 itself through a pipe and
+# running a background thread that drops lines matching the noise pattern,
+# forwarding everything else to the real stderr.
 _CUDNN_RNN_NOISE = (
-    "RNN module weights are not part of single contiguous chunk of memory"
+    b"RNN module weights are not part of single contiguous chunk of memory"
 )
 
 
-class _FilteredStderr:
-    def __init__(self, inner: Any) -> None:
-        self._inner = inner
-        self._buf = ""
+def _install_stderr_fd_filter() -> None:
+    import threading
 
-    def write(self, data: str) -> int:
-        self._buf += data
-        out = []
-        while "\n" in self._buf:
-            line, self._buf = self._buf.split("\n", 1)
-            if _CUDNN_RNN_NOISE not in line:
-                out.append(line + "\n")
-        if out:
-            self._inner.write("".join(out))
-        return len(data)
+    # Already installed?  Don't double-redirect on re-import.
+    if os.environ.get("_IJM_STDERR_FILTERED") == "1":
+        return
 
-    def flush(self) -> None:
-        if self._buf and _CUDNN_RNN_NOISE not in self._buf:
-            self._inner.write(self._buf)
-        self._buf = ""
-        self._inner.flush()
+    orig_stderr_fd = os.dup(2)
+    r, w = os.pipe()
+    os.dup2(w, 2)
+    os.close(w)
 
-    def __getattr__(self, name: str) -> Any:
-        return getattr(self._inner, name)
+    def _pump() -> None:
+        # ``readline`` over an os-level pipe is reliable here; we buffer
+        # manually so a partial last line (no trailing newline at EOF) still
+        # gets flushed.
+        try:
+            with (
+                os.fdopen(r, "rb", buffering=0) as src,
+                os.fdopen(orig_stderr_fd, "wb", buffering=0) as dst,
+            ):
+                buf = b""
+                while True:
+                    chunk = src.read(4096)
+                    if not chunk:
+                        break
+                    buf += chunk
+                    while b"\n" in buf:
+                        line, buf = buf.split(b"\n", 1)
+                        if _CUDNN_RNN_NOISE not in line:
+                            dst.write(line + b"\n")
+                if buf and _CUDNN_RNN_NOISE not in buf:
+                    dst.write(buf)
+        except Exception:  # noqa: BLE001 — best-effort, never crash trainer
+            pass
+
+    threading.Thread(target=_pump, name="stderr-filter", daemon=True).start()
+    os.environ["_IJM_STDERR_FILTERED"] = "1"
 
 
-if not isinstance(sys.stderr, _FilteredStderr):
-    sys.stderr = _FilteredStderr(sys.stderr)
+_install_stderr_fd_filter()
 
 logger = logging.getLogger(__name__)
 
 
 def download_dataset(dataset_cls: type, root: str, **kwargs: Any) -> Dataset[Any]:
-    """Download a torchvision dataset with suppressed progress bars."""
+    """Load a torchvision dataset, preferring a pre-staged on-disk copy.
+
+    Some torchvision versions re-check integrity on every construction even
+    when files are present, and on rootless-docker workers (polimi-gpu) the
+    container's slirp4netns DNS resolver intermittently fails to reach
+    public mirrors --- a single bad lookup turns an otherwise-cached
+    dataset into a hard failure.  Try ``download=False`` first (uses
+    on-disk files only); only fall back to ``download=True`` if that
+    raises (legitimately missing data).
+    """
     # Nested ``with`` rather than the parenthesized form so this stays
     # syntactically valid on Python 3.7 (the legacy CUDA-10.1 image).
     with open(os.devnull, "w") as devnull:
         with contextlib.redirect_stdout(devnull), contextlib.redirect_stderr(devnull):
-            return dataset_cls(root=root, download=True, **kwargs)
+            try:
+                return dataset_cls(root=root, download=False, **kwargs)
+            except (RuntimeError, FileNotFoundError):
+                return dataset_cls(root=root, download=True, **kwargs)
 
 
 class BaseTrainer(ABC):
@@ -129,7 +155,13 @@ class BaseTrainer(ABC):
         self.train_loader = DataLoader(
             train_dataset, batch_size=self.batch_size, shuffle=True, drop_last=True
         )
-        self.test_loader = DataLoader(test_dataset, batch_size=256, shuffle=False)
+        # Cap test batch at the training batch so heavy CNN models don't OOM
+        # during evaluate() on small-VRAM GPUs (P600 4GB).  The original 256
+        # was fine for LSTMs and CIFAR-CNNs but blows up on 128x128x3 deep
+        # CNNs.  ``min`` keeps fast paths (LSTM, small CNN) unchanged.
+        self.test_loader = DataLoader(
+            test_dataset, batch_size=min(256, self.batch_size), shuffle=False
+        )
 
         self.load_checkpoint()
 
@@ -167,19 +199,51 @@ class BaseTrainer(ABC):
             # ``weights_only`` only exists on torch >= 1.13.  The legacy
             # CUDA-10.1 image (matemagician) ships torch 1.5.1 and would
             # reject the kwarg with TypeError; fall back to the older call.
+            # Reset the BytesIO position before retry — the first torch.load
+            # consumes the buffer, and reading from EOF triggers an
+            # UnpicklingError ("A load persistent id instruction was
+            # encountered...") that masks the real version-mismatch cause.
             try:
                 checkpoint = torch.load(
                     buf, weights_only=True, map_location=self.device
                 )
             except TypeError:
+                buf.seek(0)
                 checkpoint = torch.load(buf, map_location=self.device)
             inner = (
                 self.model.module
                 if isinstance(self.model, nn.DataParallel)
                 else self.model
             )
-            inner.load_state_dict(checkpoint["model_state_dict"])
-            self.optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
+            # ``strict=False`` tolerates minor key differences between torch
+            # versions (e.g.\ BN parameter naming or DataParallel
+            # ``module.`` prefixes that slipped through), which matters for
+            # cnn\_big jobs that migrate from modern A40 (torch 2.6) to
+            # legacy P600 (torch 1.5.1) workers.  We re-raise on actual
+            # shape mismatches because those mean weights are unusable.
+            missing, unexpected = inner.load_state_dict(
+                checkpoint["model_state_dict"], strict=False
+            )
+            if missing or unexpected:
+                logger.warning(
+                    "Checkpoint state_dict partial load: missing=%d unexpected=%d",
+                    len(missing),
+                    len(unexpected),
+                )
+            # Optimizer state is the most version-fragile part of the
+            # checkpoint (step counters, fused-momentum tensors).  If load
+            # fails (e.g.\ legacy torch refuses the newer Adam state shape)
+            # we restart Adam from scratch — at the cost of a few epochs of
+            # adaptive-learning-rate warmup, which is invisible at the
+            # scenario timescales we care about.
+            try:
+                self.optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
+            except (RuntimeError, ValueError, KeyError) as e:
+                logger.warning(
+                    "Optimizer state_dict load failed (%s); restarting optimizer "
+                    "from scratch — model weights still loaded.",
+                    e,
+                )
             self.current_epoch = checkpoint["epoch"]
             self.best_accuracy = checkpoint.get("best_accuracy", 0.0)
             logger.info(
@@ -279,6 +343,9 @@ class BaseTrainer(ABC):
 
         while self.current_epoch < self.total_epochs:
             t0 = time.monotonic()
+            logger.info(
+                "Epoch %d/%d - starting", self.current_epoch + 1, self.total_epochs
+            )
             avg_loss = self._train_one_epoch()
             self.current_epoch += 1
 

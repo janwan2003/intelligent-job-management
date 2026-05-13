@@ -215,12 +215,12 @@ Stages 0 mirrors Scenario 1 exactly. Differences below.
 
 | Job | Type | Priority | Deadline | Expected node @ steady state |
 |---|---|---|---|---|
-| JOB1 | `lstm-small` | 1 | +8 h | **matemagician (1× P600)** |
-| JOB2 | `lstm-big` | 1 | +8 h | **matemagician (1× P600)** |
-| JOB3 | `lstm-small` | 4 | +1 h | **polimi-gpu (1× A40)** |
-| JOB4 | `lstm-big` | 4 | +2 h | **polimi-gpu (1× A40)** |
+| JOB1 | `lstm-small` | 1 | +8 h | **polimi-gpu (1× A40)** |
+| JOB2 | `lstm-big` | 1 | +8 h | **polimi-gpu (1× A40)** |
+| JOB3 | `lstm-small` | 4 | +1 h | **matemagician (1× P600)** |
+| JOB4 | `lstm-big` | 4 | +2 h | **matemagician (1× P600)** |
 
-**Why this placement.** Same logic as Scenario 1 — A40 ~9× pricier than P600, slack on every deadline → cost minimization caps at slot capacity. The two prio=4 jobs with tighter deadlines (JOB3 +1 h, JOB4 +2 h) take the A40 slots; the prio=1 jobs (JOB1, JOB2) take the P600 slots. Each node ends up with one `lstm-small` and one `lstm-big` — so both image variants are in flight on both nodes, which exercises both cross-image execution paths.
+**Why this placement (counterintuitive but correct).** Same logic as Scenario 1. A40 is ~9× pricier than P600; all deadlines have ≥ 58 min slack and even the slowest config finishes in ~23 min, so **tardiness = 0 everywhere** and the `priority × tardiness` term vanishes — only cost matters. Cost-min wants every job on P600 (cheap), but P600 has only 2 slots, so two jobs *must* overflow to the expensive A40. The solver's tiebreak (lowest `priority × execution_time`) picks the prio=1 pair for the overflow, so JOB1 + JOB2 land on A40 and the prio=4 pair JOB3 + JOB4 keep the cheap P600 slots. Each node still hosts one `lstm-small` and one `lstm-big`, exercising both image variants on both nodes. The placement flips toward the intuitive "fast resource for the urgent job" only when a deadline becomes binding — exactly what Stage 2 tests.
 
 Both types must complete their cold profile sweeps before Stage 2. With `PROFILING_CONFIGS_PER_JOB=1`, each of the 4 patient instances profiles one cell; the profile cache ends Stage 1 with at most 4 rows per type (the count fills as the optimizer naturally cycles through the remaining cells in later stages).
 
