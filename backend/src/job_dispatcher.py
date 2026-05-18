@@ -161,15 +161,11 @@ class JobDispatcher:
             try:
                 await self._remote_request(worker_url, job_id, "stop", params=params)
             except Exception:
-                # Stops are best-effort; the worker's startup reconcile loop
-                # catches orphaned containers, and dedupe upstream means a
-                # follow-up stop will not stack on this one.
+                # Stops are best-effort; worker reconcile catches orphans on startup.
                 logger.warning("Remote stop for job %s failed (suppressed)", job_id[:8])
         elif node_id is None:
-            # Symmetric with enqueue(): if the row no longer has an
-            # ``assigned_node`` there is nothing to stop on a remote worker.
-            # Avoid silently routing to local — in distributed deployments
-            # the local runner has no live container for this job either.
+            # No assigned_node — nothing to stop.  Falling through to local would
+            # be wrong in distributed deployments where local has no container.
             logger.info(
                 "Skipping /stop for %s — assigned_node already cleared",
                 job_id[:8],
@@ -180,12 +176,9 @@ class JobDispatcher:
     async def _remote_request(
         self, worker_url: str, job_id: str, action: str, params: dict[str, str] | None = None
     ) -> None:
-        # ``/run`` may legitimately return 409 if the job's previous Phase 4
-        # hasn't yet popped ``running_jobs[job_id]`` on the worker (common
-        # right after a migration: stop fired, persist committed, but the
-        # _run_job task is still finishing its drain).  Retry briefly so the
-        # urgent dispatch isn't permanently lost — the OPP-side state will
-        # settle within a few hundred ms.
+        # /run can legitimately return 409 right after a migration while the
+        # worker's previous _run_job task is still draining.  Retry briefly so
+        # the urgent dispatch isn't lost.
         max_retries = 3 if action == "run" else 1
         retry_delay = 0.3
         last_exc: Exception | None = None
@@ -221,9 +214,7 @@ class JobDispatcher:
             max_retries,
             last_exc,
         )
-        # Propagate so callers can react — ``enqueue`` releases the slot,
-        # ``_do_stop`` swallows it (stops are best-effort; the worker's
-        # reconcile loop catches orphans on next startup).
+        # Callers (enqueue) need the failure so they can release the slot.
         if last_exc is not None:
             raise last_exc
 

@@ -15,12 +15,8 @@ Intelligent Job Management (IJM) — a job management system for GPU deep learni
 # 1. SSH tunnels to remote postgres + workers (one-shot, leave running)
 bash infra/tunnel.sh polimi   # forwards 5433, 8001, 8002 with ServerAlive*
 
-# 2. Native API + dockerised optimizer + frontend.  ``--with-guard`` is
-#    recommended: enables IJM_OPTIMIZER_GUARD_MIGRATIONS=1 which suppresses
-#    unprofitable migrations and stops the optimizer from thrashing under
-#    flat cost surfaces (e.g.\ cnn_big where P600x1/A40x1 only differ by
-#    ~$0.005).
-bash infra/launch.sh tunnel --with-guard
+# 2. Native API + dockerised optimizer + frontend.
+bash infra/launch.sh tunnel
 
 # 3. Run scenarios
 bash infra/e2e_scenario.sh                # single-type (lstm-small) sweep
@@ -104,9 +100,7 @@ QUEUED → PROFILING → QUEUED (re-queued as standard run) → RUNNING → SUCC
 | `HOST_ROOT` | API | `/host` (maps to repo root) |
 | `HOST_PROJECT_ROOT` | API | `${PWD}/..` (host-resolvable path for Docker volumes) |
 | `EXECUTOR` | API | `docker` (or `mock-slurm`) |
-| `OPTIMIZER_URL` | API | unset (greedy scheduler); set to `http://optimizer:8080` for batch optimizer |
-| `OPTIMIZER_SWITCH_PENALTY_S` | API | `60` — wall-time charged at the destination GPU's hourly rate when destination profiling data is missing. Drops optimizer-proposed migrations whose claimed energy savings don't pay for kill+drain+lost-epoch overhead (tardy jobs are exempt). |
-| `IJM_OPTIMIZER_GUARD_MIGRATIONS` | API | unset (off). Setting `=1` (recommended; `launch.sh --with-guard` does this) activates the cost-benefit migration filter: non-tardy migrations whose energy savings don't beat the kill+drain+lost-epoch penalty get suppressed. Without it the optimizer can thrash on flat cost surfaces (e.g.\ cnn_big where P600×1 and A40×1 differ by only ~\$0.005) — every round it picks a cost-equivalent plan, the API honours it as preempt+re-dispatch, and the cluster oscillates indefinitely. |
+| `OPTIMIZER_URL` | API | unset (jobs wait until profiling completes, then sit idle); set to `http://optimizer:8080` for batch optimizer (required for placement). |
 | `IJM_DRIFT_HEARTBEAT_S` | API | `15` — period of the slot-tracker drift heartbeat that reconciles `mem_used` against `db_used` per node.  Lower = faster recovery from acquire/release races, higher = less per-round overhead.  Counted in the `drift_recovery_count` metric exposed at `/admin/slots`. |
 | `WORKER_GPU_MODE` | worker | `runtime` (other values: `cdi` for rootless docker on polimi-gpu, `none` for CPU only). Selects how `docker run` is told to expose GPUs to the training container. |
 | `IMAGE_TAG_OVERRIDE` | worker | unset. If set, rewrites the job's image tag (`:latest` → `:$IMAGE_TAG_OVERRIDE`). Used on matemagician (`legacy`) where the node's NVIDIA driver (418.x, CUDA 10.1 max) cannot run the default CUDA-12.4 PyTorch image. |

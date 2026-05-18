@@ -76,14 +76,9 @@ class NodeSlots:
             node_id = raw["id"]
             total = sum(int(r["gpu_count"]) for r in raw.get("resources", []))
             self._totals[node_id] = total
-            # BoundedSemaphore raises ValueError if release() pushes the
-            # internal counter above the initial value.  Critical: plain
-            # ``asyncio.Semaphore.release()`` is unbounded, so any over-
-            # release (double-NOTIFY during migration, reaper racing the
-            # dispatch task, drift recovery counting both directions) silently
-            # inflates capacity past total_gpus and the next acquires no
-            # longer block — the cluster oversubscribes.  ``release()`` below
-            # catches the ValueError and treats it as a logged no-op.
+            # BoundedSemaphore caps release() at the initial value — without it
+            # an over-release silently inflates capacity and the cluster
+            # oversubscribes.  release() below catches the ValueError.
             self._sems[node_id] = asyncio.BoundedSemaphore(total)
             self._used[node_id] = 0
             self._acquire_locks[node_id] = asyncio.Lock()

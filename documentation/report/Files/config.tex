@@ -167,7 +167,7 @@ Interactive documentation is available at \texttt{/docs} (Swagger~UI) and \textt
 \end{table}
 
 All scheduling, profiling, and dispatch decisions are consolidated into a single FastAPI service, in contrast to ANDREAS which split these across a Java Jobs Manager and a C++ Jobs Optimizer.
-The actual execution lives in per-node \emph{workers} (also FastAPI), which the API reaches over HTTP through SSH tunnels.  An optional external GPUspb optimizer is reached the same way: when its URL is unset the system falls back to the in-API greedy scheduler.
+The actual execution lives in per-node \emph{workers} (also FastAPI), which the API reaches over HTTP through SSH tunnels.  The external GPUspb optimizer is reached the same way and is responsible for all standard-run placement decisions.
 IJM exposes explicit \texttt{stop}, \texttt{resume}, \texttt{logs}, and \texttt{delete} endpoints, as well as \texttt{/profiling-results} and \texttt{/configurations} to give users visibility into the scheduler's state.
 
 \subsection{Runtime environment}
@@ -181,11 +181,9 @@ The most important runtime knobs (all set in the API process unless noted otherw
 \textbf{Variable} & \textbf{Default} & \textbf{Description} \\
 \hline
 \texttt{DATABASE\_URL}                  & \texttt{postgresql://\ldots/ijm} & PostgreSQL DSN, reached via SSH tunnel \\
-\texttt{OPTIMIZER\_URL}                 & unset & When set, the API delegates placement to the GPUspb HTTP service.  Unset $\Rightarrow$ greedy scheduler only \\
+\texttt{OPTIMIZER\_URL}                 & unset & The API delegates standard-run placement to the GPUspb HTTP service \\
 \texttt{OPTIMIZER\_METHOD}              & \texttt{RG} & GPUspb solver method passed in the request body \\
 \texttt{OPTIMIZER\_VERBOSE}             & 0 & GPUspb per-call log verbosity (0--3) \\
-\texttt{OPTIMIZER\_SWITCH\_PENALTY\_S}  & 60 & Wall-time penalty (s) charged when judging optimizer migrations without destination profiling data \\
-\texttt{IJM\_OPTIMIZER\_GUARD\_MIGRATIONS} & unset & When set, re-enables the local cost-benefit filter on optimizer-proposed migrations (default trusts GPUspb) \\
 \texttt{PROFILING\_CONFIGS\_PER\_JOB}   & 1 & How many distinct GPU configs a single job \emph{instance} profiles before falling through to a standard run \\
 \texttt{EXECUTOR}                       & \texttt{docker} & Executor backend for the in-process \texttt{JobRunner}: \texttt{docker} or \texttt{mock-slurm} (workers always use the docker CLI) \\
 \texttt{WORKER\_GPU\_MODE}              & \texttt{runtime} & Worker-side; how Docker exposes GPUs to training containers: \texttt{runtime} / \texttt{cdi} (rootless) / \texttt{none} \\

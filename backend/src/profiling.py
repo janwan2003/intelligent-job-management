@@ -214,10 +214,10 @@ class ProfilingScheduler:
     ) -> None:
         """Write the scheduling decision to the jobs table.
 
-        For profiling runs, also claim the config in profiling_results
-        (duration_seconds = NULL marks it as in-flight, instance_id tracks
-        which job instance claimed it).
+        Profile claims are inserted upfront by ``_atomic_claim_remaining``;
+        this method only updates the ``jobs`` row.
         """
+        del type_id, instance_id  # unused; kept for signature stability
         now = datetime.now(UTC)
         async with conn.cursor() as cur:
             await cur.execute(
@@ -233,34 +233,6 @@ class ProfilingScheduler:
                     job_id,
                 ),
             )
-            if result.is_profiling_run and result.gpu_config and result.node_id:
-                await cur.execute(
-                    """INSERT INTO profiling_results (id, job_id, instance_id, gpu_config, node_id, duration_seconds, created_at)
-                       VALUES (%s, %s, %s, %s, %s, NULL, %s)
-                       ON CONFLICT (job_id, gpu_config) DO NOTHING""",
-                    (
-                        str(uuid4()),
-                        type_id or job_id,
-                        instance_id or job_id,
-                        Json(result.gpu_config),
-                        result.node_id,
-                        now,
-                    ),
-                )
-                # If the INSERT lost the race (another instance already claimed
-                # this config) we'd otherwise schedule a profiling run whose
-                # result has nowhere to land — the UPDATE in
-                # ``_on_profiling_complete`` filters by instance_id and would
-                # silently drop the measurement.  Surface it loudly so the
-                # operator can investigate; rare in practice because
-                # schedule_lock serializes most schedule_job calls.
-                if (getattr(cur, "rowcount", 0) or 0) == 0:
-                    logger.warning(
-                        "Profiling claim collision for type=%s config=%s — instance %s will profile without a recordable claim",
-                        type_id or job_id,
-                        result.gpu_config,
-                        (instance_id or job_id)[:8],
-                    )
 
     async def schedule_standard_run(self, conn: psycopg.AsyncConnection[Any], job_id: str) -> ScheduleResult:
         """Schedule a standard (non-profiling) run using any available profiled config.
@@ -410,10 +382,8 @@ class ProfilingScheduler:
 
         node_gpu_usage = await self.get_node_gpu_usage(conn)
 
-        # Walk profiling-capable nodes whose total capacity fits the target.
-        # For each, compute what's already free; evict only enough to cover
-        # the shortfall.  Stop at the first node where a feasible eviction
-        # set exists.
+        # Find the first profile-capable node where evicting enough low-priority
+        # jobs covers the shortfall.
         for raw in cluster.nodes:
             node = NodeConfig.model_validate(raw)
             if not node.is_for_profiling:
@@ -425,9 +395,7 @@ class ProfilingScheduler:
             free = {gt: totals.get(gt, 0) - used.get(gt, 0) for gt in totals}
             need = {gt: max(0, target.get(gt, 0) - free.get(gt, 0)) for gt in target}
             if all(n == 0 for n in need.values()):
-                # Already fits — caller should just schedule it directly
-                # (this function is called when ``schedule_job`` already
-                # failed to find a node; in that case ``need`` will be > 0).
+                # Already fits — schedule_job should have placed it directly.
                 return [], None, None
 
             async with conn.cursor() as cur:
@@ -466,6 +434,108 @@ class ProfilingScheduler:
 
         return [], None, None
 
+    async def _get_in_flight_claims(
+        self, conn: psycopg.AsyncConnection[Any], instance_id: str
+    ) -> list[tuple[dict[str, int], str]]:
+        """Return (gpu_config, node_id) for this instance's outstanding claims.
+
+        An outstanding claim is a ``profiling_results`` row owned by this
+        instance whose ``duration_seconds`` is still NULL — i.e., the cell
+        has been claimed but the measurement hasn't been recorded.
+        """
+        async with conn.cursor() as cur:
+            await cur.execute(
+                "SELECT gpu_config, node_id FROM profiling_results WHERE instance_id = %s AND duration_seconds IS NULL",
+                (instance_id,),
+            )
+            rows = await cur.fetchall()
+        return [(row[0], row[1]) for row in rows]
+
+    async def _atomic_claim_remaining(
+        self,
+        conn: psycopg.AsyncConnection[Any],
+        type_id: str,
+        instance_id: str,
+        max_claims: int,
+    ) -> list[tuple[dict[str, int], str]]:
+        """Atomically claim up to ``max_claims`` unprofiled cells for this instance.
+
+        For each cell, picks the canonically-first profile-capable node with
+        enough total capacity (current usage ignored — dispatch will wait on
+        the per-node slot semaphore if the node happens to be busy).  The
+        claims go into ``profiling_results`` in a single statement with
+        ``ON CONFLICT (job_id, gpu_config) DO NOTHING``, so two instances
+        of the same type racing to claim the last cell can both call this
+        helper safely — the loser just gets nothing back.
+
+        Returns the list of (gpu_config, node_id) the instance actually
+        owns after the INSERT.
+        """
+        if max_claims <= 0:
+            return []
+
+        all_configs = self.get_valid_configurations()
+        profiled = await self.get_profiled_configs(conn, type_id)
+        profiled_keys = {config_key(c) for c in profiled}
+        unclaimed = [c for c in all_configs if config_key(c) not in profiled_keys]
+        if not unclaimed:
+            return []
+
+        # Pair each unclaimed cell with its target node.  Pass empty usage so
+        # busy nodes don't disqualify cells — dispatch waits on the slot semaphore.
+        unclaimed_with_node: list[tuple[dict[str, int], str]] = []
+        for cfg in unclaimed:
+            target_node = self._find_node_for_config(cfg, is_for_profiling=True, node_gpu_usage={})
+            if target_node is None:
+                continue
+            unclaimed_with_node.append((cfg, target_node.id))
+
+        # Sort so same-node cells cluster (an instance with budget=2 stays
+        # co-located) and order is deterministic across runs.
+        unclaimed_with_node.sort(key=lambda x: (x[1], sum(x[0].values()), sorted(x[0].keys())))
+
+        to_claim = unclaimed_with_node[:max_claims]
+
+        if not to_claim:
+            return []
+
+        now = datetime.now(UTC)
+        placeholders: list[str] = []
+        params: list[Any] = []
+        for cfg, node_id in to_claim:
+            placeholders.append("(%s, %s, %s, %s, %s, NULL, %s)")
+            params.extend([str(uuid4()), type_id, instance_id, Json(cfg), node_id, now])
+
+        sql = (
+            "INSERT INTO profiling_results "
+            "(id, job_id, instance_id, gpu_config, node_id, duration_seconds, created_at) "
+            "VALUES " + ", ".join(placeholders) + " "
+            "ON CONFLICT (job_id, gpu_config) DO NOTHING "
+            "RETURNING gpu_config, node_id"
+        )
+        async with conn.cursor() as cur:
+            await cur.execute(sql, params)
+            rows = await cur.fetchall()
+
+        owned = [(row[0], row[1]) for row in rows]
+        if len(owned) < len(to_claim):
+            logger.info(
+                "Instance %s atomic-claimed %d/%d cell(s) for type=%s (others won the race)",
+                instance_id[:8],
+                len(owned),
+                len(to_claim),
+                type_id,
+            )
+        elif owned:
+            logger.info(
+                "Instance %s atomic-claimed %d cell(s) for type=%s: %s",
+                instance_id[:8],
+                len(owned),
+                type_id,
+                [c for c, _ in owned],
+            )
+        return owned
+
     async def schedule_job(
         self,
         conn: psycopg.AsyncConnection[Any],
@@ -473,34 +543,18 @@ class ProfilingScheduler:
         *,
         job_type_id: str | None = None,
     ) -> ScheduleResult:
-        """Assign a configuration to *job_id* — profile or run depending on progress.
-
-        Called on job submission, resume, and after each profiling run completes.
-        Each submission profiles up to ``configs_per_job`` new configs (counted
-        since the job instance's creation time), then schedules a standard run.
-
-        *job_type_id* is the ANDREAS-style type identifier used to correlate
-        profiling results across submissions.  Falls back to *job_id* if not provided.
+        """Assign a configuration to *job_id* — profile or standard depending on
+        what cells this instance owns or can still claim.
         """
         type_id = job_type_id or job_id
         await self._sweep_stale_claims(conn, type_id)
         node_gpu_usage = await self.get_node_gpu_usage(conn)
         all_configs = self.get_valid_configurations()
-        profiled = await self.get_profiled_configs(conn, type_id)
-        profiled_keys = {config_key(c) for c in profiled}
-        remaining = [c for c in all_configs if config_key(c) not in profiled_keys]
-        profiled_this_round = await self._count_profiled_this_round(conn, job_id)
 
-        logger.info(
-            "Scheduling job %s (type=%s): %d total configs, %d profiled, %d remaining, %d this round (limit %d)",
-            job_id[:8],
-            type_id,
-            len(all_configs),
-            len(profiled),
-            len(remaining),
-            profiled_this_round,
-            self.configs_per_job,
-        )
+        gpu_config: dict[str, int] | None = None
+        node: NodeConfig | None = None
+        mode = "standard"
+        is_profiling_run = False
 
         if not all_configs:
             logger.warning(
@@ -510,40 +564,50 @@ class ProfilingScheduler:
                 job_id[:8],
             )
 
-        gpu_config: dict[str, int] | None = None
-        node: NodeConfig | None = None
-        mode = "standard"
-        is_profiling_run = False
-
-        explore_now = remaining and profiled_this_round < self.configs_per_job
-        if explore_now:
-            # Exploration: try each unprofiled config in order (smallest first)
-            # and pick the first one that fits on a profiling-capable node.
-            # Without this fallback, the scheduler would stall on
-            # ``remaining[0]`` whenever its target node was busy — even when
-            # a different unprofiled config could start immediately on an
-            # idle node.  Phase 1c will still be invoked for the smallest
-            # config that didn't fit, so we don't lose the "profile-evicts"
-            # behaviour; this just opportunistically uses idle capacity
-            # first instead of waiting on an eviction.
-            for candidate in remaining:
-                candidate_node = self._find_node_for_config(
-                    candidate, is_for_profiling=True, node_gpu_usage=node_gpu_usage
-                )
+        in_flight = await self._get_in_flight_claims(conn, job_id)
+        if in_flight:
+            in_flight_sorted = sorted(in_flight, key=lambda x: (sum(x[0].values()), sorted(x[0].keys())))
+            for cfg, _claim_node_id in in_flight_sorted:
+                candidate_node = self._find_node_for_config(cfg, is_for_profiling=True, node_gpu_usage=node_gpu_usage)
                 if candidate_node is not None:
-                    gpu_config, node = candidate, candidate_node
+                    gpu_config, node = cfg, candidate_node
                     mode, is_profiling_run = "profiling", True
                     break
 
-        if not is_profiling_run and not explore_now:
-            # Greedy standard-placement fallback: when no exploration is owed
-            # and the optimizer hasn't (yet) placed this row, opportunistically
-            # pick the smallest-cost profiled config that fits on an available
-            # production node.  Keeps idle slots from sitting empty between
-            # optimizer rounds.
-            available = await self._find_available_config(conn, type_id, node_gpu_usage)
-            if available:
-                gpu_config, node = available
+        # If no in-flight claim was ready, atomically claim more cells.
+        # _count_profiled_this_round counts claimed+completed, so a claim = budget used.
+        if not is_profiling_run:
+            already_claimed = await self._count_profiled_this_round(conn, job_id)
+            budget_left = self.configs_per_job - already_claimed
+            if budget_left > 0:
+                owned = await self._atomic_claim_remaining(conn, type_id, job_id, budget_left)
+                if owned:
+                    owned_sorted = sorted(owned, key=lambda x: (sum(x[0].values()), sorted(x[0].keys())))
+                    for cfg, _claim_node_id in owned_sorted:
+                        candidate_node = self._find_node_for_config(
+                            cfg, is_for_profiling=True, node_gpu_usage=node_gpu_usage
+                        )
+                        if candidate_node is not None:
+                            gpu_config, node = cfg, candidate_node
+                            mode, is_profiling_run = "profiling", True
+                            break
+
+        # Counters read AFTER the claim above so new claims show up.
+        profiled = await self.get_profiled_configs(conn, type_id)
+        profiled_keys = {config_key(c) for c in profiled}
+        remaining = [c for c in all_configs if config_key(c) not in profiled_keys]
+        profiled_this_round = await self._count_profiled_this_round(conn, job_id)
+
+        logger.info(
+            "Scheduling job %s (type=%s): %d total configs, %d profiled/claimed, %d remaining, %d this instance (limit %d)",
+            job_id[:8],
+            type_id,
+            len(all_configs),
+            len(profiled),
+            len(remaining),
+            profiled_this_round,
+            self.configs_per_job,
+        )
 
         result = ScheduleResult(
             mode=mode,

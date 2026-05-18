@@ -302,12 +302,8 @@ async def delete_job(job_id: str) -> None:
 async def clear_all_jobs() -> None:
     """Delete all jobs and their profiling results.
 
-    Stops any running/profiling containers first so we don't leave zombies
-    on remote workers — those zombies eventually emit ``ijm_slot_freed``
-    for rows that no longer exist, over-releasing the API's per-node
-    semaphore.  This is exactly how the matemagician=3 oversubscription
-    persisted across e2e runs: each run's ``Stage 0 clearing state`` left
-    containers alive, the next run added more, and the semaphore inflated.
+    Stops running containers first — orphaned containers would emit
+    ``ijm_slot_freed`` for deleted rows and over-release the per-node semaphore.
     """
     runner = require_runner()
 
@@ -328,14 +324,8 @@ async def clear_all_jobs() -> None:
         await conn.execute("DELETE FROM profiling_results")
         await conn.execute("DELETE FROM jobs")
 
-    # The /stop loop above releases slots via NOTIFY for jobs that were
-    # RUNNING/PROFILING.  Anything still in QUEUED with an assigned_node
-    # (dispatch task blocked on slot acquire) just got its row deleted —
-    # the dispatch task's RuntimeError handler releases its own permit,
-    # but if the task hasn't woken yet the slot lingers in memory until
-    # the 5-min drift watcher fires.  Forcing a reconcile here makes the
-    # cleared state immediately consistent so the next batch of submits
-    # doesn't block on a phantom permit.
+    # Force drift-recover so phantom permits from dispatch tasks blocked on
+    # acquire don't linger until the periodic watcher fires.
     if state.node_slots is not None:
         await state.node_slots.recover_from_drift(state.get_conn)
 
@@ -346,16 +336,9 @@ async def clear_all_jobs() -> None:
 async def get_job_logs(job_id: str) -> PlainTextResponse:
     """Return the output log for a job by proxying to the worker that owns it.
 
-    The API typically runs on a different host (laptop / control plane) than
-    the workers, so it can't read worker filesystems directly.  Fan-out path:
-
-    1. If the row has ``assigned_node`` set and that node has a workerUrl,
-       proxy there.
-    2. Else fan out to every configured worker in parallel and return the
-       response with the *newest mtime* — not the longest, which used to
-       mis-pick the stale frozen file on the original node when a job had
-       migrated.
-    3. Else fall back to the API's own filesystem (local-dev embedded runner).
+    When the row has no assigned_node we fan out to every worker and pick the
+    response with the *newest mtime* — picking the longest mis-selects the
+    frozen file on the original node after a migration.
     """
     if not _UUID_RE.match(job_id):
         raise HTTPException(status_code=400, detail="Invalid job ID format")

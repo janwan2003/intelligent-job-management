@@ -10,6 +10,7 @@ import os
 import re
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
+from email.utils import format_datetime
 from typing import Any
 
 import httpx
@@ -23,21 +24,6 @@ from src.models import NodeConfig
 logger = logging.getLogger(__name__)
 
 OPTIMIZER_URL: str | None = os.getenv("OPTIMIZER_URL")
-
-# Per-migration penalty (seconds of wall-time charged at the destination GPU's
-# hourly rate when destination profiling data is missing).  Tunes how
-# aggressively the client suppresses optimizer-proposed migrations whose
-# claimed cost improvement doesn't pay for the kill+drain+lost-epoch overhead.
-OPTIMIZER_SWITCH_PENALTY_S: float = float(os.getenv("OPTIMIZER_SWITCH_PENALTY_S", "60"))
-# Wall-time spent on the source slot for kill + drain.  Steady-state ~200 ms,
-# safety bound 60 s; we charge a conservative midpoint.
-_KILL_DRAIN_S: float = 30.0
-
-# GPUspb timestamp format: "Mon 04 May 2026, 12.34.56".  Built manually rather
-# than via strftime("%a %b") so we don't depend on the runtime LC_TIME locale
-# — Python's strftime localises weekday/month names.
-_WEEKDAYS = ("Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun")
-_MONTHS = ("Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec")
 
 _PROGRESS_RE = re.compile(r"^(\d+)/(\d+)$")
 
@@ -61,12 +47,14 @@ class OptimizerResult:
 
 
 def _format_time(dt: datetime) -> str:
+    # GPUspb wants "Mon 04 May 2026, 12.34.56".  RFC 2822 mandates English
+    # weekday/month names, so email.utils.format_datetime is locale-independent
+    # by spec — unlike strftime, which goes through the C library's LC_TIME.
     if dt.tzinfo is None:
         dt = dt.replace(tzinfo=UTC)
-    return (
-        f"{_WEEKDAYS[dt.weekday()]} {dt.day:02d} {_MONTHS[dt.month - 1]} {dt.year}, "
-        f"{dt.hour:02d}.{dt.minute:02d}.{dt.second:02d}"
-    )
+    weekday, day, month, year, hms, _tz = format_datetime(dt).replace(",", "").split()
+    h, m, s = hms.split(":")
+    return f"{weekday} {day} {month} {year}, {h}.{m}.{s}"
 
 
 def _parse_progress(progress: str | None) -> int:
@@ -113,46 +101,6 @@ def _build_node_map(nodes_payload: dict[str, dict[str, Any]]) -> dict[str, tuple
     return node_map
 
 
-def _mean_epoch_s(
-    type_id: str,
-    gpu_type: str,
-    n_gpus: int,
-    profiling_by_type: dict[str, list[tuple[dict[str, int], float]]],
-) -> float | None:
-    """Look up the recorded mean per-epoch seconds for a slot, or None."""
-    rows = profiling_by_type.get(type_id)
-    if not rows:
-        return None
-    for gpu_config, duration in rows:
-        if gpu_config.get(gpu_type) == n_gpus:
-            return float(duration)
-    return None
-
-
-def _hourly_cost(gpu_costs: dict[str, dict[str, float]], gpu_type: str, n_gpus: int) -> float | None:
-    table = gpu_costs.get(gpu_type)
-    if table is None:
-        return None
-    raw = table.get(str(n_gpus))
-    return float(raw) if raw is not None else None
-
-
-def _slot_cost(
-    type_id: str,
-    gpu_type: str,
-    n_gpus: int,
-    remaining_epochs: int,
-    profiling_by_type: dict[str, list[tuple[dict[str, int], float]]],
-    gpu_costs: dict[str, dict[str, float]],
-) -> float | None:
-    """Expected energy cost ($/run) of finishing the job on this slot."""
-    epoch_s = _mean_epoch_s(type_id, gpu_type, n_gpus, profiling_by_type)
-    hourly = _hourly_cost(gpu_costs, gpu_type, n_gpus)
-    if epoch_s is None or hourly is None:
-        return None
-    return epoch_s * remaining_epochs * hourly / 3600.0
-
-
 def _opt_node_for_real(real_node_id: str, gpu_type: str, nodes_payload: dict[str, dict[str, Any]]) -> str | None:
     """Map a real node_id + gpu_type back to the optimizer's node entry ID."""
     # Direct match
@@ -172,7 +120,7 @@ async def optimize(
     """Call the optimizer with ALL active jobs and currentScheduling.
 
     Returns assignments (what should run) and preempt list (what should stop).
-    On error, returns empty result so caller falls back to the greedy scheduler.
+    On error, returns an empty result; the next scheduler round will retry.
     """
     if not OPTIMIZER_URL:
         return OptimizerResult()
@@ -248,8 +196,6 @@ async def optimize(
     # Build jobs payload + currentScheduling
     jobs_payload: dict[str, dict[str, Any]] = {}
     current_scheduling: dict[str, dict[str, Any]] = {}
-    # Per-instance metadata retained for the post-response migration filter.
-    job_meta: dict[str, tuple[str, int]] = {}  # instance_id -> (type_id, remaining_epochs)
     # Per-(opt-node) running tally used to enforce the invariant
     # sum(currentScheduling per node) <= total_nGPUs.
     current_scheduling_used: dict[str, int] = {}
@@ -264,7 +210,7 @@ async def optimize(
 
         profiling_rows = profiling_by_type.get(job_type_id)
         if not profiling_rows:
-            continue  # No profiling data → greedy scheduler handles it
+            continue  # No profiling data yet — skip until profiling completes
 
         # Per-instance profile gate: skip instances that still owe a profile
         # and could still claim one (type has unprofiled configs left).
@@ -280,7 +226,6 @@ async def optimize(
         # and deadline projections for resumed jobs.
         current_epoch = _parse_progress(progress)
         remaining_epochs = max(1, total_epochs - current_epoch)
-        job_meta[instance_id] = (job_type_id, remaining_epochs)
 
         # Build ProfilingData with PER-EPOCH execution times.
         # ``duration`` is the mean per-epoch time (warmup excluded), recorded
@@ -388,7 +333,7 @@ async def optimize(
             resp.raise_for_status()
             result = resp.json()
     except Exception:
-        logger.exception("Optimizer call failed — falling back to greedy")
+        logger.exception("Optimizer call failed")
         return OptimizerResult()
 
     logger.debug("OPT RESP %s", result.get("jobs", {}))
@@ -397,13 +342,11 @@ async def optimize(
     node_map = _build_node_map(nodes_payload)
     assigned_ids: set[str] = set()
     assignments: list[Assignment] = []
-    tardiness_by_id: dict[str, float] = {}
 
     for opt_job_id, opt_assignment in result.get("jobs", {}).items():
         opt_node = opt_assignment.get("node", "")
         n_gpus = opt_assignment.get("nGPUs", 0)
         tardiness = float(opt_assignment.get("expected_tardiness", 0) or 0)
-        tardiness_by_id[opt_job_id] = tardiness
         if tardiness > 0:
             logger.warning("Job %s will miss deadline by %.1f hours", opt_job_id[:8], tardiness)
         if not opt_node or n_gpus <= 0 or opt_node not in node_map:
@@ -416,21 +359,11 @@ async def optimize(
     # dropped entirely OR moved to a different (node, gpu_type, nGPUs).  After
     # preemption, app.py re-queues them with assigned_node=NULL so Phase 1b's
     # `WHERE assigned_node IS NULL` clause can apply the optimizer's new
-    # placement.  Without this, optimizer-driven migrations are silently
-    # dropped (Phase 1b can't update a row that already has a node), the
-    # container keeps running on the old node, and the cluster can no longer
-    # self-correct from a bad placement.
+    # placement.
     assignment_by_id = {a.instance_id: a for a in assignments}
 
     preempt: list[str] = []
     keep_assignments: list[Assignment] = []
-    # Track (real_node, gpu_type, n_gpus) tuples whose freeing was suppressed
-    # by the migration guard.  Post-loop we drop any *new* assignment whose
-    # destination matches a still-occupied slot — those assignments
-    # depended on the suppressed migration releasing the slot, and without
-    # that they'd write ``assigned_node`` to a row that the dispatcher
-    # then waits on forever (idle slot elsewhere goes unused).
-    suppressed_release_slots: set[tuple[str, str, int]] = set()
     for a in assignments:
         existing = current_scheduling.get(a.instance_id)
         if existing is None:
@@ -451,85 +384,13 @@ async def optimize(
                 {existing["GPUtype"]: existing["nGPUs"]},
             )
             continue
-        # Cost-benefit migration filter (enabled via IJM_OPTIMIZER_GUARD_MIGRATIONS).
-        #
-        # For non-tardy jobs, suppress the migration if the local estimate
-        # says the kill+drain+lost-epoch penalty is bigger than the energy
-        # savings.  Tardy jobs are always exempt — when a deadline binds,
-        # GPUspb's tardiness term swamps the noise threshold and migrations
-        # need to go through.
-        #
-        # Without this filter the optimizer thrashes in slack-only regimes
-        # where the cost surface is roughly flat: every round it picks a
-        # cost-equivalent plan, the API honours it as a preempt + re-
-        # dispatch, and the cluster oscillates forever.
-        if os.getenv("IJM_OPTIMIZER_GUARD_MIGRATIONS"):
-            tardiness = tardiness_by_id.get(a.instance_id, 0.0)
-            if tardiness <= 0:
-                type_id, remaining_epochs = job_meta.get(a.instance_id, ("", 0))
-                gpu_costs = cluster.gpu_energy_costs
-                cur_gtype = existing["GPUtype"]
-                cur_n = int(existing["nGPUs"])
-                cur_cost = _slot_cost(type_id, cur_gtype, cur_n, remaining_epochs, profiling_by_type, gpu_costs)
-                new_cost = _slot_cost(type_id, new_gpu_type, new_n, remaining_epochs, profiling_by_type, gpu_costs)
-                src_hourly = _hourly_cost(gpu_costs, cur_gtype, cur_n)
-                dst_hourly = _hourly_cost(gpu_costs, new_gpu_type, new_n)
-                dst_epoch_s = _mean_epoch_s(type_id, new_gpu_type, new_n, profiling_by_type)
-                lost_epoch_s = dst_epoch_s if dst_epoch_s is not None else OPTIMIZER_SWITCH_PENALTY_S
-                if cur_cost is not None and new_cost is not None and src_hourly is not None and dst_hourly is not None:
-                    benefit = cur_cost - new_cost
-                    penalty = _KILL_DRAIN_S * src_hourly / 3600.0 + lost_epoch_s * dst_hourly / 3600.0
-                    if benefit < penalty:
-                        logger.info(
-                            "Optimizer migration for %s suppressed (guard on): benefit=$%.4f < penalty=$%.4f",
-                            a.instance_id[:8],
-                            benefit,
-                            penalty,
-                        )
-                        # Remember the slot the suppressed migration would
-                        # have freed — see post-filter pass below.
-                        suppressed_release_slots.add((cur_real, cur_gtype, cur_n))
-                        continue
         # Migration: preempt + let Phase 1b reapply with new placement.
         preempt.append(a.instance_id)
         keep_assignments.append(a)
     # Anything in currentScheduling that the optimizer didn't include at all → preempt.
-    # Trust GPUspb's decisions completely — if it drops a job from its plan we
-    # honour that.  Tuning so the cost function gives sensible drops is the
-    # operator's responsibility (gpu_energy_costs in nodes_config).
     for job_id in current_scheduling:
         if job_id not in assignment_by_id:
             preempt.append(job_id)
-
-    # Post-filter pass: drop *new* assignments that would land on slots whose
-    # freeing-migration was suppressed by the guard.  The dispatcher would
-    # otherwise wait on a slot semaphore that never frees, leaving an
-    # actually-idle slot elsewhere unused.  Dropping the assignment lets the
-    # next scheduler round (or the greedy fallback in this round) place the
-    # job on whatever's actually free.
-    if suppressed_release_slots:
-        final_assignments = []
-        for a in keep_assignments:
-            new_gpu_type = next(iter(a.gpu_config))
-            new_n = a.gpu_config[new_gpu_type]
-            # Was this a NEW assignment (i.e. instance was not previously
-            # scheduled)?  Migrations are handled separately above — they
-            # carry their own source slot.  For new assignments, "depends on
-            # a suppressed release" means the target slot exists in
-            # ``suppressed_release_slots``.
-            if a.instance_id in current_scheduling:
-                final_assignments.append(a)
-                continue
-            if (a.node_id, new_gpu_type, new_n) in suppressed_release_slots:
-                logger.info(
-                    "Dropping new assignment %s → %s %s — depends on a suppressed migration",
-                    a.instance_id[:8],
-                    a.node_id,
-                    {new_gpu_type: new_n},
-                )
-                continue
-            final_assignments.append(a)
-        keep_assignments = final_assignments
 
     assignments = keep_assignments
 

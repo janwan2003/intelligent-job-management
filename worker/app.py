@@ -88,13 +88,8 @@ async def _zombie_release(job_id: str) -> None:
 
 @app.post("/jobs/{job_id}/run", status_code=202)
 async def run_job(job_id: str) -> dict[str, str]:
-    # Reject duplicates not just when ``running_jobs`` has the id (Phase 1
-    # has claimed) but also when the previous task is still draining (its
-    # ``finally`` hasn't popped yet).  Without the second check, a retry
-    # /run that lands in the millisecond gap between Phase 4 and the
-    # finally would spawn a SECOND _run_job for the same id — two acquires
-    # in API memory, two run tasks, eventually two attempts to start the
-    # same-named container and confused state.
+    # Reject if the previous task is still draining (finally hasn't popped),
+    # else a retry /run in that gap would spawn a duplicate _run_job.
     rt = running_tasks.get(job_id)
     if job_id in running_jobs or (rt is not None and not rt.done()):
         raise HTTPException(status_code=409, detail="Job already running or draining")
@@ -106,18 +101,11 @@ async def run_job(job_id: str) -> dict[str, str]:
 async def stop_job(job_id: str, reason: str = "user") -> dict[str, str]:
     """Stop a job's container.
 
-    ``reason=user`` (default): user-initiated stop.  Status → PREEMPTED so
-    the job sits explicitly stopped until the user manually resumes it.
-    ``reason=auto``: scheduler-initiated preemption (e.g. optimizer making
-    room for an urgent job).  Status → QUEUED with ``assigned_node`` cleared
-    so the next scheduling pass can place it elsewhere without going through
-    a separate requeue step.  This avoids the misleading PREEMPTED state for
-    jobs that are really just waiting for resources.
+    reason=user: status → PREEMPTED (manual resume).
+    reason=auto: status → QUEUED with assignment cleared (next scheduler pass replaces it).
     """
-    # Tell Phase 4 that any imminent exit_code=137 is OUR doing — without
-    # this flag the run task races and writes status=FAILED before
-    # ``_persist_stop`` can flip it.  Cleared in ``finally`` so a /stop that
-    # errors mid-flight doesn't leak the flag.
+    # Flag so the run task interprets imminent exit_code=137 as ours and
+    # doesn't write status=FAILED before _persist_stop flips it.
     stopping[job_id] = reason
     try:
         return await _stop_job_impl(job_id, reason)
@@ -133,14 +121,8 @@ async def _stop_job_impl(job_id: str, reason: str) -> dict[str, str]:
         new_status = JobStatus.PREEMPTED
         clear_assignment = False
 
-    # Stale-stop guard.  Two consecutive optimizer preempt passes can each
-    # spawn a /stop for the same job; the first lands and the row is
-    # re-assigned to another node before the second arrives here.  If the
-    # row no longer points at us we MUST NOT touch the DB — otherwise we'd
-    # nullify the fresh assignment.  Kill any stray local container with
-    # the canonical name as defensive cleanup (e.g. left over from a prior
-    # run on this node) and return 200.  The API treats /stop as best-effort
-    # idempotent so 200 is the right shape.
+    # Stale-stop guard: if the row points at a different node now, don't touch
+    # the DB (would clobber the fresh assignment).  Still kill any local stray.
     async with conn() as c:
         row = await fetch_job(c, job_id, "assigned_node")
     if row is not None and row.get("assigned_node") not in (NODE_ID, None):
@@ -162,9 +144,8 @@ async def _stop_job_impl(job_id: str, reason: str) -> dict[str, str]:
         return {"status": "stale", "reason": reason}
 
     async def _persist_stop(c: Any) -> None:
-        # Read pre-stop assignment + status so we can NOTIFY ijm_slot_freed
-        # with the right (node, n_gpus) AND avoid clobbering a terminal row
-        # that was finalized by Phase 4 (FAILED/SUCCEEDED) or by a prior /stop.
+        # Read assignment+status to emit ijm_slot_freed with the right payload
+        # and avoid clobbering an already-terminal row.
         cur = await c.execute(
             "SELECT assigned_node, assigned_gpu_config, status FROM jobs WHERE id = %s",
             (job_id,),
@@ -175,20 +156,9 @@ async def _stop_job_impl(job_id: str, reason: str) -> dict[str, str]:
         prev_status = row.get("status") if row else None
         n_gpus = sum(int(v) for v in (prev_cfg or {}).values())
 
-        # SUCCEEDED and PREEMPTED are genuinely terminal — /stop is meaningless
-        # for them and we must not override.  FAILED, however, is a transient
-        # label Phase 4 wrote because exit_code != 0; when /stop is the one
-        # that just killed the container, exit_code 137 is OUR doing and
-        # we want to flip to ``new_status`` (QUEUED for auto-preempt → row
-        # gets re-scheduled, PREEMPTED for user-stop → user resumes manually).
-        # A genuinely-failed job (image error, OOM) won't see /stop running
-        # because nothing else preempts a finished job, so this branch is
-        # only reached when our /stop did the killing.
-        # SUCCEEDED is genuinely terminal — never touch it.  PREEMPTED is
-        # *almost* terminal but the user-/stop path now atomically flips the
-        # status to PREEMPTED in the API *before* we run, so for reason=user
-        # we treat PREEMPTED as "we got pre-flipped, container still needs
-        # killing and the slot still needs freeing".
+        # SUCCEEDED is terminal — never touch it.  PREEMPTED is *almost*
+        # terminal, but the user-/stop path pre-flips status in the API, so for
+        # reason=user we still need to kill the container and free the slot.
         if prev_status == JobStatus.SUCCEEDED:
             logger.info(
                 "/stop for %s ignored — row already SUCCEEDED",
@@ -216,29 +186,18 @@ async def _stop_job_impl(job_id: str, reason: str) -> dict[str, str]:
         else:
             await update_job(c, job_id, status=new_status)
 
-        # NOTIFY ijm_slot_freed when the slot was actually claimed by this
-        # run.  Includes the pre-flipped-by-API case: from the slot's
-        # perspective the container was alive and the row pointed at this
-        # node, so the API-side semaphore still needs explicit release.
+        # NOTIFY ijm_slot_freed when this run actually claimed the slot
+        # (includes the pre-flipped-by-API case).
         notify_owns_slot = prev_status in (JobStatus.RUNNING, JobStatus.PROFILING) or pre_flipped_user_stop
         if prev_node and n_gpus > 0 and notify_owns_slot:
-            # Use pg_notify() for safe payload parameterisation — node_id
-            # is config-controlled but treating it as untrusted is cheap.
             await c.execute("SELECT pg_notify(%s, %s)", (PG_NOTIFY_SLOT_FREED, f"{prev_node}:{n_gpus}"))
-        # Single commit so the status flip and the slot-freed notification
-        # land atomically.  A crash between the two would otherwise leave
-        # the API waiting for a slot release that never fires.
+        # Atomic commit of status flip + slot-freed NOTIFY — a split would
+        # leave the API waiting for a release that never fires.
         await c.commit()
 
-    # Wait for the dispatch placeholder to resolve.  ``running_jobs[job_id]``
-    # is set to ``None`` synchronously after Phase 1's atomic claim and before
-    # any awaitable, so seeing it here means a dispatch task is mid-launch.
-    # Killing now would target a container that doesn't exist yet (the kill
-    # post-condition "not in docker ps" is satisfied trivially), and we'd
-    # then persist QUEUED while Phase 2 starts the real container — the
-    # exact "RUNNING container under a QUEUED row" bug.  Wait on the
-    # dispatch_ready Event instead of polling — Phase 2 sets it once the
-    # Popen lands, or the run task's finally clause sets it on early bail.
+    # If dispatch is mid-launch (running_jobs[job_id] is the None placeholder)
+    # wait for the container to actually exist — killing now would no-op and
+    # persist QUEUED while the real container then starts under the QUEUED row.
     ready_event = dispatch_ready.get(job_id)
     if ready_event is not None and not ready_event.is_set():
         try:
@@ -252,28 +211,20 @@ async def _stop_job_impl(job_id: str, reason: str) -> dict[str, str]:
     process = running_jobs.get(job_id)
     if process is not None:
         name = container_name_for(job_id)
-        # Signal the `docker run` CLI subprocess directly. This handles the
-        # window between Popen returning and the daemon registering the
-        # container (where `docker kill <name>` would return rc=1 and miss).
-        # `docker run --rm` propagates SIGTERM to stop+remove the container.
+        # Terminate the docker-run subprocess directly — handles the window
+        # before the daemon has registered the container (`docker kill <name>`
+        # would miss with rc=1).
         try:
             process.terminate()
         except Exception:
             logger.exception("Failed to terminate docker run subprocess for %s", job_id[:8])
-        # Kill BEFORE persisting. If the kill silently fails (rootless docker
-        # SIGTERM dropped, daemon hiccup), persisting QUEUED+NULL would leave
-        # the row pointing at a still-running container — exactly the bug we
-        # hit where `progress` kept ticking up under a `QUEUED` row.
+        # Kill BEFORE persisting so a silent kill failure can't leave a still-
+        # running container under a QUEUED row.
         try:
             await kill_container(name)
         except Exception as exc:
-            # Zombie-kill defence: if docker can't kill the container (daemon
-            # hung, disk pressure, rootless quirks), we'd otherwise leave
-            # the row in RUNNING and the API permit acquired forever — far
-            # worse than acknowledging a leaked GPU and freeing the slot
-            # so other work can proceed.  Mark FAILED + emit ijm_slot_freed
-            # explicitly here, since neither Phase 4 nor _persist_stop will
-            # run if we raise.  Container is logged for manual cleanup.
+            # Docker can't kill the container — mark FAILED + emit slot-freed
+            # ourselves (Phase 4 / _persist_stop won't run if we raise).
             logger.exception(
                 "Failed to kill container %s for %s — marking row zombie + releasing slot",
                 name,
@@ -282,12 +233,8 @@ async def _stop_job_impl(job_id: str, reason: str) -> dict[str, str]:
             await _zombie_release(job_id)
             raise HTTPException(status_code=500, detail=f"kill failed: {exc}") from exc
         # Drain the run task so the next dispatch doesn't hit the
-        # `job_id in running_jobs` 409.  The 60 s timeout is a *safety net*
-        # against pathological worker bugs that would hang /stop forever —
-        # in steady state the task completes within ~200 ms after
-        # process.terminate() + stream drain.  The API-side semaphore release
-        # waits for /stop's completion, so this duration directly bounds the
-        # slot-free signal; short timeouts would lie about slot freeness.
+        # `job_id in running_jobs` 409.  60 s is a safety net; steady-state
+        # completion is ~200 ms after process.terminate().
         run_task = running_tasks.get(job_id)
         if run_task is not None and not run_task.done():
             try:

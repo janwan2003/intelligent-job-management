@@ -276,10 +276,6 @@ class JobRunner:
         except Exception as e:
             logger.error("Failed to pick up queued jobs: %s", e, exc_info=True)
 
-    # ------------------------------------------------------------------
-    # Dispatch loop
-    # ------------------------------------------------------------------
-
     async def _dispatch_loop(self) -> None:
         """Main loop — pull job IDs from queue and launch them concurrently."""
         while self.running:
@@ -613,14 +609,9 @@ class JobRunner:
             )
         return True
 
-    # ------------------------------------------------------------------
-    # Stop handling
-    # ------------------------------------------------------------------
-
     async def _stop_job(self, job_id: str, *, reason: str = "user") -> None:
-        # ``reason="user"`` → PREEMPTED (sticky, manual resume).
-        # ``reason="auto"`` → QUEUED + cleared assignment (auto-handled by
-        # the next scheduler pass).
+        # reason="user" → PREEMPTED (manual resume).  reason="auto" → QUEUED
+        # with cleared assignment for the next scheduler pass.
         if reason == "auto":
             stop_kwargs: dict[str, Any] = {
                 "status": JobStatus.QUEUED,

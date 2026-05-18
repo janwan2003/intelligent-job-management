@@ -99,7 +99,7 @@ NFS works too if you have admin access.
 
 ### Client side — run API + frontend locally against the cluster
 
-The supported path is `infra/launch.sh tunnel --with-guard` (single command, handles tunnels + dockerised optimizer/frontend + native API in one go):
+The supported path is `infra/launch.sh tunnel` (single command, handles tunnels + dockerised optimizer/frontend + native API in one go):
 
 ```bash
 # Terminal 1: open SSH tunnels (keep running, ServerAliveInterval=30 to survive overnight)
@@ -108,11 +108,9 @@ ssh -fN -o ServerAliveInterval=30 -o ServerAliveCountMax=3 \
     -L 0.0.0.0:8001:localhost:8001 \
     -L 0.0.0.0:8002:10.79.23.173:8001 polimi
 
-# Terminal 2: native API + dockerised optimizer/frontend, migration guard ON
-bash infra/launch.sh tunnel --with-guard
+# Terminal 2: native API + dockerised optimizer/frontend
+bash infra/launch.sh tunnel
 ```
-
-`--with-guard` exports `IJM_OPTIMIZER_GUARD_MIGRATIONS=1` which suppresses unprofitable migrations (kill+drain+lost-epoch penalty > energy savings). Without it the optimizer thrashes on flat cost surfaces — for instance `cnn_big` where P600×1 and A40×1 differ by only ~$0.005 per 40 epochs, so the optimizer keeps re-picking cost-equivalent plans and the cluster oscillates forever.
 
 Opens:
 - **Frontend** → http://localhost:5173

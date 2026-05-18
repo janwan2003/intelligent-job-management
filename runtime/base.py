@@ -190,19 +190,12 @@ class BaseTrainer(ABC):
             return
         logger.info("Loading checkpoint from %s", self.checkpoint_path)
         try:
-            # Pre-read into memory before torch.load.  When the checkpoint dir
-            # is on a FUSE mount (rclone/sshfs for cross-node sharing), the
-            # mmap()/seek() syscalls torch.load() may issue can fail with
-            # EPERM ("Operation not permitted").  Reading via plain read()
-            # avoids those calls entirely and is cheap for our checkpoint sizes.
+            # Pre-read into memory: FUSE-mounted checkpoint dirs can EPERM on
+            # the mmap()/seek() syscalls torch.load() issues.
             buf = io.BytesIO(self.checkpoint_path.read_bytes())
-            # ``weights_only`` only exists on torch >= 1.13.  The legacy
-            # CUDA-10.1 image (matemagician) ships torch 1.5.1 and would
-            # reject the kwarg with TypeError; fall back to the older call.
-            # Reset the BytesIO position before retry — the first torch.load
-            # consumes the buffer, and reading from EOF triggers an
-            # UnpicklingError ("A load persistent id instruction was
-            # encountered...") that masks the real version-mismatch cause.
+            # weights_only is torch >= 1.13.  Legacy CUDA-10.1 image ships
+            # torch 1.5.1 — fall back; reset BytesIO since the first load
+            # consumes it and a second read-from-EOF masks the TypeError.
             try:
                 checkpoint = torch.load(
                     buf, weights_only=True, map_location=self.device

@@ -33,7 +33,8 @@ NODE_A="${NODE_A:-polimi}"       # matemagician SSH alias
 # so use ``JOB_TYPE=convnet`` only after fixing that staging.
 JOB_TYPE="${JOB_TYPE:-lstm-small}"
 IMAGE="${IMAGE:-wangrat/ijm-${JOB_TYPE}:latest}"
-EPOCHS="${EPOCHS:-40}"
+EPOCHS="${EPOCHS:-50}"
+URGENT_EPOCHS="${URGENT_EPOCHS:-200}"   # URGENT runs ~4× longer so Stages 3-4 have a live preempt victim+running job to act on
 TERMINAL_TIMEOUT_S="${TERMINAL_TIMEOUT_S:-3600}"
 PRIORITY_MAX=5
 
@@ -51,14 +52,14 @@ fail() { echo "${C_FAIL}  ✗ $*${C_END}"; exit 1; }
 # -----------------------------------------------------------------------------
 
 submit_job() {
-    local prio="$1" deadline="$2"
+    local prio="$1" deadline="$2" epochs="${3:-$EPOCHS}"
     local resp; resp=$(curl -sS -X POST "$API/jobs" -H 'Content-Type: application/json' -d "{
         \"job_id\": \"$JOB_TYPE\",
         \"dockerImage\": \"$IMAGE\",
         \"command\": [],
         \"Priority\": $prio,
         \"deadline\": \"$deadline\",
-        \"epochsTotal\": $EPOCHS
+        \"epochsTotal\": $epochs
     }")
     local id; id=$(echo "$resp" | jq -r '.id // empty')
     [[ -n "$id" && "$id" != "null" ]] || { echo "ERR: POST /jobs: $resp" >&2; return 1; }
@@ -103,23 +104,51 @@ pass "DB + on-disk state cleared"
 # -----------------------------------------------------------------------------
 # Stage 1 — Fill the cluster + multi-GPU profile coverage
 # -----------------------------------------------------------------------------
-# Submit 4 patient jobs (prio=4, +1 h deadlines).  Profiling sweep with
-# configs_per_job=2 covers every (node, GPU-count) cell, including 2-GPU
-# bundles on both A40 and QuadroP600 — that's the multi-GPU usage check.
-# After profile sweep settles, all 4 jobs are RUNNING on the 4 cluster slots.
+# Submit 4 patient jobs.  Deadlines and priorities are deliberately staggered
+# to break the placement symmetry: with 4 identical (prio, deadline) jobs
+# the cost surface across "2 jobs on P600, 2 jobs on A40" permutations is
+# flat and the optimizer flips assignments round-to-round.  Here:
+#   J1, J2 — prio 4, tight deadline (+340 s).  A40 would be tardy by ~70 s
+#            ($0.028 at TardWeight 0.000396 $/s, > $0.022 GPUcost gap),
+#            so they pin to P600x1.
+#   J3, J4 — prio 2 / prio 1, +1 h slack.  Never tardy, never preferred for
+#            P600 over the tight pair → overflow deterministically to A40,
+#            with J4 (lowest prio) as the URGENT preempt victim.
+# Profiling sweep with configs_per_job=2 still covers every (node, GPU-count)
+# cell, including 2-GPU bundles on both A40 and QuadroP600.
 log "Stage 1: submit 4 patient ${JOB_TYPE} jobs"
-DL=$(date -u -d '+1 hour' +%Y-%m-%dT%H:%M:%SZ)
-JOB1=$(submit_job 4 "$DL"); sleep 5
-JOB2=$(submit_job 4 "$DL"); sleep 5
-JOB3=$(submit_job 4 "$DL"); sleep 5
-JOB4=$(submit_job 4 "$DL")
+DL_TIGHT=$(date -u -d '+15 minutes' +%Y-%m-%dT%H:%M:%SZ)
+DL_SLACK=$(date -u -d '+2 hours' +%Y-%m-%dT%H:%M:%SZ)
+JOB1=$(submit_job 4 "$DL_TIGHT"); sleep 5
+JOB2=$(submit_job 4 "$DL_TIGHT"); sleep 5
+JOB3=$(submit_job 2 "$DL_SLACK"); sleep 5
+JOB4=$(submit_job 1 "$DL_SLACK")
 log "  ids: ${JOB1:0:8} ${JOB2:0:8} ${JOB3:0:8} ${JOB4:0:8}"
 
-log "  waiting for all 4 RUNNING with progress (≤ 12 min)…"
-wait_for "all 4 RUNNING+progressed" 720 5 \
-    '[.[] | select(.status == "RUNNING" and .progress != null)] | length == 4' \
-    || fail "Stage 1 timeout: not all 4 jobs RUNNING with progress"
-pass "Stage 1 steady state — 4 jobs RUNNING, cluster full"
+log "  waiting for profile sweep complete + ≥2 RUNNING (≤ 12 min)…"
+# Wait for the cluster to be in steady state before submitting URGENT.
+# Steady state = (a) all 4 profile cells have a committed
+# ``duration_seconds`` (full cost surface visible to the optimiser),
+# (b) no job is still in PROFILING, (c) ≥2 patients have entered
+# RUNNING (so URGENT has a live victim).  We poll both /jobs and
+# /profiling-results together so the brief "instance switching from
+# cell N to cell N+1" gap (where status flickers QUEUED with no
+# active PROFILING row) cannot satisfy the predicate prematurely.
+S1_TIMEOUT=720; S1_ELAPSED=0; S1_INTERVAL=5
+while (( S1_ELAPSED < S1_TIMEOUT )); do
+    jobs_json=$(curl -sS "$API/jobs")
+    prof_json=$(curl -sS "$API/profiling-results/$JOB_TYPE")
+    n_profiling=$(echo "$jobs_json" | jq '[.[] | select(.status == "PROFILING")] | length')
+    n_running=$(echo "$jobs_json"   | jq '[.[] | select(.status == "RUNNING")]   | length')
+    n_measured=$(echo "$prof_json"  | jq '[.[] | select(.duration_seconds != null)] | length')
+    if [[ "$n_measured" == "4" && "$n_profiling" == "0" && "$n_running" -ge 2 ]]; then
+        break
+    fi
+    sleep "$S1_INTERVAL"; S1_ELAPSED=$((S1_ELAPSED + S1_INTERVAL))
+done
+(( S1_ELAPSED < S1_TIMEOUT )) \
+    || fail "Stage 1 timeout: measured=$n_measured/4, profiling=$n_profiling, running=$n_running"
+pass "Stage 1 — profile sweep complete, ≥2 patients RUNNING, all 4 cells measured"
 
 # Profile coverage check (proves multi-GPU happened during sweep).
 log "  asserting profile coverage includes 2-GPU bundles:"
@@ -140,34 +169,36 @@ log "  pre-urgent RUNNING (id@node): $(echo "$PRE_URGENT_RUNNING" | jq -r 'map("
 # Submit an URGENT prio=5 job with a deadline so tight every node is at least
 # somewhat tardy; A40 is dramatically less tardy than P600, so the optimizer
 # is forced to place it on A40 and evict whatever's there.
-log "Stage 2: submit URGENT ${JOB_TYPE} (priority=$PRIORITY_MAX, deadline +90s)"
-URGENT_DL=$(date -u -d '+90 seconds' +%Y-%m-%dT%H:%M:%SZ)
-JOB_URGENT=$(submit_job "$PRIORITY_MAX" "$URGENT_DL") || fail "POST /jobs urgent rejected"
+log "Stage 2: submit URGENT ${JOB_TYPE} (priority=$PRIORITY_MAX, deadline +10 min, epochs=$URGENT_EPOCHS)"
+URGENT_DL=$(date -u -d '+10 minutes' +%Y-%m-%dT%H:%M:%SZ)
+JOB_URGENT=$(submit_job "$PRIORITY_MAX" "$URGENT_DL" "$URGENT_EPOCHS") || fail "POST /jobs urgent rejected"
 log "  id: ${JOB_URGENT:0:8}"
 
-log "  verifying URGENT placed within 60s…"
+log "  verifying URGENT placed within 180s…"
 T0=$(date +%s)
-wait_for "urgent placed" 60 3 \
+wait_for "urgent placed" 180 3 \
     "[.[] | select(.id == \"$JOB_URGENT\" and (.status == \"RUNNING\" or .status == \"PROFILING\"))] | length == 1" \
-    || fail "URGENT still QUEUED after 60s"
+    || fail "URGENT still QUEUED after 180s"
 pass "URGENT placed in $(( $(date +%s) - T0 ))s"
 
 # Identify the victim: an id that was RUNNING pre-urgent but is now QUEUED or
 # PREEMPTED.  Save its origin node for the cross-node-resume check.
 log "  identifying auto-preempt victim…"
-sleep 5   # let the preempt+row-update settle
 PRE_IDS=$(echo "$PRE_URGENT_RUNNING" | jq -r '.[].id')
 VICTIM=""
 VICTIM_ORIGIN=""
-for prev_id in $PRE_IDS; do
-    cur_status=$(job_field "$prev_id" status)
-    if [[ "$cur_status" == "QUEUED" || "$cur_status" == "PREEMPTED" ]]; then
-        VICTIM="$prev_id"
-        VICTIM_ORIGIN=$(echo "$PRE_URGENT_RUNNING" | jq -r ".[] | select(.id == \"$prev_id\") | .node")
-        break
-    fi
+for _ in $(seq 30); do
+    for prev_id in $PRE_IDS; do
+        cur_status=$(job_field "$prev_id" status)
+        if [[ "$cur_status" == "QUEUED" || "$cur_status" == "PREEMPTED" ]]; then
+            VICTIM="$prev_id"
+            VICTIM_ORIGIN=$(echo "$PRE_URGENT_RUNNING" | jq -r ".[] | select(.id == \"$prev_id\") | .node")
+            break 2
+        fi
+    done
+    sleep 1
 done
-[[ -n "$VICTIM" ]] || fail "no auto-preempt victim observed"
+[[ -n "$VICTIM" ]] || fail "no auto-preempt victim observed (after 30s polling)"
 pass "auto-preempt victim: ${VICTIM:0:8} (origin: $VICTIM_ORIGIN, status: $(job_field "$VICTIM" status))"
 
 # -----------------------------------------------------------------------------
@@ -176,9 +207,25 @@ pass "auto-preempt victim: ${VICTIM:0:8} (origin: $VICTIM_ORIGIN, status: $(job_
 # Pick the lowest-priority job currently RUNNING (excluding the URGENT) and
 # issue /stop?reason=user.  Verify the row transitions to PREEMPTED and stays
 # there — manual stops are sticky (no automatic resume).
+# Settle gap: let URGENT actually run for a bit before the manual stop
+# fires, so the chart shows user-stop as a clearly-separate event around
+# minute~4, not piggy-backed on the auto-preempt cascade at $t\sim2$\,min.
+USER_STOP_SETTLE_S="${USER_STOP_SETTLE_S:-90}"
+log "Stage 3: settling ${USER_STOP_SETTLE_S}s before issuing user-stop…"
+sleep "$USER_STOP_SETTLE_S"
+
 log "Stage 3: manual user-stop on a running non-urgent job"
-STOP_TARGET=$(all_jobs | jq -r \
-    "[.[] | select(.status == \"RUNNING\" and .id != \"$JOB_URGENT\")] | sort_by(.priority)[0].id // empty")
+# Exclude both URGENT and the auto-preempt victim (which may have just
+# resumed during the settle gap).  We want user-stop to act on a
+# separate, untouched job so the chart shows it as a distinct event.
+# Retry a few times — the cluster may be mid-cascade when this fires.
+STOP_TARGET=""
+for _ in $(seq 20); do
+    STOP_TARGET=$(all_jobs | jq -r --arg urg "$JOB_URGENT" --arg vic "$VICTIM" \
+        "[.[] | select(.status == \"RUNNING\" and .id != \$urg and .id != \$vic)] | sort_by(.priority)[0].id // empty")
+    [[ -n "$STOP_TARGET" ]] && break
+    sleep 1
+done
 [[ -n "$STOP_TARGET" ]] || fail "no RUNNING non-urgent job available for manual stop"
 STOP_ORIGIN=$(job_field "$STOP_TARGET" assigned_node)
 log "  user-stopping ${STOP_TARGET:0:8} (on $STOP_ORIGIN)"

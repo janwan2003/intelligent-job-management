@@ -59,7 +59,7 @@ Figure~\ref{fig:seq-submit} shows the submission path, Figure~\ref{fig:seq-profi
     \end{call}
     \begin{call}{sched}{UPDATE assigned\_node WHERE NULL}{db}{}
     \end{call}
-    \begin{callself}{sched}{greedy fallback + profile-preempt scan}{}
+    \begin{callself}{sched}{profile-placement + profile-preempt scan}{}
     \end{callself}
     \begin{messcall}{sched}{dispatch\_with\_slot $\rightarrow$ acquire permit $\rightarrow$ POST /run}{worker}
     \end{messcall}

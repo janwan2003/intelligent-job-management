@@ -184,26 +184,21 @@ async def lifespan(_app: FastAPI) -> AsyncGenerator[None]:
                 )
                 return
             if grow and grow[1] == JobStatus.PREEMPTED:
-                # A user-/stop just flipped this row before our task ran.
-                # Skip silently — the user-stop is already killing the
-                # container; an auto-preempt now would clobber PREEMPTED
-                # back to QUEUED and re-dispatch the row.
+                # User-stop in flight; auto-preempt would clobber PREEMPTED back to QUEUED.
                 logger.info(
                     "Skipping auto-preempt of %s — row is already PREEMPTED (user-stop in flight)",
                     job_id[:8],
                 )
                 return
-            # Record the pending eviction so the scheduler treats the slot as
-            # freed in subsequent rounds even before the worker's /stop commit
-            # lands.  See ``state.pending_evictions`` for the race rationale.
+            # Record pending eviction so the scheduler treats the slot as freed
+            # before the worker's /stop commit lands.
             if grow and grow[2] and grow[3]:
                 state.pending_evictions[job_id] = (grow[2], dict(grow[3]))
             try:
                 await state.job_runner.stop(job_id, reason="auto")
                 logger.info("Issued preempt /stop for job %s (slot release awaits NOTIFY)", job_id[:8])
-                # Clear after the worker's stop commit lands.  ``stop`` is
-                # fire-and-forget for remote workers, so wait briefly for
-                # the row to actually leave RUNNING/PROFILING before clearing.
+                # stop() is fire-and-forget for remote workers; wait for the row
+                # to actually leave RUNNING/PROFILING before clearing the eviction.
                 deadline = asyncio.get_running_loop().time() + 30
                 while asyncio.get_running_loop().time() < deadline:
                     await asyncio.sleep(0.5)
@@ -218,13 +213,9 @@ async def lifespan(_app: FastAPI) -> AsyncGenerator[None]:
             state.pending_evictions.pop(job_id, None)
             logger.exception("Failed to issue preempt for job %s", job_id[:8])
 
-    # Registry of in-flight dispatch tasks lives on ``state`` so the
-    # ``/admin/dispatch-tasks`` endpoint can read it.  The reaper consults
-    # this so it can cancel a stuck dispatch task instead of racing it on
-    # a release — without coordination both the reaper and the task's
-    # exception handler would release the same permit, inflating the
-    # semaphore by 1 each cycle (this was the actual root cause of the
-    # matemagician=3 oversubscription we were seeing).
+    # Dispatch tasks live on ``state`` so the reaper can cancel a stuck task
+    # rather than racing its exception handler on the slot release (double-release
+    # would inflate the per-node semaphore by 1 each cycle).
     _dispatch_tasks = state.dispatch_tasks
 
     async def _dispatch_when_slot_free(a: Assignment) -> None:
@@ -248,13 +239,11 @@ async def lifespan(_app: FastAPI) -> AsyncGenerator[None]:
                     elapsed,
                 )
             except asyncio.CancelledError:
-                # Reaper cancelled us — dispatch_with_slot already released
-                # the permit on its way out.  Don't log as an exception.
+                # dispatch_with_slot already released the permit on cancellation.
                 logger.info("Dispatch for %s cancelled (likely by reaper)", a.instance_id[:8])
                 raise
             except Exception:
-                # Wake the scheduler immediately so the just-freed slot can
-                # be reused without waiting up to 60 s for ``_queue_watcher``.
+                # Wake scheduler so the just-freed slot is reused without waiting for the watcher.
                 notify_event.set()
                 raise
         except asyncio.CancelledError:
@@ -262,35 +251,23 @@ async def lifespan(_app: FastAPI) -> AsyncGenerator[None]:
         except Exception:
             logger.exception("Dispatch failed for job %s on %s", a.instance_id[:8], a.node_id)
 
-    # Reap QUEUED rows whose assigned_node has been set for longer than
-    # this without the worker advancing them to RUNNING/PROFILING.  These
-    # are dispatches that silently failed (e.g. the worker couldn't pull
-    # the image) — leaving them stuck would cause the optimizer to treat
-    # the slot as occupied (permutation filter), so no re-placement ever
-    # fires.  A normal /run round-trip is well under a second; 30 s is a
-    # generous floor that won't race with healthy in-flight dispatches.
+    # Threshold for considering an assigned QUEUED row as a silently-failed
+    # dispatch (image pull failure, etc.).  Healthy /run is sub-second; 30 s
+    # is well above the floor and won't race in-flight dispatches.
     _STUCK_DISPATCH_THRESHOLD_S = 30
 
     async def _reset_stuck_queued_assignments() -> None:
         """Clear assigned_node + release leaked slot for orphaned QUEUED rows.
 
-        Race-safe with in-flight dispatch tasks: if a dispatch task for the
-        stuck row is still alive (typically blocked on ``acquire`` because
-        the node is at full capacity), we *cancel* it and let it release
-        its own permit via ``dispatch_with_slot``'s ``BaseException``
-        handler.  Releasing here as well would double-release — the bug
-        that caused matemagician=3 in our last run.
+        If an in-flight dispatch task is still alive (usually blocked on
+        ``acquire``) we cancel it and let its own BaseException handler release
+        the permit — releasing here too would double-release the semaphore.
         """
         cutoff = datetime.now(UTC) - timedelta(seconds=_STUCK_DISPATCH_THRESHOLD_S)
         async with state.get_conn() as conn:
-            # ``container_name IS NULL`` excludes rows whose worker has run
-            # Phase 1 atomic claim (which sets container_name).  Without this
-            # filter, the reaper races between "dispatch task completed
-            # (slot acquired, /run sent)" and "worker Phase 1 atomic claim
-            # commits".  Symptom: a job that's actually being dispatched
-            # gets its assigned_node cleared, the optimizer re-places it
-            # elsewhere, and we end up bouncing the row across nodes while
-            # the worker is starting the container on the original target.
+            # container_name IS NULL excludes rows the worker has already claimed
+            # — without this the reaper races worker claim-commit and bounces
+            # an actively-dispatching job to another node.
             cur = await conn.execute(
                 """SELECT id, assigned_node, assigned_gpu_config FROM jobs
                    WHERE status = %s AND assigned_node IS NOT NULL
@@ -303,11 +280,8 @@ async def lifespan(_app: FastAPI) -> AsyncGenerator[None]:
             needs_drift_recover = False
             for jid, node, gpu_config in stuck:
                 n = sum(int(v) for v in (gpu_config or {}).values())
-                # Conditional UPDATE so we don't race with a fresh dispatch
-                # that just flipped the row to RUNNING/PROFILING.  Repeat
-                # the ``container_name IS NULL`` guard in the WHERE clause
-                # so a worker that just-now wrote container_name in Phase 1
-                # (between our SELECT above and this UPDATE) is respected.
+                # Conditional UPDATE repeats the container_name IS NULL guard so a
+                # worker that just-now claimed the row is respected.
                 ucur = await conn.execute(
                     """UPDATE jobs
                        SET assigned_node = NULL, assigned_gpu_config = NULL,
@@ -322,8 +296,7 @@ async def lifespan(_app: FastAPI) -> AsyncGenerator[None]:
 
                 inflight = _dispatch_tasks.get(jid)
                 if inflight is not None and not inflight.done():
-                    # Cancel and let the task's BaseException handler
-                    # release the permit (or no-op if it never acquired).
+                    # The task's BaseException handler releases the permit (or no-ops).
                     inflight.cancel()
                     tasks_to_await.append(inflight)
                     logger.warning(
@@ -334,16 +307,9 @@ async def lifespan(_app: FastAPI) -> AsyncGenerator[None]:
                         gpu_config,
                     )
                 else:
-                    # No live task (e.g. crashed or pre-restart, or a
-                    # Phase 1c reservation that never spawned a
-                    # dispatch).  Don't call ``release()`` directly —
-                    # if the dispatch never actually acquired, the
-                    # release would underflow the semaphore.  Instead
-                    # mark for a drift-recovery sweep at end of loop:
-                    # ``recover_from_drift`` rebases ``_used`` to the
-                    # DB authoritative count and handles both cases
-                    # (slot was acquired and never released, OR slot
-                    # was never acquired) symmetrically.
+                    # No live task: a direct release() would underflow if the slot
+                    # was never acquired.  Defer to drift-recover which rebases
+                    # _used from the DB authoritative count.
                     needs_drift_recover = True
                     logger.warning(
                         "Reset stuck QUEUED job %s on %s (%dx %s) — no dispatch task; queuing drift-recover sweep",
@@ -354,18 +320,11 @@ async def lifespan(_app: FastAPI) -> AsyncGenerator[None]:
                     )
             await conn.commit()
 
-        # Wait for cancelled tasks to actually finish releasing.  Cheap:
-        # they're either at the acquire suspension point (cancellation is
-        # immediate) or in a quick post-acquire await.
+        # Wait for cancellations to finish releasing their permits.
         if tasks_to_await:
             await asyncio.gather(*tasks_to_await, return_exceptions=True)
 
-        # Symmetric drift recovery for stuck rows that had no live dispatch
-        # task — covers Phase 1c reservations that never actually acquired
-        # (where a direct ``release()`` would underflow) AND legacy crashed
-        # dispatch tasks that did acquire but never released (where a
-        # direct ``release()`` was correct).  ``recover_from_drift`` reads
-        # the DB authority and rebases ``_used`` either way.
+        # Rebase _used from the DB authority for stuck rows with no live task.
         if needs_drift_recover and state.node_slots is not None:
             try:
                 await state.node_slots.recover_from_drift(state.get_conn)
@@ -373,17 +332,12 @@ async def lifespan(_app: FastAPI) -> AsyncGenerator[None]:
                 logger.exception("Reaper drift-recover sweep failed")
 
     async def _schedule_waiting_jobs() -> None:
-        """Run the optimizer + greedy scheduler, then spawn parallel
-        preempt/dispatch tasks coordinated by per-node semaphores.
+        """Run the optimizer, then spawn parallel preempt/dispatch tasks.
 
-        The schedule lock is held only for the DB write phases (Phase 1a
-        reset + Phase 1b apply).  The optimizer HTTP call runs WITHOUT
-        the lock — its 30 s timeout would otherwise block every other
-        scheduler invocation (including the queue watcher heartbeat) any
-        time the optimizer is slow or unreachable.  Phase 1b's
-        ``WHERE assigned_node IS NULL`` filter makes stale optimizer
-        suggestions safe to apply: rows that were claimed in the meantime
-        simply don't match.
+        The schedule lock wraps only the DB writes — the optimizer HTTP call
+        runs unlocked so its timeout can't block other scheduler work.  Stale
+        optimizer suggestions are safe: the apply step filters on
+        ``assigned_node IS NULL`` so already-claimed rows simply don't match.
         """
         async with state.schedule_lock:
             await _reset_stuck_queued_assignments()
@@ -409,20 +363,11 @@ async def lifespan(_app: FastAPI) -> AsyncGenerator[None]:
             optimizer_handled: set[str] = set(opt_result.preempt)
             new_dispatches: list[Assignment] = []
 
-            # Phase 1b: apply optimizer assignments.  Each successful UPDATE
-            # claims the row (assigned_node set, status still QUEUED).  The
-            # actual /run dispatch happens in a background task that waits
-            # on the per-node semaphore.
-            #
-            # The profile-always policy is enforced at the *instance* level
-            # via ``PROFILING_CONFIGS_PER_JOB`` (default 1): each job
-            # instance gets one profile run before falling through to a
-            # standard run.  Filling every (type, config) cell across the
-            # cluster is *not* a goal — it would deadlock when the number
-            # of submissions for a type is smaller than the number of cells.
-            # The optimizer is therefore free to place instances that have
-            # spent their profile budget, and Phase 1c only evicts for
-            # instances that have NOT yet profiled.
+            # Apply optimizer assignments.  Each successful UPDATE claims the
+            # row; /run is dispatched in a background task that waits on the
+            # per-node semaphore.  Profile-always is enforced at the instance
+            # level (PROFILING_CONFIGS_PER_JOB); proactive preempts only fire
+            # for instances that haven't yet profiled.
             async with state.get_conn() as conn:
                 now = datetime.now(UTC)
                 for a in opt_result.assignments:
@@ -445,26 +390,22 @@ async def lifespan(_app: FastAPI) -> AsyncGenerator[None]:
                     optimizer_handled.add(a.instance_id)
                 await conn.commit()
 
-                # Greedy fallback for QUEUED jobs the optimizer didn't
-                # place (typically pre-profiling).
+                # Profile-placement pass for QUEUED jobs the optimizer skipped.
+                # Jobs that still owe a profile but can't find a free slot fall
+                # through to the proactive-preempt pass below.
                 cur = await conn.execute(
                     "SELECT id, job_id FROM jobs WHERE status = %s AND assigned_node IS NULL ORDER BY created_at ASC",
                     (JobStatus.QUEUED,),
                 )
                 unassigned = [(row[0], row[1]) for row in await cur.fetchall()]
 
-                # Track which still-unassigned jobs remain after greedy, so
-                # Phase 1c (below) only considers genuinely-stuck ones.
                 still_unassigned: list[tuple[str, str]] = []
                 for instance_id, type_id in unassigned:
                     if instance_id in optimizer_handled:
                         continue
                     result = await scheduler.schedule_job(conn, instance_id, job_type_id=type_id)
                     if result.node_id is not None and result.gpu_config is not None:
-                        # ``schedule_job`` already wrote assigned_node /
-                        # assigned_gpu_config to the row.  Update status's
-                        # updated_at timestamp for visibility and queue the
-                        # dispatch.
+                        # schedule_job already wrote the assignment; refresh updated_at.
                         await conn.execute(
                             "UPDATE jobs SET status = %s, updated_at = %s WHERE id = %s",
                             (JobStatus.QUEUED, datetime.now(UTC), instance_id),
@@ -480,36 +421,15 @@ async def lifespan(_app: FastAPI) -> AsyncGenerator[None]:
                         still_unassigned.append((instance_id, type_id))
                 await conn.commit()
 
-                # Phase 1c: proactive profile preempts.
-                #
-                # When a QUEUED job has no profile rows yet for its type,
-                # the optimizer silently skips it
-                # ([optimizer.py:229] ``if not profiling_rows: continue``),
-                # so without an eviction it sits forever.  We evict the
-                # lowest-priority non-profiling job on a node that can host
-                # the target profile config so the next round can pick it
-                # up.  Profiling rows themselves are never evicted (the SQL
-                # filter ``status='RUNNING'`` excludes them; the defensive
-                # guard in ``_preempt_and_release`` is belt-and-suspenders).
-                #
-                # We do NOT also fire "next-config" preempts for types
-                # that have *some* profile rows but more configs remain
-                # unprofiled (e.g. A40×1 profiled, A40×2 not) — the
-                # eviction succeeds but the freed slot gets re-claimed by
-                # standard placement before profile can grab it, and the
-                # cycle thrashes.  Profile-everything-eventually is left
-                # to natural cluster churn (``configs_per_job > 1`` lets a
-                # single instance carry multiple profiles in sequence).
+                # Proactive profile preempts: an unprofiled type is invisible to
+                # the optimizer, so without an eviction the job sits forever.
+                # We only fire for jobs that have never been profiled — chasing
+                # additional configs on partially-profiled types thrashes because
+                # standard placement re-claims the freed slot before profile can.
                 evicted_in_round: set[str] = set()
                 for instance_id, type_id in still_unassigned:
-                    # One profile per job: only evict for a queued instance
-                    # that has never been profiled.  Once an instance has
-                    # spent its profile budget (configs_per_job, default 1),
-                    # it's just waiting for a standard slot — evicting
-                    # someone else to backfill a different (type, config)
-                    # cell would create extra profile runs the user never
-                    # asked for.  Natural cluster churn fills remaining
-                    # cells when *new* unprofiled instances arrive.
+                    # Only evict for instances under the configs_per_job budget —
+                    # otherwise we'd create extra profile runs the user never asked for.
                     already_profiled = await scheduler._count_profiled_this_round(conn, instance_id)
                     if already_profiled >= scheduler.configs_per_job:
                         continue
@@ -518,29 +438,8 @@ async def lifespan(_app: FastAPI) -> AsyncGenerator[None]:
                     )
                     if not victims or target_node is None or target_config is None:
                         continue
-                    # Reserve the soon-to-be-free slot for the profile-owing
-                    # instance BEFORE issuing the eviction kill.  Writing
-                    # ``assigned_node`` + ``assigned_gpu_config`` +
-                    # ``is_profiling_run = TRUE`` on the same row achieves
-                    # three things atomically:
-                    #   1. ``get_node_gpu_usage`` (which counts QUEUED rows
-                    #      with non-null assignment) sees the GPU as "in
-                    #      use" by this profile, so the *next* scheduling
-                    #      round's optimizer call won't re-dispatch the
-                    #      victim onto the same slot.
-                    #   2. The optimizer's active-jobs query filters out
-                    #      ``is_profiling_run = TRUE``, so this row is
-                    #      invisible to optimizer placement.
-                    #   3. The dispatch task spawned below uses the same
-                    #      ``Assignment`` schema as the optimizer's; it
-                    #      waits on ``NodeSlots`` for the slot to free,
-                    #      then fires ``/run`` against the worker — exactly
-                    #      the path that already handles the post-eviction
-                    #      release via the ``ijm_slot_freed`` NOTIFY.
-                    # Without this reservation the victim re-queues, the
-                    # optimizer in the next round re-dispatches it onto
-                    # the same slot, Phase 1c evicts it again, and we
-                    # thrash.
+                    # Pre-claim the soon-to-be-free slot so the next optimizer round
+                    # can't re-dispatch the victim onto it and trigger eviction thrash.
                     now2 = datetime.now(UTC)
                     cur2 = await conn.execute(
                         """UPDATE jobs
@@ -551,20 +450,11 @@ async def lifespan(_app: FastAPI) -> AsyncGenerator[None]:
                         (target_node, Json(target_config), now2, instance_id, JobStatus.QUEUED),
                     )
                     if not await cur2.fetchone():
-                        # Lost a race: someone else assigned this row between
-                        # ``still_unassigned`` snapshot and here.  Skip and
-                        # let the next round re-evaluate.
                         continue
-                    # Insert the in-flight profile claim row.  Without this,
-                    # the worker's ``_record_profile_result`` UPDATE (which
-                    # matches on ``instance_id AND duration IS NULL``) would
-                    # silently miss when the trainer finishes — the duration
-                    # never lands and the scheduler thinks this config is
-                    # still unprofiled, triggering Phase 1c again and again
-                    # in a thrash that restarts the trainer from epoch 0
-                    # each time.  ``_persist_assignment`` does the same
-                    # insert for the normal explore path; Phase 1c reserves
-                    # outside that helper so we have to mirror the insert.
+                    # Mirror _persist_assignment's profiling_results insert so the
+                    # worker's _record_profile_result UPDATE (matching duration IS NULL)
+                    # has a row to land on — otherwise the result is lost and the
+                    # scheduler restarts the trainer from epoch 0 next round.
                     await conn.execute(
                         """INSERT INTO profiling_results
                                (id, job_id, instance_id, gpu_config, node_id, duration_seconds, created_at)
@@ -668,14 +558,9 @@ async def lifespan(_app: FastAPI) -> AsyncGenerator[None]:
                 await asyncio.sleep(wait)
                 backoff = min(max_backoff, backoff * 2)
 
-    # Minimum interval between optimizer passes — dampens churn.
-    # The optimizer doesn't penalise migrations, so consecutive calls under
-    # similar inputs may produce slightly different placements (an
-    # equivalent point on the cost/tardiness frontier).  We faithfully
-    # execute each plan, which means jobs can be killed and restarted before
-    # they finish a single epoch.  Holding off ~5 s between passes lets the
-    # cluster settle into the previous plan; the next pass either reaffirms
-    # it (no preempts) or has a substantively better one to act on.
+    # Minimum interval between optimizer passes.  The optimizer doesn't
+    # penalise migrations, so back-to-back calls can pick equivalent-cost but
+    # different placements and thrash jobs before they complete an epoch.
     _SCHEDULE_MIN_INTERVAL_S = 5.0
     _last_schedule_at = 0.0
 
@@ -693,9 +578,6 @@ async def lifespan(_app: FastAPI) -> AsyncGenerator[None]:
             wait = _SCHEDULE_MIN_INTERVAL_S - (now - _last_schedule_at)
             if wait > 0:
                 await asyncio.sleep(wait)
-                # Re-check the event so we coalesce notifies that arrived
-                # while we were sleeping (without losing them — the next
-                # iteration will pick them up via the event still being set).
             try:
                 _last_schedule_at = asyncio.get_running_loop().time()
                 await _schedule_waiting_jobs()
@@ -742,11 +624,8 @@ async def lifespan(_app: FastAPI) -> AsyncGenerator[None]:
                         if state.node_slots is None:
                             continue
                         state.node_slots.release(node_id, count)
-                        # Wake the scheduler: a freshly-vacant slot may
-                        # unblock a previously-unplaceable QUEUED row.  Also
-                        # required for migrations — after auto-preempt
-                        # nullifies the old assignment, Phase 1b can finally
-                        # apply the optimizer's intended new placement.
+                        # Wake scheduler so the vacant slot can be reused
+                        # (and migrations can apply the optimizer's new placement).
                         notify_event.set()
             except Exception:
                 logger.warning("Slot listener lost connection, reconnecting in 5s")

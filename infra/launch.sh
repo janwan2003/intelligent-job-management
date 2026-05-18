@@ -6,19 +6,11 @@
 #
 # After ``tunnel`` mode, you can ``bash infra/e2e_scenario.sh`` or
 # ``bash infra/e2e_scenario_2types.sh`` and they will work without any
-# environment juggling.  Adds ``IJM_OPTIMIZER_GUARD_MIGRATIONS=1`` to the env
-# when you pass ``--with-guard`` (off by default — most scenarios don't need
-# it and it makes the optimizer's choices a bit less aggressive).
+# environment juggling.
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 MODE="${1:-tunnel}"
-GUARD=""
-for arg in "$@"; do
-    case "$arg" in
-        --with-guard) GUARD="1" ;;
-    esac
-done
 
 stop_native_api() {
     # Kill any uvicorn we started in a previous run.  Idempotent.
@@ -32,11 +24,7 @@ case "$MODE" in
         # Useful for UI/dev work without an actual GPU cluster.
         stop_native_api
         cd "$REPO_ROOT/infra"
-        if [ -n "$GUARD" ]; then
-            IJM_OPTIMIZER_GUARD_MIGRATIONS=1 docker compose up -d
-        else
-            docker compose up -d
-        fi
+        docker compose up -d
         echo
         echo "==> Local mode up.  Frontend: http://localhost:5173  API: http://localhost:8000"
         ;;
@@ -71,10 +59,6 @@ case "$MODE" in
         export NODES_CONFIG="$REPO_ROOT/config/nodes_config.tunnel.json"
         export OPTIMIZER_URL="http://localhost:8080"
         export OPTIMIZER_VERBOSE="2"
-        if [ -n "$GUARD" ]; then
-            export IJM_OPTIMIZER_GUARD_MIGRATIONS=1
-            echo "==> Guard ON"
-        fi
         nohup /home/janek/.local/bin/uv run --no-sync uvicorn src.main:app \
             --host 0.0.0.0 --port 8000 > /tmp/api.log 2>&1 &
         sleep 5
@@ -97,7 +81,7 @@ for n,v in d['per_node'].items():
         ;;
 
     *)
-        echo "usage: $0 {local|tunnel} [--with-guard]" >&2
+        echo "usage: $0 {local|tunnel}" >&2
         exit 1
         ;;
 esac
