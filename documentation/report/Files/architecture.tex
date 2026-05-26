@@ -1,39 +1,88 @@
-\subsection{Deployment topology}
+This section presents IJM's deployment topology, the~four-phase
+scheduling pipeline that drives every dispatch decision, the~job state
+machine, and~the~concurrency invariants that keep the~control plane
+consistent under racing API calls and~worker notifications.
 
-IJM runs as a small distributed system.
-The FastAPI \emph{API} (which also hosts the \texttt{ProfilingScheduler}, \texttt{JobDispatcher}, \texttt{NodeSlots} semaphores and the optimizer client) runs on the operator's machine.
-A lightweight FastAPI \emph{worker} runs on every GPU node and owns the local Docker daemon.
-PostgreSQL runs on one of the GPU nodes.
-Communication is plain HTTP over SSH tunnels, so the API reaches each worker at a stable \texttt{http://localhost:800x} alias regardless of where it actually sits.
-An optional GPUspb \emph{optimizer} HTTP service is reached from the API.
+\section{Deployment topology}
 
-\begin{figure}[H]
+IJM runs as~a~small distributed system.  The~FastAPI \emph{API}~--- which
+also hosts the~\texttt{ProfilingScheduler}, the~\texttt{JobDispatcher},
+the~\texttt{NodeSlots} semaphores, and~the~optimiser client~--- runs on
+the~operator's machine.  A~lightweight FastAPI \emph{worker} runs on
+every GPU node and~owns the~local Docker daemon.  PostgreSQL runs on
+one of~the~GPU nodes.
+
+Communication is~plain HTTP over SSH tunnels.  Every worker is~reached
+from the~API at~a~stable \texttt{http://localhost:800x} alias regardless
+of~its physical location, so the~same scheduler code drives a~laptop
+talking to~a~remote cluster and~a~single-host development setup.
+An~optional GPUspb \emph{optimiser} HTTP service is~reached the~same
+way.
+
+\begin{figure}[!htb]
 \centering
 \includegraphics[width=\textwidth]{Images/CurrentPrototype.png}
-\caption{Distributed prototype: SPA + API + optimizer on the operator's machine, workers + Docker on each GPU node, PostgreSQL on a GPU node, all glued together over SSH-tunneled HTTP.  Checkpoints written by one node are visible from the other via a shared rclone-over-SFTP mount.}
+\caption{Distributed prototype.  The~SPA, API, and~optimiser run on
+the~operator's machine; workers and~Docker run on~each GPU node;
+PostgreSQL runs on~a~GPU~node.  A~shared rclone-over-SFTP mount makes
+checkpoints written by~one node visible from the~other.}
 \label{fig:prototype}
 \end{figure}
 
-Single-process \texttt{docker compose} on the operator's machine is supported for development but is not the deployment target: any tradeoff between local-dev simplicity and distributed correctness resolves toward the distributed topology.
+Single-process \texttt{docker compose} on~the~operator's machine is
+supported for~development but is~not the~deployment target: any tradeoff
+between local-dev simplicity and~distributed correctness resolves toward
+the~distributed topology.
 
-\subsection{Scheduling pipeline}
+\section{Scheduling pipeline}
 
-A single scheduling pass --- \texttt{\_schedule\_waiting\_jobs} in \texttt{app.py} --- handles every dispatch decision.  It is invoked whenever a job is submitted, a profiling run finishes, a slot is freed, or every 60~s by a watchdog.  Notifies are coalesced through a single \texttt{asyncio.Event} and rate-limited to at most one pass every five seconds so the cluster has time to apply the previous plan before the next one is computed.
+A~single scheduling pass~--- \texttt{\_schedule\_waiting\_jobs} in
+\texttt{app.py}~--- handles every dispatch decision.  It is~invoked
+whenever a~job is~submitted, a~profiling run finishes, or~a~slot is
+freed.  A~60-minute watchdog (\texttt{\_queue\_watcher}) serves as~a
+safety net for~missed notifications, not as~the~main wake source.
+Wake-ups are coalesced through a~single
+\texttt{asyncio.Event} and~rate-limited to~at~most one pass every
+five~seconds, so the~cluster has time to~apply the~previous plan before
+the~next one is~computed.
 
-The pass walks four phases under a single \texttt{schedule\_lock}:
+The pass walks four phases under a~single \texttt{schedule\_lock}:
 
-\begin{itemize}
-  \item[\textbf{Phase 0}] Sweep stale profile claims (rows in \texttt{profiling\_results} with \texttt{duration\_seconds IS NULL} whose owning instance no longer exists or was repurposed) and reset stuck \texttt{QUEUED} rows whose \texttt{assigned\_node} was set $\geq 30$~s ago without the worker advancing them.
-  \item[\textbf{Phase 1b}] Call the optimizer (outside the lock for its 30~s HTTP timeout) and apply its assignments via conditional \texttt{UPDATE \ldots WHERE assigned\_node IS NULL}; collect its preempt list.
-  \item[\textbf{Greedy fallback}] For \texttt{QUEUED} rows the optimizer did not place (typically rows still owing a profile run), the \texttt{ProfilingScheduler} picks one profile config or a profiled standard slot.
-  \item[\textbf{Phase 1c}] If a row still has no slot and still owes a profile, find the cheapest set of low-priority \texttt{RUNNING} jobs whose eviction would free enough GPUs for the next unprofiled config (the \emph{profile-always} policy).
-\end{itemize}
+\begin{enumerate}[leftmargin=*,itemsep=2pt,topsep=4pt]
+  \item \textbf{Phase~0 --- sweep stale state.}
+    Sweep stale profile claims and~reset stuck \texttt{QUEUED} rows
+    whose \texttt{assigned\_node} was set $\geq 30$~s ago without the
+    worker advancing them.
+  \item \textbf{Phase~1b --- optimiser pass.}
+    Call the~optimiser outside the~lock (to~accommodate its 30~s HTTP
+    timeout) and~apply its assignments through a~conditional
+    \texttt{UPDATE \ldots WHERE assigned\_node IS NULL}, collecting the
+    optimiser's preempt list.
+  \item \textbf{Greedy fallback.}
+    For~\texttt{QUEUED} rows the~optimiser did not place~--- typically
+    rows that still owe a~profile run~--- the~\texttt{ProfilingScheduler}
+    picks one profile configuration or~a~profiled standard slot.
+  \item \textbf{Phase~1c --- profile-preempt.}
+    If~a~row still has~no~slot and~still owes a~profile, find the
+    cheapest set of~low-priority \texttt{RUNNING} jobs whose eviction
+    would free enough GPUs for~the~next unprofiled configuration
+    (the~\emph{profile-always} policy).
+\end{enumerate}
 
-Outside the lock the pass spawns one task per preempt and one per dispatch.  Each dispatch goes through \texttt{JobDispatcher.dispatch\_with\_slot}, which acquires the destination's \texttt{NodeSlots} permit before sending \texttt{POST /jobs/\{id\}/run} to the right worker.  Permits are released when the worker emits a \texttt{NOTIFY ijm\_slot\_freed} carrying the freed \texttt{(node\_id, n\_gpus)} pair.
+Outside the~lock the~pass spawns one task per~preempt and~one per
+dispatch.  Each dispatch goes through
+\texttt{JobDispatcher.dispatch\_with\_slot}, which acquires the
+destination's \texttt{NodeSlots} permit before sending
+\texttt{POST /jobs/\{id\}/run} to~the~right worker.  Permits are
+released when the~worker emits a~\texttt{NOTIFY ijm\_slot\_freed} that
+carries the~freed \texttt{(node\_id,\,n\_gpus)} pair.
 
-Figure~\ref{fig:seq-submit} shows the submission path, Figure~\ref{fig:seq-profiling-loop} the cross-instance profile cycle, Figure~\ref{fig:seq-optimizer-cycle} an optimizer-driven preempt+migrate round, and Figure~\ref{fig:seq-standard-run} the standard run.
+Figure~\ref{fig:seq-submit} shows the~submission path,
+Figure~\ref{fig:seq-profiling-loop} the~cross-instance profile cycle,
+Figure~\ref{fig:seq-optimizer-cycle} an~optimiser-driven preempt and
+migrate round, and~Figure~\ref{fig:seq-standard-run} the~standard run.
 
-\begin{figure}[H]
+\begin{figure}[!htb]
 \centering
 \footnotesize
 \setlength{\unitlength}{0.7cm}
@@ -65,11 +114,14 @@ Figure~\ref{fig:seq-submit} shows the submission path, Figure~\ref{fig:seq-profi
     \end{messcall}
   \end{sdblock}
 \end{sequencediagram}}
-\caption{Submission and scheduling.  The API only writes the row and notifies the scheduler; placement is decided by the next scheduling pass.  The optimizer call is made outside the schedule lock so its 30~s HTTP timeout cannot block other passes; stale optimizer suggestions are safely filtered by Phase~1b's conditional update.  Slot semaphores ensure that no more containers than GPUs are dispatched to any worker.}
+\caption{Submission and~scheduling.  The~API writes the~row and~notifies
+the~scheduler; placement is~decided by~the~next pass.  The~optimiser
+call sits outside the~schedule lock so its 30~s HTTP timeout cannot
+block other passes.}
 \label{fig:seq-submit}
 \end{figure}
 
-\begin{figure}[H]
+\begin{figure}[!htb]
 \centering
 \footnotesize
 \setlength{\unitlength}{0.7cm}
@@ -98,11 +150,14 @@ Figure~\ref{fig:seq-submit} shows the submission path, Figure~\ref{fig:seq-profi
     \end{callself}
   \end{sdblock}
 \end{sequencediagram}}
-\caption[Profiling cycle.]{Profiling cycle.  Profiling results are keyed by the (job-type, gpu-config) pair and shared across submissions of the same type.  Each instance contributes one profile run by default (\texttt{PROFILING\_\allowbreak CONFIGS\_\allowbreak PER\_\allowbreak JOB}); the per-instance claim row guards against duplicate measurements.  Mean per-epoch time is computed from monotonic timestamps with the first (warmup) epoch excluded.}
+\caption{Profiling cycle.  Profile measurements are keyed by~the
+(job-type, GPU-config) pair and~shared across submissions of~the~same
+type.  Each instance contributes one profile run by~default; the
+per-instance claim row guards against duplicate measurements.}
 \label{fig:seq-profiling-loop}
 \end{figure}
 
-\begin{figure}[H]
+\begin{figure}[!htb]
 \centering
 \footnotesize
 \setlength{\unitlength}{0.7cm}
@@ -133,11 +188,14 @@ Figure~\ref{fig:seq-submit} shows the submission path, Figure~\ref{fig:seq-profi
   \begin{messcall}{sched}{dispatch\_with\_slot $\rightarrow$ POST /run}{target}
   \end{messcall}
 \end{sequencediagram}}
-\caption[Optimizer cycle.]{Optimizer-driven preempt and migrate.  The API trusts GPUspb's plan: any job in \texttt{currentScheduling} that the optimizer drops or moves to a different slot is preempted with \texttt{reason=auto}, which clears its assignment so Phase~1b can re-apply the new placement.  An in-memory pending-evictions map makes freshly-evicted slots visible to the scheduler before the worker's slot-freed commit lands, so multi-victim profile preempts do not deadlock.}
+\caption{Optimiser-driven preempt and~migrate.  The~API trusts the
+GPUspb plan: any job in~\texttt{currentScheduling} that the~optimiser
+drops or~moves is~preempted with~\texttt{reason=auto}, which clears its
+assignment so Phase~1b can re-apply the~new placement on~the~next pass.}
 \label{fig:seq-optimizer-cycle}
 \end{figure}
 
-\begin{figure}[H]
+\begin{figure}[!htb]
 \centering
 \footnotesize
 \setlength{\unitlength}{0.7cm}
@@ -161,52 +219,100 @@ Figure~\ref{fig:seq-submit} shows the submission path, Figure~\ref{fig:seq-profi
     \end{callself}
   \end{sdblock}
 \end{sequencediagram}}
-\caption{Standard run execution.  The worker performs an atomic conditional \texttt{UPDATE \ldots WHERE status = ANY(RUNNABLE\_STATUSES)} so concurrent stops / duplicate dispatches cannot race a row into \texttt{RUNNING}.  On exit the worker fires both \texttt{ijm\_slot\_freed} (which releases the API's NodeSlots permit) and \texttt{ijm\_schedule} (which wakes the scheduler) in the same transaction.}
+\caption{Standard run.  The~worker performs an~atomic
+conditional \texttt{UPDATE \ldots WHERE status = ANY(RUNNABLE\_STATUSES)}
+so concurrent stops or~duplicate dispatches cannot race a~row into
+\texttt{RUNNING}.  On~exit the~worker fires \texttt{ijm\_slot\_freed} and
+\texttt{ijm\_schedule} in~the~same transaction.}
 \label{fig:seq-standard-run}
 \end{figure}
 
-\subsection{State machine}
+\section{State machine}
 
-A job moves through the following states.  All transitions are driven by atomic conditional \texttt{UPDATE}s so concurrent stop / dispatch / completion paths cannot clobber each other's work.
+Table~\ref{tab:state-machine} lists every transition a~job row can take.
+All transitions are driven by~atomic conditional \texttt{UPDATE}s, so
+concurrent stop, dispatch, and~completion paths cannot clobber each
+other's work.
 
-\begin{center}
-\footnotesize
-\begin{tabular}{l l p{8.5cm}}
-\hline
+\begin{table}[H]
+\centering\small
+\begin{tabular}{@{}l l p{8.2cm}@{}}
+\toprule
 \textbf{From} & \textbf{To} & \textbf{Trigger} \\
-\hline
-\texttt{QUEUED}     & \texttt{PROFILING} / \texttt{RUNNING} & Worker Phase~1 atomic claim \\
-\texttt{PROFILING}  & \texttt{QUEUED}     & Profile run finished; \texttt{is\_profiling\_run} flips to \texttt{false} \\
-\texttt{RUNNING}    & \texttt{SUCCEEDED} / \texttt{FAILED} & Container exit \\
-\texttt{RUNNING}    & \texttt{PREEMPTED}  & User \texttt{POST /jobs/\{id\}/stop?reason=user} \\
-\texttt{RUNNING}    & \texttt{QUEUED}     & Auto-preempt \texttt{reason=auto}: clears \texttt{assigned\_node} so the next pass can place elsewhere \\
-\texttt{PREEMPTED} / \texttt{FAILED} & \texttt{QUEUED} & \texttt{POST /jobs/\{id\}/resume} \\
-\hline
+\midrule
+\textsc{queued}     & \textsc{profiling} / \textsc{running} & Worker Phase~1 atomic claim \\
+\textsc{profiling}  & \textsc{queued}     & Profile run finished; \texttt{is\_profiling\_run} flips to~\texttt{false} \\
+\textsc{running}    & \textsc{succeeded} / \textsc{failed} & Container exit \\
+\textsc{running}    & \textsc{preempted}  & User \texttt{POST /jobs/\{id\}/stop?reason=user} \\
+\textsc{running}    & \textsc{queued}     & Scheduler preempt (\texttt{reason=auto}): clears \texttt{assigned\_node} for~the~next pass \\
+\textsc{preempted} / \textsc{failed} & \textsc{queued} & \texttt{POST /jobs/\{id\}/resume} \\
+\bottomrule
 \end{tabular}
-\end{center}
+\caption{Job state transitions.}\label{tab:state-machine}
+\end{table}
 
-Two distinct stop reasons separate \emph{user-initiated} preemption (sticky \texttt{PREEMPTED}, the user must explicitly resume) from \emph{scheduler-initiated} preemption (\texttt{QUEUED} with cleared assignment, picked up automatically on the next scheduling pass).  The worker enforces this distinction and is also responsible for ignoring stale \texttt{/stop} calls aimed at a row that has since been re-assigned to a different node.
+Two distinct stop reasons separate \emph{user-initiated} preemption from
+\emph{scheduler-initiated} preemption.  A~user stop is~sticky:
+\textsc{preempted} stays put until the~user explicitly resumes.  A
+scheduler stop returns the~row to~\textsc{queued} with~a~cleared
+assignment, so the~next pass can place it~elsewhere automatically.  The
+worker enforces this distinction and~ignores stale \texttt{/stop} calls
+aimed at~a~row that has~since been re-assigned to~another node.
 
-\subsection{Concurrency invariants}
+\section{Concurrency invariants}
 
-The control plane relies on three invariants, each defended in code:
+The control plane relies on~three invariants, each defended in~code.
+
+\textbf{No GPU oversubscription.}  Every dispatch goes through
+\texttt{NodeSlots.acquire(node\_id,\,n\_gpus)}.  On~startup the
+semaphores are reconciled from the~database; rows in~\textsc{running} or
+\textsc{profiling}, and~\textsc{queued} rows with~an~assigned node,
+pre-acquire their permits.  A~periodic drift watcher recomputes the
+authoritative count at~the~\texttt{IJM\_DRIFT\_HEARTBEAT\_S} cadence
+(default 15~s) and~corrects any divergence.
+
+\textbf{No duplicate containers per row.}  Both the~worker (Phase~1
+claim, \texttt{running\_jobs[job\_id]} check) and~the~API
+(\texttt{dispatch\_tasks[instance\_id]} deduplication) refuse a~second
+concurrent dispatch for~the~same instance.  The~reaper that resets stuck
+\textsc{queued} rows cancels any live dispatch task instead of
+double-releasing its permit.
+
+\textbf{Profiling is~sacred.}  Auto-preempt
+(\texttt{\_preempt\_and\_release}) refuses to~act on
+\texttt{is\_profiling\_run=TRUE}, and~profile-preempt (Phase~1c) filters
+victims by~\texttt{status='RUNNING'} only.  Only an~explicit user stop
+can cancel an~in-flight measurement.
+
+\section{Cross-node checkpoints and image variants}
+
+Two GPU generations coexist.  The~\texttt{matemagician} node is~pinned to
+driver~418.x (CUDA~10.1 max), so it~runs a~separate
+\texttt{:legacy} image built on~PyTorch~1.5.1 and~Python~3.7.  The
+remaining nodes run the~default \texttt{:latest} image on~PyTorch~2.6
+and~CUDA~12.4.  Both images write checkpoints in~the~legacy pre-1.6
+\texttt{torch.save} format, and~both load with~\texttt{strict=False}, so
+a~job can resume across nodes regardless of~which torch version produced
+the~file.
+
+The shared \texttt{data/} directory is~mounted on~every node via~rclone
+over SFTP.  It~contains:
 
 \begin{itemize}
-  \item \textbf{No GPU oversubscription.}  Every dispatch goes through \texttt{NodeSlots.acquire(node\_id, n\_gpus)}.  On startup the semaphores are reconciled from the DB (rows in \texttt{RUNNING}/\texttt{PROFILING} or \texttt{QUEUED} with an assigned node pre-acquire their permits).  A periodic drift watcher recomputes the authoritative count every five minutes and corrects any divergence.
-  \item \textbf{No duplicate containers per row.}  Both the worker (Phase~1 claim, \texttt{running\_jobs[job\_id]} check) and the API (\texttt{dispatch\_tasks[instance\_id]} deduplication) refuse a second concurrent dispatch for the same instance.  The reaper that resets stuck \texttt{QUEUED} rows cancels any live dispatch task instead of double-releasing its permit.
-  \item \textbf{Profiling is sacred.}  Auto-preempt (\texttt{\_preempt\_and\_release}) refuses to act on \texttt{is\_profiling\_run=TRUE}; profile-preempt (Phase~1c) filters victims by \texttt{status='RUNNING'} only.  Only an explicit user \texttt{/stop?reason=user} can cancel an in-flight measurement.
+  \item \texttt{data/checkpoints/\{job\_id\}/}~--- per-job checkpoints,
+        mounted into the~container at~\texttt{/checkpoints};
+  \item \texttt{data/runs/\{job\_id\}/}~--- captured stdout
+        (\texttt{output.log}) and~TensorBoard artifacts, mounted at
+        \texttt{/runs};
+  \item \texttt{data/shared/data/}~--- read-only dataset cache (MNIST,
+        CIFAR-10), mounted at~\texttt{/runs/data}.
 \end{itemize}
 
-\subsection{Cross-node checkpoints and image variants}
-
-Two GPU generations are supported.  The \texttt{matemagician} node is pinned to driver 418.x (CUDA 10.1 max), so it runs a separate \texttt{:legacy} image built on PyTorch 1.5.1 + Python 3.7.  Newer nodes run the default \texttt{:latest} image on PyTorch 2.6 + CUDA 12.4.  Checkpoints are saved in the legacy pre-1.6 torch serialization format on every node so that a job can resume across nodes regardless of which torch version produced the file.
-
-The shared \texttt{data/} directory is mounted on every node via rclone over SFTP and contains:
-
-\begin{itemize}
-  \item \texttt{data/checkpoints/\{job\_id\}/} --- per-job checkpoints, mounted into the container at \texttt{/checkpoints};
-  \item \texttt{data/runs/\{job\_id\}/} --- captured stdout (\texttt{output.log}) and TensorBoard artifacts, mounted at \texttt{/runs};
-  \item \texttt{data/shared/data/} --- read-only dataset cache (MNIST, CIFAR-10), mounted at \texttt{/runs/data}.
-\end{itemize}
-
-Worker-side environment variables \texttt{WORKER\_GPU\_MODE} (\texttt{runtime} | \texttt{cdi} | \texttt{none}) and \texttt{IMAGE\_TAG\_OVERRIDE} let the same nodes\_config drive heterogeneous nodes: the polimi-gpu rootless daemon uses CDI device injection, matemagician rewrites \texttt{:latest} to \texttt{:legacy}, and a CPU-only sandbox can be added by setting \texttt{WORKER\_GPU\_MODE=none}.
+Two worker-side environment variables let the~same
+\texttt{nodes\_config.json} drive heterogeneous nodes.
+\texttt{WORKER\_GPU\_MODE} selects how Docker exposes GPUs to~the
+training container: \texttt{runtime} for~the~standard NVIDIA runtime,
+\texttt{cdi} for~the~rootless daemon on~\texttt{polimi-gpu}, and
+\texttt{none} for~a~CPU-only sandbox.  \texttt{IMAGE\_TAG\_OVERRIDE}
+rewrites the~image tag, which is~how \texttt{matemagician} swaps
+\texttt{:latest} for~\texttt{:legacy}.

@@ -4,85 +4,49 @@ A job management system for GPU deep learning clusters with profiling-based sche
 
 ## Prerequisites
 
-- Docker & Docker Compose
+**To run the cluster** (the supported path, `bash infra/ijm up`):
+
+- Docker & Docker Compose (v2 plugin)
+- `ssh` client with key auth to the cluster
+- Two host aliases in `~/.ssh/config`:
+
+  ```
+  Host polimi          HostName matemagician.deib.polimi.it  User wangrat
+  Host polimi-gpu      HostName 10.79.23.173                  User wangrat
+                       ProxyCommand ssh polimi -W %h:%p
+  ```
+
+  Replace `wangrat` if your cluster account differs. The scripts treat `polimi` as the SSH alias for the postgres + matemagician host, and `polimi-gpu` for the GPU node behind it.
+
+> **Operator note.** The infra scripts and docker-compose files default to `wangrat` as the remote username and `/home/wangrat/ijm` as the deploy path. If your account is different, search-and-replace `wangrat` across `infra/` and `config/` before deploying — most call sites already accept env-var overrides (`REMOTE_DIR`, `TUNNEL_HOST`, `NODE_ID`, etc.) but the defaults are user-specific.
+
+**To work on backend / frontend source** (optional, dev only):
+
 - Python 3.13+ with [uv](https://docs.astral.sh/uv/)
 - Node.js 24+ with [pnpm](https://pnpm.io/)
 
-## Quick Start (local)
+## Cluster Deployment (Polimi server) — the supported path
 
-### 1. Build the runtime images
+The production setup splits responsibilities: **workers** run on each GPU node (matemagician + polimi-gpu); the **API**, optimizer, and frontend run on your machine, containerised, and reach the cluster via an SSH tunnel.
 
-```bash
-docker build -t ijm-lstm-small:dev --build-arg SCRIPT=lstm_small.py runtime/
-docker build -t ijm-lstm-big:dev   --build-arg SCRIPT=lstm_big.py   runtime/
-docker build -t ijm-convnet:dev    --build-arg SCRIPT=convnet.py    runtime/
-docker build -t ijm-efficientnet:dev --build-arg SCRIPT=efficientnet.py runtime/
-docker build -t ijm-cnn_big:dev    --build-arg SCRIPT=cnn_big.py    runtime/   # heavy CNN, 2-GPU-beneficial
-```
+### Bootstrap & lifecycle — `bash infra/ijm`
 
-`cnn_big` is a deep CNN (10 conv blocks, channels grow up to 512, 128×128×3 synthetic-tensor input, batch 32) deliberately sized so per-step compute amortises the DataParallel sync overhead on both GPU classes — see `tab:e2e-2gpu` in `documentation/report` for the measured per-bundle epoch times (P600×2 is **1.68× faster** than P600×1, A40×2 is 1.12× faster than A40×1).
-
-### 2. Create data directories
+After the SSH aliases are configured (see Prerequisites), one command brings the whole supported topology up:
 
 ```bash
-mkdir -p data/pg data/checkpoints data/runs
+bash infra/ijm deploy    # one-time / when worker code changed: rsync, force-recreate
+                         # container on matemagician, apply DB schema, start native
+                         # uvicorn worker on polimi-gpu
+bash infra/ijm up        # daily: open tunnel (if down), bring up API + optimizer + frontend
+bash infra/ijm status    # check tunnel / workers / local stack / API / per-node slots
+bash infra/ijm down      # stop local docker + close tunnel (add --workers to also stop remote workers)
+bash infra/ijm logs      # tail ijm-api docker logs
 ```
 
-### 3. Start all services
-
-```bash
-cd infra && docker compose up --build
-```
-
-Opens:
+After `bash infra/ijm up`:
 - **Frontend** → http://localhost:5173
-- **API** → http://localhost:8000
+- **API** → http://localhost:8000  (containerised; `network_mode: host` so it reaches the tunnel ports at `localhost:5433/8001/8002`)
 - **Optimizer** → http://localhost:8080
-- **Postgres** → localhost:5432
-
-The API runs jobs directly via its embedded `JobRunner` + `DockerExecutor` — no separate worker process needed for local dev. The GPUspb optimizer is started by default for deadline-aware, cost-optimised scheduling with cross-job preemption; to disable it, set `OPTIMIZER_URL=` (the API falls back to a greedy FIFO scheduler).
-
-### 4. (Optional) Simulate multi-node locally
-
-By default every node in [config/nodes_config.json](config/nodes_config.json) has `workerUrl: null`, so the API runs jobs in-process. To exercise the real HTTP dispatch path against a separate worker container:
-
-1. In [config/nodes_config.json](config/nodes_config.json), set `"workerUrl": "http://worker:8001"` on one node.
-2. Start with the `worker` profile:
-   ```bash
-   cd infra && docker compose --profile worker up --build
-   ```
-
-The fake worker (`ijm-worker`, `NODE_ID=local-worker`) runs containers via the host Docker socket. GPU presence is trusted from the config rather than probed, so you can declare any `resources` you like (e.g. `4× A40` on a laptop) to exercise scheduling/preemption end-to-end without real GPUs. Duplicate the `worker` service in [infra/docker-compose.yml](infra/docker-compose.yml) (different `container_name`, host port, `NODE_ID`) to fake additional nodes.
-
----
-
-## Cluster Deployment (Polimi server)
-
-The production setup splits responsibilities: **workers** run on each GPU node, the **API** runs anywhere (laptop, CI server) and connects via SSH tunnel.
-
-### Primary node — postgres + worker
-
-Run from your local machine:
-
-```bash
-NODE_ID=matemagician ./infra/deploy.sh polimi
-```
-
-`deploy.sh` rsyncs worker source + Dockerfile + compose file to `~/ijm/` on the server and starts:
-- **postgres** (port 5433) — shared job state database
-- **worker** (port 8001) — executes Docker training containers
-
-### Additional GPU nodes (worker-only)
-
-For each extra GPU node, deploy worker only — they connect to the primary node's postgres:
-
-```bash
-NODE_ID=polimi-gpu ./infra/deploy.sh --worker-only polimi-gpu
-```
-
-The `--worker-only` flag uses `docker-compose.worker.yml` which omits postgres and points `DATABASE_URL` at the primary node.
-
-For nodes where `wangrat` doesn't have docker group access, see [docs on rootless Docker setup](#rootless-docker) below.
 
 ### Shared filesystem (for cross-node checkpoint resume)
 
@@ -97,36 +61,30 @@ sudo dnf install fuse-sshfs   # or apt install fuse3
 
 NFS works too if you have admin access.
 
-### Client side — run API + frontend locally against the cluster
-
-The supported path is `infra/launch.sh tunnel` (single command, handles tunnels + dockerised optimizer/frontend + native API in one go):
-
-```bash
-# Terminal 1: open SSH tunnels (keep running, ServerAliveInterval=30 to survive overnight)
-ssh -fN -o ServerAliveInterval=30 -o ServerAliveCountMax=3 \
-    -L 0.0.0.0:5433:localhost:5433 \
-    -L 0.0.0.0:8001:localhost:8001 \
-    -L 0.0.0.0:8002:10.79.23.173:8001 polimi
-
-# Terminal 2: native API + dockerised optimizer/frontend
-bash infra/launch.sh tunnel
-```
-
-Opens:
-- **Frontend** → http://localhost:5173
-- **API** → http://localhost:8000  (native uvicorn, logs at `/tmp/api.log`)
-- **Optimizer** → localhost:8080
-
 ### End-to-end scenarios
 
-Two scripts exercise the full submission → profile-sweep → URGENT preempt → cross-node resume → user-stop → drain pipeline:
-
 ```bash
-bash infra/e2e_scenario.sh         # single-type (lstm-small only)
-bash infra/e2e_scenario_2types.sh  # lstm-small + cnn_big, 2 URGENT preempts, both cross-node resume
+bash infra/e2e_scenario.sh         # default: cnn_big single-type, prio-staggered patients + URGENT migration
+bash infra/e2e_scenario_2types.sh  # cnn_big PINs + lstm-small patients + one URGENT cnn_big
 ```
 
-Both clear DB state at Stage 0 and rely on the live profile sweep to fill the cache. The 2-types scenario uses `EPOCHS_SMALL=400` by default to keep lstm-small alive long enough to overlap with cnn_big's 30-min P600 standard run; override via env if you have a faster cluster.
+Both clear DB state at Stage 0 and run the full submission → profile-sweep → URGENT preempt → cross-node resume → drain pipeline. Override defaults via env: `JOB_TYPE=lstm-small bash infra/e2e_scenario.sh`, `EPOCHS_BIG=80 EPOCHS_SMALL=400 bash infra/e2e_scenario_2types.sh`, etc. Current script defaults: scenario 1 uses `JOB_TYPE=cnn_big`; scenario 2 uses `EPOCHS_BIG=40` for the URGENT cnn_big and `EPOCHS_SMALL=200` for the patient lstm-smalls.
+
+### Advanced: manual per-node deploy
+
+`bash infra/ijm deploy` is the recommended path. The raw scripts it wraps are kept for the rare case where you want to redeploy only one node:
+
+```bash
+# matemagician (rootful docker, nvidia default runtime, CUDA-10.1 driver — needs the legacy image)
+NODE_ID=matemagician WORKER_GPU_MODE=runtime IMAGE_TAG_OVERRIDE=legacy NODE_TOTAL_GPUS=2 \
+    ./infra/deploy.sh polimi
+
+# polimi-gpu (rootless docker, CDI mode, CUDA-12.5 driver — native uvicorn, not docker-compose)
+NODE_ID=polimi-gpu WORKER_GPU_MODE=cdi NODE_TOTAL_GPUS=2 \
+    ./infra/deploy_native.sh polimi-gpu
+```
+
+Note that the *raw* `deploy.sh` does not run `docker-compose up --force-recreate`, so if the container already exists with stale env vars (e.g. wrong `NODE_ID`) it will silently leave the old one in place. `bash infra/ijm deploy` adds the force-recreate plus a schema-apply step and handles both nodes in one shot.
 
 ### Building the runtime images on the server
 
@@ -218,15 +176,55 @@ echo 'export DOCKER_HOST=unix:///run/user/$(id -u)/docker.sock' >> ~/.bashrc
 
 Then deploy as usual — the worker compose detects `DOCKER_SOCK` env var to mount the rootless socket.
 
-### Per-node deploy summary
+---
+
+## Local development (no cluster)
+
+For UI-only or scheduler-logic-only work without a real GPU cluster. **This is a dev convenience, not the production topology** — the cluster path above is what gets exercised by the e2e scenarios and what should be used in practice. Useful for fast iteration on the frontend or backend code paths that don't depend on GPU passthrough.
+
+### 1. Build the runtime images
 
 ```bash
-# matemagician (rootful docker, nvidia default runtime, CUDA-10.1 driver)
-NODE_ID=matemagician WORKER_GPU_MODE=runtime IMAGE_TAG_OVERRIDE=legacy ./infra/deploy.sh polimi
-
-# polimi-gpu (rootless docker, CDI mode, CUDA-12.5 driver)
-NODE_ID=polimi-gpu WORKER_GPU_MODE=cdi ./infra/deploy_native.sh polimi-gpu
+docker build -t ijm-lstm-small:dev --build-arg SCRIPT=lstm_small.py runtime/
+docker build -t ijm-lstm-big:dev   --build-arg SCRIPT=lstm_big.py   runtime/
+docker build -t ijm-convnet:dev    --build-arg SCRIPT=convnet.py    runtime/
+docker build -t ijm-efficientnet:dev --build-arg SCRIPT=efficientnet.py runtime/
+docker build -t ijm-cnn_big:dev    --build-arg SCRIPT=cnn_big.py    runtime/   # heavy CNN, 2-GPU-beneficial
 ```
+
+`cnn_big` is a deep CNN (10 conv blocks, channels grow up to 512, 128×128×3 synthetic-tensor input, batch 32) deliberately sized so per-step compute amortises the DataParallel sync overhead on both GPU classes — see `tab:e2e-2gpu` in `documentation/report` for the measured per-bundle epoch times (P600×2 is **1.68× faster** than P600×1, A40×2 is 1.12× faster than A40×1).
+
+### 2. Create data directories
+
+```bash
+mkdir -p data/pg data/checkpoints data/runs
+```
+
+### 3. Start all services
+
+```bash
+cd infra && docker compose up --build
+```
+
+Opens:
+- **Frontend** → http://localhost:5173
+- **API** → http://localhost:8000
+- **Optimizer** → http://localhost:8080
+- **Postgres** → localhost:5432
+
+The API runs jobs directly via its embedded `JobRunner` + `DockerExecutor` — no separate worker process needed for local dev. The GPUspb optimizer is started by default; to disable it set `OPTIMIZER_URL=` (the API falls back to a greedy FIFO scheduler).
+
+### 4. (Optional) Simulate multi-node locally
+
+By default every node in [config/nodes_config.json](config/nodes_config.json) has `workerUrl: null`, so the API runs jobs in-process. To exercise the real HTTP dispatch path against a separate worker container:
+
+1. In [config/nodes_config.json](config/nodes_config.json), set `"workerUrl": "http://worker:8001"` on one node.
+2. Start with the `worker` profile:
+   ```bash
+   cd infra && docker compose --profile worker up --build
+   ```
+
+The fake worker (`ijm-worker`, `NODE_ID=local-worker`) runs containers via the host Docker socket. GPU presence is trusted from the config rather than probed, so you can declare any `resources` you like (e.g. `4× A40` on a laptop) to exercise scheduling/preemption end-to-end without real GPUs.
 
 ---
 
@@ -275,6 +273,7 @@ Each new job type runs a short profiling pass first to measure GPU throughput. A
 | `ijm-lstm-big:dev`   | `lstm_big.py`   | LSTM (3-layer, 256 hidden) | MNIST |
 | `ijm-convnet:dev`    | `convnet.py`    | ConvNet (3-layer CNN + BN) | CIFAR-10 |
 | `ijm-efficientnet:dev` | `efficientnet.py` | EfficientNet (MBConv) | CIFAR-10 |
+| `ijm-cnn_big:dev`    | `cnn_big.py`    | 10-block deep CNN ($3{\to}{\dots}{\to}512$) | synthetic 128×128×3 |
 
 ---
 
@@ -372,8 +371,10 @@ shared/     Shared constants (JobStatus, pg notify channel) — backend + worker
 frontend/   React 19 SPA — Dashboard, Job Queue, Submit, Cluster, Profiling
 worker/     HTTP worker server — executes Docker containers on GPU nodes
 optimizer/  GPUspb cost-aware batch optimizer (C++ core + Flask wrapper)
-runtime/    Training container images (LSTM, ConvNet, EfficientNet)
-infra/      Docker Compose configs + smoke test + tunnel.sh
+runtime/    Training container images (LSTM, ConvNet, EfficientNet, cnn_big)
+infra/      ijm orchestrator + deploy.sh / deploy_native.sh / tunnel.sh +
+            docker-compose{,.server,.tunnel,.worker}.yml + smoke_test.sh +
+            e2e_scenario*.sh + snapshot_run.sh + generate_chart{,_tex}.py
 config/     Cluster node configs (local, server, tunnel) + GPU energy costs
 data/       Persistent data (pg/, checkpoints/, runs/)
 ```
@@ -385,3 +386,37 @@ data/       Persistent data (pg/, checkpoints/, runs/)
 **Worker**: Python 3.13, FastAPI, asyncio, Docker CLI
 **Optimizer**: C++ (scheduling algorithms) + Python 3.8 (Flask REST wrapper)
 **Infrastructure**: Docker, PostgreSQL 16
+
+---
+
+## Environment Variables
+
+| Variable | Used by | Default | Notes |
+|---|---|---|---|
+| `DATABASE_URL` | API, worker | `postgresql://postgres:postgres@postgres:5432/ijm` | In tunnel mode the host is `localhost:5433`. |
+| `HOST_ROOT` | API | `/host` | Maps to repo root inside the API container. |
+| `HOST_PROJECT_ROOT` | API | `${PWD}/..` | Host-resolvable path used for Docker bind mounts. |
+| `EXECUTOR` | API | `docker` | Set to `mock-slurm` to log SLURM commands while still running locally. |
+| `OPTIMIZER_URL` | API | `http://optimizer:8080` | Set to empty string to fall back to greedy FIFO scheduling. |
+| `OPTIMIZER_VERBOSE` | API | unset | Set to `1` for verbose optimizer-client diagnostic logs. |
+| `IJM_DRIFT_HEARTBEAT_S` | API | `15` | Period of the slot-tracker drift heartbeat (reconciles `mem_used` vs `db_used` per node). |
+| `WORKER_GPU_MODE` | worker | `runtime` | `runtime` (rootful + nvidia default runtime), `cdi` (rootless via CDI spec), or `none` (CPU-only). |
+| `IMAGE_TAG_OVERRIDE` | worker | unset | Rewrites the job's image tag (`:latest` → `:$IMAGE_TAG_OVERRIDE`). Set to `legacy` on matemagician. |
+| `NODE_ID` | worker | from deploy script | Identifies the node in `config/nodes_config.json`. |
+| `VITE_API_URL` | frontend | `http://localhost:8000` | API base URL the SPA talks to. |
+
+---
+
+## Documentation
+
+- [documentation/SLOT_INVARIANTS.md](documentation/SLOT_INVARIANTS.md) — invariants maintained by the slot tracker.
+- [documentation/e2e-scenarios.md](documentation/e2e-scenarios.md) — what each `infra/e2e_scenario*.sh` exercises.
+- [documentation/andreas.md](documentation/andreas.md) — notes on the upstream ANDREAS design.
+- [documentation/report/](documentation/report/) — the project's thesis report (LaTeX + PDF).
+- [documentation/external/](documentation/external/) — third-party reference PDFs (ANDREAS deliverables, GPUspb paper, Polimi server notes).
+
+---
+
+## License
+
+[MIT](LICENSE).

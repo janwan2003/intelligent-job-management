@@ -15,7 +15,12 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from psycopg.types.json import Json
 from psycopg_pool import AsyncConnectionPool
-from shared.constants import PG_NOTIFY_SCHEDULE, PG_NOTIFY_SLOT_FREED, JobStatus
+from shared.constants import (
+    PG_NOTIFY_SCHEDULE,
+    PG_NOTIFY_SLOT_FREED,
+    JobStatus,
+    SlotFreedReason,
+)
 
 import src.state as state
 from src.cluster import cluster
@@ -29,6 +34,40 @@ from src.profiling import scheduler
 from src.routers import router
 
 logger = logging.getLogger(__name__)
+
+
+def parse_slot_payload(raw: str | None) -> tuple[str, int, SlotFreedReason] | None:
+    """Parse a slot-freed NOTIFY payload.
+
+    New format: ``"<node_id>:<n_gpus>:<reason>"``.
+    Legacy    : ``"<node_id>:<n_gpus>"`` — default reason ``TERMINAL``
+    (safe — wakes the optimiser), so rolling worker deploys don't drop
+    slot-release events mid-upgrade.
+
+    Hoisted to module scope so the unit tests can exercise it directly
+    without instantiating the FastAPI lifespan.
+    """
+    payload = (raw or "").strip()
+    if not payload:
+        return None
+    parts = payload.split(":")
+    if len(parts) not in (2, 3):
+        logger.warning("malformed slot-freed payload: %r", payload)
+        return None
+    try:
+        n_gpus = int(parts[1])
+    except ValueError:
+        logger.warning("malformed slot-freed payload: %r", payload)
+        return None
+    node_id = parts[0]
+    if len(parts) == 2:
+        return node_id, n_gpus, SlotFreedReason.TERMINAL
+    try:
+        reason = SlotFreedReason(parts[2])
+    except ValueError:
+        logger.warning("unknown slot-freed reason in payload %r — defaulting to TERMINAL", payload)
+        reason = SlotFreedReason.TERMINAL
+    return node_id, n_gpus, reason
 
 
 @asynccontextmanager
@@ -91,12 +130,20 @@ async def lifespan(_app: FastAPI) -> AsyncGenerator[None]:
                     type_id,
                     gpu_config,
                 )
+            # Keep is_profiling_run=TRUE if this instance still has unmeasured
+            # claims — otherwise the long-lease GC could collect them on its
+            # 60-min tick and the remaining profile cells would never dispatch.
+            cur = await pconn.execute(
+                "SELECT 1 FROM profiling_results WHERE instance_id = %s AND duration_seconds IS NULL LIMIT 1",
+                (job_id,),
+            )
+            still_owes = (await cur.fetchone()) is not None
             await pconn.execute(
                 """UPDATE jobs
                    SET status = %s, assigned_node = NULL, assigned_gpu_config = NULL,
-                       is_profiling_run = FALSE, updated_at = %s
+                       is_profiling_run = %s, updated_at = %s
                    WHERE id = %s""",
-                (JobStatus.QUEUED, now, job_id),
+                (JobStatus.QUEUED, still_owes, now, job_id),
             )
 
         logger.info(
@@ -190,27 +237,24 @@ async def lifespan(_app: FastAPI) -> AsyncGenerator[None]:
                     job_id[:8],
                 )
                 return
-            # Record pending eviction so the scheduler treats the slot as freed
-            # before the worker's /stop commit lands.
-            if grow and grow[2] and grow[3]:
-                state.pending_evictions[job_id] = (grow[2], dict(grow[3]))
-            try:
-                await state.job_runner.stop(job_id, reason="auto")
-                logger.info("Issued preempt /stop for job %s (slot release awaits NOTIFY)", job_id[:8])
-                # stop() is fire-and-forget for remote workers; wait for the row
-                # to actually leave RUNNING/PROFILING before clearing the eviction.
-                deadline = asyncio.get_running_loop().time() + 30
-                while asyncio.get_running_loop().time() < deadline:
-                    await asyncio.sleep(0.5)
-                    async with state.get_conn() as cconn, cconn.cursor() as ccur:
-                        await ccur.execute("SELECT status FROM jobs WHERE id = %s", (job_id,))
-                        crow = await ccur.fetchone()
-                    if not crow or crow[0] not in (JobStatus.RUNNING, JobStatus.PROFILING):
-                        break
-            finally:
-                state.pending_evictions.pop(job_id, None)
+            # NOTE on the post-pending_evictions invariant.  An earlier version
+            # of this code tracked the (node, gpu_config) of every in-flight
+            # stop in ``state.pending_evictions`` and ``get_node_gpu_usage``
+            # subtracted those slots so the scheduler treated them as already
+            # freed.  That mechanism is gone: the scheduler view now treats
+            # only RUNNING/PROFILING rows (+ unmeasured profile claims) as
+            # occupied, so a row that is still RUNNING during the stop drain
+            # *already* looks occupied to the next scheduler pass.  This is
+            # the more conservative direction — it closes the 2+ GPU
+            # staggered-commit race (where the first eviction commit let a
+            # standard run claim the half-freed slot before the second
+            # commit landed) at the cost of a brief window where the
+            # optimiser may decline to place into a slot that will free
+            # within seconds.  Do NOT reintroduce eviction tracking without
+            # re-examining that trade-off.
+            await state.job_runner.stop(job_id, reason="auto")
+            logger.info("Issued preempt /stop for job %s (slot release awaits NOTIFY)", job_id[:8])
         except Exception:
-            state.pending_evictions.pop(job_id, None)
             logger.exception("Failed to issue preempt for job %s", job_id[:8])
 
     # Dispatch tasks live on ``state`` so the reaper can cancel a stuck task
@@ -265,64 +309,48 @@ async def lifespan(_app: FastAPI) -> AsyncGenerator[None]:
         """
         cutoff = datetime.now(UTC) - timedelta(seconds=_STUCK_DISPATCH_THRESHOLD_S)
         async with state.get_conn() as conn:
-            # container_name IS NULL excludes rows the worker has already claimed
-            # — without this the reaper races worker claim-commit and bounces
-            # an actively-dispatching job to another node.
+            # Ownership is decided in-process: a QUEUED row with assigned_node
+            # set is the API's responsibility iff ``_dispatch_tasks[jid]`` is
+            # alive.  If no live task exists, the row is orphaned regardless
+            # of what the worker has written to container_name.
             cur = await conn.execute(
                 """SELECT id, assigned_node, assigned_gpu_config FROM jobs
                    WHERE status = %s AND assigned_node IS NOT NULL
-                     AND container_name IS NULL
                      AND updated_at < %s""",
                 (JobStatus.QUEUED, cutoff),
             )
             stuck = await cur.fetchall()
-            tasks_to_await: list[asyncio.Task[None]] = []
             needs_drift_recover = False
+            reset_any = False
             for jid, node, gpu_config in stuck:
+                inflight = _dispatch_tasks.get(jid)
+                if inflight is not None and not inflight.done():
+                    # Live dispatch task — the API still owns this row; leave it.
+                    continue
                 n = sum(int(v) for v in (gpu_config or {}).values())
-                # Conditional UPDATE repeats the container_name IS NULL guard so a
-                # worker that just-now claimed the row is respected.
                 ucur = await conn.execute(
                     """UPDATE jobs
                        SET assigned_node = NULL, assigned_gpu_config = NULL,
                            updated_at = %s
                        WHERE id = %s AND status = %s AND assigned_node = %s
-                         AND container_name IS NULL
                        RETURNING id""",
                     (datetime.now(UTC), jid, JobStatus.QUEUED, node),
                 )
                 if not await ucur.fetchone():
                     continue
-
-                inflight = _dispatch_tasks.get(jid)
-                if inflight is not None and not inflight.done():
-                    # The task's BaseException handler releases the permit (or no-ops).
-                    inflight.cancel()
-                    tasks_to_await.append(inflight)
-                    logger.warning(
-                        "Reset stuck QUEUED job %s on %s (%dx %s) — cancelled in-flight dispatch task",
-                        jid[:8],
-                        node,
-                        n,
-                        gpu_config,
-                    )
-                else:
-                    # No live task: a direct release() would underflow if the slot
-                    # was never acquired.  Defer to drift-recover which rebases
-                    # _used from the DB authoritative count.
-                    needs_drift_recover = True
-                    logger.warning(
-                        "Reset stuck QUEUED job %s on %s (%dx %s) — no dispatch task; queuing drift-recover sweep",
-                        jid[:8],
-                        node,
-                        n,
-                        gpu_config,
-                    )
+                reset_any = True
+                # No live task: a direct release() would underflow if the slot
+                # was never acquired.  Defer to drift-recover which rebases
+                # _used from the DB authoritative count.
+                needs_drift_recover = True
+                logger.warning(
+                    "Reset stuck QUEUED job %s on %s (%dx %s) — no dispatch task; queuing drift-recover sweep",
+                    jid[:8],
+                    node,
+                    n,
+                    gpu_config,
+                )
             await conn.commit()
-
-        # Wait for cancellations to finish releasing their permits.
-        if tasks_to_await:
-            await asyncio.gather(*tasks_to_await, return_exceptions=True)
 
         # Rebase _used from the DB authority for stuck rows with no live task.
         if needs_drift_recover and state.node_slots is not None:
@@ -330,6 +358,13 @@ async def lifespan(_app: FastAPI) -> AsyncGenerator[None]:
                 await state.node_slots.recover_from_drift(state.get_conn)
             except Exception:
                 logger.exception("Reaper drift-recover sweep failed")
+
+        # Any reset means a QUEUED row now has no node — the optimiser must
+        # re-place it.  Without this the planned-channel preempt path leaves
+        # the row idle forever (no wake source after the reaper cancels the
+        # in-flight dispatch task).
+        if reset_any:
+            notify_event.set()
 
     async def _schedule_waiting_jobs() -> None:
         """Run the optimizer, then spawn parallel preempt/dispatch tasks.
@@ -341,15 +376,7 @@ async def lifespan(_app: FastAPI) -> AsyncGenerator[None]:
         """
         async with state.schedule_lock:
             await _reset_stuck_queued_assignments()
-            # Reclaim every stale profile claim before the optimizer reads
-            # ``profiling_results``.  Without this, a claim row whose owning
-            # instance was repurposed (is_profiling_run flipped to FALSE) or
-            # terminated mid-profile sits forever, makes ``remaining`` look
-            # empty for that config, and permanently blocks re-profile
-            # attempts.  Cheap query (indexed on instance_id / job_id).
             async with state.get_conn() as conn:
-                await scheduler.sweep_all_stale_claims(conn)
-                await conn.commit()
                 node_gpu_usage = await scheduler.get_node_gpu_usage(conn)
 
         # Optimizer call OUTSIDE the schedule lock — see docstring.
@@ -522,10 +549,27 @@ async def lifespan(_app: FastAPI) -> AsyncGenerator[None]:
             task.add_done_callback(_cleanup)
 
     async def _queue_watcher() -> None:
-        """Safety net: retry scheduling every 60 s in case something was missed."""
+        """Safety net: retry scheduling every 60 min in case something was missed.
+
+        Lowered cadence (was 60 s).  Periodic ticks were contributing to
+        the RG random-swap noise: every minute, with cost-equivalent
+        placements on the cost surface, RG would re-roll its seed and
+        propose a fresh tie-breaking swap even when nothing in the world
+        had changed.  We rely instead on NOTIFY-driven wakes for real
+        state changes and on the 15-s drift heartbeat for in-memory/DB
+        divergence.
+        """
         while True:
-            await asyncio.sleep(60)
+            await asyncio.sleep(60 * 60)
             try:
+                # GC orphaned profile claims first (long-lease safety net);
+                # then run the normal schedule pass.  The lifecycle paths
+                # (DELETE /jobs, worker reconcile on FAILED) clean up claims
+                # promptly — this only catches what they miss (API crash
+                # mid-claim, worker disappearance before reconcile).
+                async with state.get_conn() as conn:
+                    await scheduler.gc_orphaned_claims(conn)
+                    await conn.commit()
                 await _schedule_waiting_jobs()
             except Exception:
                 logger.exception("Queue watcher error")
@@ -585,16 +629,26 @@ async def lifespan(_app: FastAPI) -> AsyncGenerator[None]:
                 logger.exception("Scheduler pass triggered by notify failed")
 
     async def _slot_listener() -> None:
-        """Release per-node slot permits when workers fire ``ijm_slot_freed``.
+        """LISTEN ijm_slot_freed: release the permit and (conditionally) wake the optimiser.
 
-        Payload is ``"<node_id>:<n_gpus>"``.  Receipt of a notification means
-        the worker has fully cleaned up that slot's container, so the
-        semaphore release is safe.
+        Payload is "<node_id>:<n_gpus>:<reason>".  Receipt means the worker
+        has fully cleaned up that slot's container.
 
-        On every reconnect we also call ``recover_from_drift`` to catch up on
-        NOTIFYs lost during the disconnect window — without this, a tunnel
-        drop while a job completes leaves the API holding a permit that can
-        never be released.
+        The wake is gated by reason:
+        - TERMINAL / USER_STOP / ORPHAN_DRAIN: external event — wake the
+          optimiser so the freed slot can be reassigned.
+        - AUTO_PREEMPT: the API's own ``_preempt_and_release`` issued this
+          /stop as part of an in-flight plan.  The dispatch step of that
+          same plan will acquire the just-released slot via the
+          ``node_slots.release()`` we did synchronously above; re-running
+          the optimiser here would let RG's near-tie nondeterminism flip
+          the plan we are still executing.  Skip the wake.
+
+        Plan-execution safety net is preserved: if a planned preempt
+        somehow fails to be followed by its planned dispatch (worker
+        hang, dispatch exception, etc.), the dispatch-exception path,
+        the 15-s drift watcher, the stuck-dispatch reaper, and the 60-min
+        queue watcher all still wake the optimiser independently.
         """
         while True:
             try:
@@ -612,20 +666,19 @@ async def lifespan(_app: FastAPI) -> AsyncGenerator[None]:
                         except Exception:
                             logger.exception("Slot listener: drift recovery failed")
                     async for n in conn.notifies():
-                        payload = (n.payload or "").strip()
-                        if not payload:
+                        parsed = parse_slot_payload(n.payload)
+                        if parsed is None or state.node_slots is None:
                             continue
-                        try:
-                            node_id, n_str = payload.rsplit(":", 1)
-                            count = int(n_str)
-                        except ValueError:
-                            logger.warning("malformed slot-freed payload: %r", payload)
-                            continue
-                        if state.node_slots is None:
-                            continue
+                        node_id, count, reason = parsed
                         state.node_slots.release(node_id, count)
-                        # Wake scheduler so the vacant slot can be reused
-                        # (and migrations can apply the optimizer's new placement).
+                        if reason == SlotFreedReason.AUTO_PREEMPT:
+                            logger.info(
+                                "slot freed by auto-preempt on %s (%d GPU) — skipping wake "
+                                "(in-flight plan's dispatch will pick it up)",
+                                node_id,
+                                count,
+                            )
+                            continue
                         notify_event.set()
             except Exception:
                 logger.warning("Slot listener lost connection, reconnecting in 5s")

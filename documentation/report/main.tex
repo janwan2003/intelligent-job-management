@@ -1,104 +1,50 @@
 \input{commandsFile}
-\usepackage{calc}
+
+% Thesis metadata used by \makeOwnTitle (pracamgr.cls).
+\autor{Jan Wangrat}{}
+\title{Intelligent Job Management}
+\kierunek{Computer Science and Engineering}
+\opiekun{Prof. Danilo Ardagna\\
+  Politecnico di Milano\\
+  with Federica Filippini, Ph.D. Candidate}
+\date{\today}
+\keywords{GPU scheduling, deep learning, job management, profile-aware
+optimisation, distributed systems, FastAPI, PostgreSQL, Docker}
 
 \begin{document}
+\makeOwnTitle
 
-%TITLE PAGE
+\begin{abstract}
+Intelligent Job Management (IJM) is~a~scheduler for~shared GPU clusters
+that combines profile-aware placement, deadline-driven preemption,
+and~cross-version checkpoint resume.  It~extends the~ANDREAS project
+(Politecnico di~Milano) from a~single-host prototype to~a~distributed
+control plane: one FastAPI service drives per-node workers over
+SSH-tunnelled HTTP, an~external GPUspb optimiser handles standard-run
+placement, and~training jobs migrate between heterogeneous GPU
+generations (A40, QuadroP600) without losing progress.  The~report
+describes the~deployment topology, the~four-phase scheduling pipeline,
+the~configuration surface, and~two end-to-end scenarios that exercise
+the~system on~a~two-node cluster.
+\end{abstract}
 
-\begin{titlepage}
-
-%LOGO
-
-{\begin{table}[t!]
-\centering
-\begin{tabu} to \textwidth {X[1.3,r,p] X[1.7,l,p] }
-\includegraphics[width=5cm]{Images/PolimiLogo} &
-\textcolor{Blue}
-{\textbf{\small{\projectName\ -- \authors}}} \\
-\end{tabu}
-\end{table}}~\\ [5cm]
-
-%TITLE
-
-\begin{flushleft}
-
-{\textcolor{Blue}{\textbf{\Huge{\projectName}}}} \\ [0.5cm]
-{\textcolor{Blue}{\textbf{\Large{Final Report}}}} \\ [1cm]
-
-\end{flushleft}
-
-\vfill
-
-\begin{flushleft}
-\textbf{Author:} \authors \\[0.2cm]
-\textbf{Supervisor:} \professor \\[0.2cm]
-\textbf{Date:} \today
-\end{flushleft}
-
-\end{titlepage}
-
-%Define deliverable specific info
-\begin{table}[h!]
-\begin{tabu} to \textwidth { X[0.3,r,p] X[0.7,l,p] }
-\hline
-
-\textbf{Deliverable:} & Final Report \\
-\textbf{Title:} & \projectName \\
-\textbf{Author:} & \authors \\
-\textbf{Supervisor:} & \professor \\
-\textbf{Version:} & 1.0 \\
-\textbf{Date:} & \today \\
-\hline
-\end{tabu}
-\end{table}
-
-
-
-
-\setcounter{page}{2}
-
-
-%------------------------------------------------------------------------------------------------------------------------------------------------
-\newpage
-\addcontentsline{toc}{section}{Table of Contents}
 \tableofcontents
-\newpage
-\addcontentsline{toc}{section}{List of Figures}
-\listoffigures
-\addcontentsline{toc}{section}{List of Tables}
-\listoftables
 
-%------------------------------------------------------------------------------------------------------------------------------------------------
-\clearpage
-{\color{Blue}{\section{Introduction}}}
-\label{sect:introduction}
+\chapter{Introduction}\label{ch:introduction}
 \input{Files/introduction}
 
-%------------------------------------------------------------------------------------------------------------------------------------------------
-\clearpage
-{\color{Blue}{\section{System Architecture}}}
-\label{sect:architecture}
+\chapter{System Architecture}\label{ch:architecture}
 \input{Files/architecture}
 
-%------------------------------------------------------------------------------------------------------------------------------------------------
-\clearpage
-{\color{Blue}{\section{Configuration \& Job Submission}}}
-\label{sect:config}
+\chapter{Configuration and Job Submission}\label{ch:config}
 \input{Files/config}
 
-%------------------------------------------------------------------------------------------------------------------------------------------------
-\clearpage
-{\color{Blue}{\section{End-to-End Scenarios}}}
-\label{sect:e2e}
+\chapter{End-to-End Scenarios}\label{ch:e2e}
 \input{Files/e2e}
 
-%------------------------------------------------------------------------------------------------------------------------------------------------
-\clearpage
-\addcontentsline{toc}{section}{References}
 \nocite{andreas}
-\bibliographystyle{plain}
+\bibliographystyle{alpha}
 \bibliography{main}
-%------------------------------------------------------------------------------------------------------------------------------------------------
-
+\addcontentsline{toc}{chapter}{Bibliography}
 
 \end{document}

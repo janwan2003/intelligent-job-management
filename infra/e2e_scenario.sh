@@ -16,9 +16,15 @@
 #                                origin and the legacy-format checkpoint
 #                                loads cleanly.
 #
-# Default job type is ``efficientnet`` (CNN that genuinely benefits from
-# DataParallel across 2 GPUs).  Override:
-#   JOB_TYPE=lstm-small bash infra/e2e_scenario.sh
+# Default job type is ``cnn_big`` — this is the type documented in the
+# thesis Scenario 1 (see documentation/report/Files/e2e.tex:147 which
+# references this script as ``JOB_TYPE=cnn_big bash infra/e2e_scenario.sh``).
+# cnn_big uses purely synthetic 128x128x3 tensors so it has no torchvision
+# dataset-staging dependency, and its per-epoch compute is heavy enough to
+# amortise the DataParallel sync overhead on BOTH A40 and P600 — making it
+# the only type whose 2-GPU bundle is observably faster than the 1-GPU one
+# on both classes of hardware.  Override e.g. ``JOB_TYPE=lstm-small`` if
+# you want a faster sanity run on MNIST.
 #
 # Usage:
 #   bash infra/e2e_scenario.sh                # default settings
@@ -27,11 +33,7 @@ set -euo pipefail
 
 API="${API:-http://localhost:8000}"
 NODE_A="${NODE_A:-polimi}"       # matemagician SSH alias
-# Default is ``lstm-small``: MNIST is reliably pre-staged on both nodes
-# and PyTorch 1.5.1 supports all the ops we use.  The legacy CIFAR-10
-# integrity-check fails intermittently on polimi-gpu's modern torchvision,
-# so use ``JOB_TYPE=convnet`` only after fixing that staging.
-JOB_TYPE="${JOB_TYPE:-lstm-small}"
+JOB_TYPE="${JOB_TYPE:-cnn_big}"
 IMAGE="${IMAGE:-wangrat/ijm-${JOB_TYPE}:latest}"
 EPOCHS="${EPOCHS:-50}"
 URGENT_EPOCHS="${URGENT_EPOCHS:-200}"   # URGENT runs ~4× longer so Stages 3-4 have a live preempt victim+running job to act on
@@ -117,12 +119,16 @@ pass "DB + on-disk state cleared"
 # Profiling sweep with configs_per_job=2 still covers every (node, GPU-count)
 # cell, including 2-GPU bundles on both A40 and QuadroP600.
 log "Stage 1: submit 4 patient ${JOB_TYPE} jobs"
-DL_TIGHT=$(date -u -d '+15 minutes' +%Y-%m-%dT%H:%M:%SZ)
+DL_TIGHT=$(date -u -d '+30 minutes' +%Y-%m-%dT%H:%M:%SZ)
 DL_SLACK=$(date -u -d '+2 hours' +%Y-%m-%dT%H:%M:%SZ)
-JOB1=$(submit_job 4 "$DL_TIGHT"); sleep 5
-JOB2=$(submit_job 4 "$DL_TIGHT"); sleep 5
-JOB3=$(submit_job 2 "$DL_SLACK"); sleep 5
-JOB4=$(submit_job 1 "$DL_SLACK")
+J1_EPOCHS=75
+J2_EPOCHS=75
+J3_EPOCHS=50
+J4_EPOCHS=25
+JOB1=$(submit_job 4 "$DL_TIGHT" "$J1_EPOCHS"); sleep 5
+JOB2=$(submit_job 4 "$DL_TIGHT" "$J2_EPOCHS"); sleep 5
+JOB3=$(submit_job 2 "$DL_SLACK" "$J3_EPOCHS"); sleep 5
+JOB4=$(submit_job 1 "$DL_SLACK" "$J4_EPOCHS")
 log "  ids: ${JOB1:0:8} ${JOB2:0:8} ${JOB3:0:8} ${JOB4:0:8}"
 
 log "  waiting for profile sweep complete + ≥2 RUNNING (≤ 12 min)…"
@@ -169,6 +175,9 @@ log "  pre-urgent RUNNING (id@node): $(echo "$PRE_URGENT_RUNNING" | jq -r 'map("
 # Submit an URGENT prio=5 job with a deadline so tight every node is at least
 # somewhat tardy; A40 is dramatically less tardy than P600, so the optimizer
 # is forced to place it on A40 and evict whatever's there.
+log "  settling: 60s wait after profile sweep so the cluster reaches steady state before URGENT"
+sleep 60
+
 log "Stage 2: submit URGENT ${JOB_TYPE} (priority=$PRIORITY_MAX, deadline +10 min, epochs=$URGENT_EPOCHS)"
 URGENT_DL=$(date -u -d '+10 minutes' +%Y-%m-%dT%H:%M:%SZ)
 JOB_URGENT=$(submit_job "$PRIORITY_MAX" "$URGENT_DL" "$URGENT_EPOCHS") || fail "POST /jobs urgent rejected"
@@ -202,40 +211,11 @@ done
 pass "auto-preempt victim: ${VICTIM:0:8} (origin: $VICTIM_ORIGIN, status: $(job_field "$VICTIM" status))"
 
 # -----------------------------------------------------------------------------
-# Stage 3 — Manual user-stop on a still-running job
+# Stage 3 — (removed)  Manual user-stop has been intentionally dropped from
+# the scenario to keep all preempts attributable to the optimiser/cascade
+# logic.  STOP_TARGET / user-stop machinery deleted; downstream assertions
+# adjusted to no longer require a sticky PREEMPTED row.
 # -----------------------------------------------------------------------------
-# Pick the lowest-priority job currently RUNNING (excluding the URGENT) and
-# issue /stop?reason=user.  Verify the row transitions to PREEMPTED and stays
-# there — manual stops are sticky (no automatic resume).
-# Settle gap: let URGENT actually run for a bit before the manual stop
-# fires, so the chart shows user-stop as a clearly-separate event around
-# minute~4, not piggy-backed on the auto-preempt cascade at $t\sim2$\,min.
-USER_STOP_SETTLE_S="${USER_STOP_SETTLE_S:-90}"
-log "Stage 3: settling ${USER_STOP_SETTLE_S}s before issuing user-stop…"
-sleep "$USER_STOP_SETTLE_S"
-
-log "Stage 3: manual user-stop on a running non-urgent job"
-# Exclude both URGENT and the auto-preempt victim (which may have just
-# resumed during the settle gap).  We want user-stop to act on a
-# separate, untouched job so the chart shows it as a distinct event.
-# Retry a few times — the cluster may be mid-cascade when this fires.
-STOP_TARGET=""
-for _ in $(seq 20); do
-    STOP_TARGET=$(all_jobs | jq -r --arg urg "$JOB_URGENT" --arg vic "$VICTIM" \
-        "[.[] | select(.status == \"RUNNING\" and .id != \$urg and .id != \$vic)] | sort_by(.priority)[0].id // empty")
-    [[ -n "$STOP_TARGET" ]] && break
-    sleep 1
-done
-[[ -n "$STOP_TARGET" ]] || fail "no RUNNING non-urgent job available for manual stop"
-STOP_ORIGIN=$(job_field "$STOP_TARGET" assigned_node)
-log "  user-stopping ${STOP_TARGET:0:8} (on $STOP_ORIGIN)"
-curl -fsS -X POST "$API/jobs/$STOP_TARGET/stop" >/dev/null \
-    || fail "POST /jobs/$STOP_TARGET/stop failed"
-
-wait_for "user-stop landed" 60 3 \
-    "[.[] | select(.id == \"$STOP_TARGET\" and .status == \"PREEMPTED\")] | length == 1" \
-    || fail "manual stop didn't reach PREEMPTED in 60s"
-pass "manual stop: ${STOP_TARGET:0:8} → PREEMPTED (sticky)"
 
 # -----------------------------------------------------------------------------
 # Stage 4 — Cross-node resume of the auto-preempt victim
@@ -278,7 +258,6 @@ wait_for "all terminal" "$TERMINAL_TIMEOUT_S" 10 \
 succ=$(count_status SUCCEEDED); fail_n=$(count_status FAILED); preem=$(count_status PREEMPTED)
 log "  terminal counts: SUCCEEDED=$succ FAILED=$fail_n PREEMPTED=$preem"
 [[ "$succ" -ge 4 ]] || warn "expected ≥4 SUCCEEDED, got $succ"
-[[ "$preem" -ge 1 ]] || warn "expected ≥1 PREEMPTED (the user-stopped job), got $preem"
 [[ "$fail_n" == "0" ]] || fail "$fail_n job(s) FAILED — this is fatal"
 
 # Zombie containers — none should remain on either node.

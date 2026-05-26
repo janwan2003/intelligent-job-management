@@ -18,7 +18,9 @@ from shared.constants import (
     PG_NOTIFY_SLOT_FREED,
     RUNS_DIR,
     JobStatus,
+    SlotFreedReason,
 )
+from shared.profiling_sql import delete_unmeasured_claims
 
 from constants import CHECKPOINT_DIR, JOB_ID_DISPLAY_LENGTH, NODE_ID, RUNNABLE_STATUSES, container_name_for
 from db import conn, fetch_job, update_job
@@ -181,20 +183,29 @@ async def _stream_output(
     stdout = process.stdout
     if stdout is None:
         return
-    try:
-        with open(log_path, "a") as log_file:
-            while True:
-                line = await loop.run_in_executor(None, stdout.readline)
-                if not line:
-                    break
-                stripped = line.rstrip()
-                logger.info("[Job %s] %s", job_id[:JOB_ID_DISPLAY_LENGTH], stripped)
-                log_file.write(line)
-                log_file.flush()
-                match = PROGRESS_RE.search(stripped)
-                if match:
-                    epoch_num = int(match.group(1))
-                    progress = f"{epoch_num}/{match.group(2)}"
+
+    # Coalescing progress writer: the reader pushes only the latest progress
+    # into ``pending``; a background task flushes it via a short-lived
+    # connection at most once per PROGRESS_FLUSH_INTERVAL_S.  Opening a fresh
+    # connection per epoch line over the SSH-tunnelled DB took ~5s/line on
+    # polimi-gpu, making the reader fall progressively behind the trainer and
+    # /stop drains hit the 60s timeout.
+    PROGRESS_FLUSH_INTERVAL_S = 1.0
+    pending: dict[str, str | None] = {"progress": None}
+    wakeup = asyncio.Event()
+    stop_writer = asyncio.Event()
+    row_lost = False
+
+    async def _writer() -> None:
+        nonlocal row_lost
+        last_written: str | None = None
+        while True:
+            with contextlib.suppress(TimeoutError):
+                await asyncio.wait_for(wakeup.wait(), timeout=PROGRESS_FLUSH_INTERVAL_S)
+            wakeup.clear()
+            progress = pending["progress"]
+            if progress is not None and progress != last_written:
+                try:
                     async with conn() as c, c.cursor() as cur:
                         await cur.execute(
                             "UPDATE jobs SET progress = %s, updated_at = %s "
@@ -209,19 +220,54 @@ async def _stream_output(
                         )
                         rowcount = cur.rowcount
                         await c.commit()
+                    last_written = progress
                     if rowcount == 0:
-                        logger.warning(
-                            "Job %s row no longer owns container %s — stopping stream",
-                            job_id[:JOB_ID_DISPLAY_LENGTH],
-                            container_name,
-                        )
+                        row_lost = True
                         return
+                except Exception:
+                    logger.warning("Progress write for job %s failed", job_id[:JOB_ID_DISPLAY_LENGTH], exc_info=True)
+            if stop_writer.is_set() and pending["progress"] == last_written:
+                return
+
+    writer_task = asyncio.create_task(_writer())
+    try:
+        with open(log_path, "a") as log_file:
+            while True:
+                if row_lost:
+                    logger.warning(
+                        "Job %s row no longer owns container %s — stopping stream",
+                        job_id[:JOB_ID_DISPLAY_LENGTH],
+                        container_name,
+                    )
+                    break
+                line = await loop.run_in_executor(None, stdout.readline)
+                if not line:
+                    break
+                stripped = line.rstrip()
+                logger.info("[Job %s] %s", job_id[:JOB_ID_DISPLAY_LENGTH], stripped)
+                log_file.write(line)
+                log_file.flush()
+                match = PROGRESS_RE.search(stripped)
+                if match:
+                    epoch_num = int(match.group(1))
+                    pending["progress"] = f"{epoch_num}/{match.group(2)}"
+                    wakeup.set()
                     if is_profiling:
                         epoch_timestamps.append((epoch_num, time.monotonic()))
     except Exception:
         # An error here means we lose the rest of the container output and any
         # further epoch timestamps — surface it instead of swallowing.
         logger.warning("Output streaming for job %s ended unexpectedly", job_id[:JOB_ID_DISPLAY_LENGTH], exc_info=True)
+    finally:
+        # Final flush: signal writer to drain the latest progress, then await.
+        stop_writer.set()
+        wakeup.set()
+        with contextlib.suppress(Exception):
+            await asyncio.wait_for(writer_task, timeout=10.0)
+        if not writer_task.done():
+            writer_task.cancel()
+            with contextlib.suppress(Exception):
+                await writer_task
 
 
 async def _run_job(job_id: str) -> None:
@@ -395,9 +441,12 @@ async def _run_job(job_id: str) -> None:
 
             async def _notify_slot_freed() -> None:
                 if slot_node and slot_n > 0:
+                    # TERMINAL: the container ended of its own accord
+                    # (SUCCEEDED / FAILED) — external from the API's
+                    # perspective, so the listener will wake the optimiser.
                     await c.execute(
                         "SELECT pg_notify(%s, %s)",
-                        (PG_NOTIFY_SLOT_FREED, f"{slot_node}:{slot_n}"),
+                        (PG_NOTIFY_SLOT_FREED, f"{slot_node}:{slot_n}:{SlotFreedReason.TERMINAL}"),
                     )
                 # Always commit so the preceding update_job() persists even
                 # when there is no slot to free (already-cleared assignment).
@@ -450,6 +499,11 @@ async def _run_job(job_id: str) -> None:
                     return
                 logger.error("Job %s failed (exit=%d)", job_id[:JOB_ID_DISPLAY_LENGTH], exit_code)
                 await update_job(c, job_id, status=JobStatus.FAILED, exit_code=exit_code)
+                # Drop unmeasured profile claims for this dead instance — the
+                # API no longer runs a periodic sweep, so without this the
+                # cells stay reserved until the 60-min lease watcher fires.
+                async with c.cursor() as _gc_cur:
+                    await delete_unmeasured_claims(_gc_cur, job_id)
                 await _notify_slot_freed()
                 return
 
@@ -479,14 +533,21 @@ async def _run_job(job_id: str) -> None:
                 slot_n = sum(int(v) for v in (slot_cfg or {}).values())
 
                 await update_job(c, job_id, status=JobStatus.FAILED)
+                # Drop unmeasured profile claims for this dead instance — the
+                # API no longer runs a periodic sweep.
+                async with c.cursor() as _gc_cur:
+                    await delete_unmeasured_claims(_gc_cur, job_id)
                 # Without this NOTIFY a pre-Phase-4 exception (e.g. mkdir
                 # failure, docker daemon hiccup, runtime image missing) would
                 # leak the API permit forever — Phase 4 normally emits this
                 # but we never got there.
                 if slot_node and slot_n > 0:
+                    # Pre-Phase-4 failure: container never started, status
+                    # forced to FAILED.  External from the API's view ->
+                    # TERMINAL reason so the listener wakes the optimiser.
                     await c.execute(
                         "SELECT pg_notify(%s, %s)",
-                        (PG_NOTIFY_SLOT_FREED, f"{slot_node}:{slot_n}"),
+                        (PG_NOTIFY_SLOT_FREED, f"{slot_node}:{slot_n}:{SlotFreedReason.TERMINAL}"),
                     )
                 await c.commit()
         except Exception:

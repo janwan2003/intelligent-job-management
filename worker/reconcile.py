@@ -3,6 +3,7 @@
 import logging
 
 from shared.constants import PG_NOTIFY_SCHEDULE, PG_NOTIFY_SLOT_FREED, JobStatus
+from shared.profiling_sql import delete_unmeasured_claims
 
 from constants import JOB_ID_DISPLAY_LENGTH, NODE_ID, container_name_for
 from db import conn, update_job
@@ -44,6 +45,11 @@ async def reconcile_job_states() -> None:
                         expected,
                     )
                     await update_job(c, job["id"], status=JobStatus.FAILED)
+                    # Drop unmeasured profile claims owned by this dead
+                    # instance — no API-side sweep runs any more, so leaving
+                    # the claim would block the cell for peers until the
+                    # long-lease GC fires from the 60-min queue watcher.
+                    await delete_unmeasured_claims(cur, job["id"])
                     if slot_node and n_gpus > 0:
                         await cur.execute(
                             "SELECT pg_notify(%s, %s)",

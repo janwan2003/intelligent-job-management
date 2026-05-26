@@ -14,6 +14,7 @@ from fastapi import APIRouter, HTTPException, Query
 from fastapi.responses import PlainTextResponse
 from psycopg.rows import dict_row
 from shared.constants import OUTPUT_LOG_FILENAME, PG_NOTIFY_SCHEDULE, RUNS_DIR, JobStatus
+from shared.profiling_sql import delete_unmeasured_claims
 
 import src.state as state
 from src.constants import RESUMABLE_STATUSES, STOPPABLE_STATUSES
@@ -288,12 +289,9 @@ async def delete_job(job_id: str) -> None:
         # measurements that other instances of the same type still rely on.
         # Completed rows (duration_seconds NOT NULL) are left alone so future
         # instances of this type continue to benefit from the cached profile.
-        async with conn.transaction():
-            await conn.execute(
-                "DELETE FROM profiling_results WHERE instance_id = %s AND duration_seconds IS NULL",
-                (job_id,),
-            )
-            await conn.execute("DELETE FROM jobs WHERE id = %s", (job_id,))
+        async with conn.transaction(), conn.cursor() as cur:
+            await delete_unmeasured_claims(cur, job_id)
+            await cur.execute("DELETE FROM jobs WHERE id = %s", (job_id,))
 
     return None
 

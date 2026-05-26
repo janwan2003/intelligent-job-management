@@ -16,7 +16,13 @@ from typing import Any
 
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import PlainTextResponse
-from shared.constants import OUTPUT_LOG_FILENAME, PG_NOTIFY_SLOT_FREED, RUNS_DIR, JobStatus
+from shared.constants import (
+    OUTPUT_LOG_FILENAME,
+    PG_NOTIFY_SLOT_FREED,
+    RUNS_DIR,
+    JobStatus,
+    SlotFreedReason,
+)
 
 from constants import JOB_ID_DISPLAY_LENGTH, NODE_ID, WORKER_PORT, container_name_for
 from db import conn, fetch_job, update_job
@@ -77,9 +83,12 @@ async def _zombie_release(job_id: str) -> None:
             slot_n = sum(int(v) for v in (slot_cfg or {}).values())
             await update_job(c, job_id, status=JobStatus.FAILED)
             if slot_node and slot_n > 0:
+                # ORPHAN_DRAIN: reconciler / zombie cleanup, e.g. a worker
+                # restart found a job marked RUNNING with no live container.
+                # External event from the API's view -> wake the optimiser.
                 await c.execute(
                     "SELECT pg_notify(%s, %s)",
-                    (PG_NOTIFY_SLOT_FREED, f"{slot_node}:{slot_n}"),
+                    (PG_NOTIFY_SLOT_FREED, f"{slot_node}:{slot_n}:{SlotFreedReason.ORPHAN_DRAIN}"),
                 )
             await c.commit()
     except Exception:
@@ -187,10 +196,17 @@ async def _stop_job_impl(job_id: str, reason: str) -> dict[str, str]:
             await update_job(c, job_id, status=new_status)
 
         # NOTIFY ijm_slot_freed when this run actually claimed the slot
-        # (includes the pre-flipped-by-API case).
+        # (includes the pre-flipped-by-API case).  Reason tagged so the
+        # API listener can tell self-inflicted stops (auto-preempt,
+        # part of an in-flight plan) from external ones (user pressed
+        # the button) and skip re-running the optimiser on its own work.
         notify_owns_slot = prev_status in (JobStatus.RUNNING, JobStatus.PROFILING) or pre_flipped_user_stop
         if prev_node and n_gpus > 0 and notify_owns_slot:
-            await c.execute("SELECT pg_notify(%s, %s)", (PG_NOTIFY_SLOT_FREED, f"{prev_node}:{n_gpus}"))
+            stop_reason = SlotFreedReason.USER_STOP if reason == "user" else SlotFreedReason.AUTO_PREEMPT
+            await c.execute(
+                "SELECT pg_notify(%s, %s)",
+                (PG_NOTIFY_SLOT_FREED, f"{prev_node}:{n_gpus}:{stop_reason}"),
+            )
         # Atomic commit of status flip + slot-freed NOTIFY — a split would
         # leave the API waiting for a release that never fires.
         await c.commit()

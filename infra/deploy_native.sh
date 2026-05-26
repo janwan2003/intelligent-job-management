@@ -58,10 +58,19 @@ for f in "${WORKER_FILES[@]}"; do
   eval "$RSYNC '$REPO_ROOT/worker/$f' '$HOST:$REMOTE_DIR/'"
 done
 eval "$RSYNC '$REPO_ROOT/shared/constants.py' '$HOST:$REMOTE_DIR/shared/'"
+eval "$RSYNC '$REPO_ROOT/shared/profiling_sql.py' '$HOST:$REMOTE_DIR/shared/'"
 
-# Ensure venv exists with required deps
+# Ensure venv exists with required deps and Python >= 3.11 (StrEnum from
+# shared/constants.py requires it).  Pick the newest python3.1x available;
+# if the existing venv is older, rebuild.
 $SSH "$HOST" "cd $REMOTE_DIR && \
-    if [ ! -d .venv ]; then python3 -m venv .venv; fi && \
+    PY=\$(for v in python3.13 python3.12 python3.11; do command -v \$v && break; done | head -1); \
+    if [ -z \"\$PY\" ]; then echo 'ERROR: need python3.11+ on remote'; exit 1; fi; \
+    if [ -d .venv ]; then \
+        VENV_VER=\$(.venv/bin/python -c 'import sys; print(sys.version_info[:2] >= (3,11))' 2>/dev/null); \
+        if [ \"\$VENV_VER\" != 'True' ]; then rm -rf .venv; fi; \
+    fi; \
+    if [ ! -d .venv ]; then \$PY -m venv .venv; fi && \
     .venv/bin/pip install --quiet --upgrade pip && \
     .venv/bin/pip install --quiet fastapi 'uvicorn[standard]' 'psycopg[binary]'"
 
@@ -73,18 +82,27 @@ $SSH "$HOST" "cd $REMOTE_DIR && \
 # sidesteps the self-match entirely.
 $SSH "$HOST" "pid=\$(ss -tlnpH 2>/dev/null | awk '\$4 ~ /:8001\$/ {print}' | grep -oE 'pid=[0-9]+' | head -1 | cut -d= -f2); [ -n \"\$pid\" ] && kill \"\$pid\" 2>/dev/null; sleep 2; ! ss -tlnp 2>/dev/null | grep -q ':8001 '"
 
-# Start fresh.  setsid + nohup so the process survives SSH disconnect.  Logs
-# to /tmp/ijm-worker.log on the remote — tail there for diagnostics.
-$SSH "$HOST" "cd $REMOTE_DIR && \
+# Start fresh.  The ``(cmd &)`` subshell-fork pattern is the only reliable
+# way to background a long-running process over SSH multiplex: even with
+# ``setsid nohup ... & disown`` and full FD redirection, SSH otherwise
+# keeps the session open as long as the bash that backgrounded the child
+# is alive (the bash itself waits in an opaque way, leaving SSH hung).
+# A subshell that forks the child and then exits lets SSH return.
+$SSH "$HOST" "cd $REMOTE_DIR && (
     DATABASE_URL='$DB_URL' \
     HOST_ROOT=$REMOTE_DIR \
     HOST_PROJECT_ROOT=$REMOTE_DIR \
     NODE_ID=$NODE_ID \
     WORKER_GPU_MODE='$WORKER_GPU_MODE' \
     IMAGE_TAG_OVERRIDE='$IMAGE_TAG_OVERRIDE' \
-    setsid nohup .venv/bin/python -m uvicorn app:app --host 0.0.0.0 --port 8001 \
-        > /tmp/ijm-worker.log 2>&1 < /dev/null & disown
-    sleep 3
-    ss -tlnp 2>/dev/null | grep ':8001 ' || (echo 'FAILED to bind 8001'; tail /tmp/ijm-worker.log; exit 1)"
+    nohup .venv/bin/python -m uvicorn app:app --host 0.0.0.0 --port 8001 \
+        > /tmp/ijm-worker.log 2>&1 < /dev/null &
+)"
+# Poll for bind in a separate SSH call so the start-step can return cleanly.
+$SSH "$HOST" "for i in \$(seq 1 30); do
+        ss -tlnp 2>/dev/null | grep -q ':8001 ' && break
+        sleep 1
+    done
+    ss -tlnp 2>/dev/null | grep ':8001 ' >/dev/null || (echo 'FAILED to bind 8001 after 30s'; tail /tmp/ijm-worker.log; exit 1)"
 
 echo "==> Native worker running on $HOST. Tail /tmp/ijm-worker.log on the host for logs."

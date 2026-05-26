@@ -1,110 +1,107 @@
 # CLAUDE.md
 
-This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+Guidance for AI pair-programming (Claude Code, claude.ai/code) on this
+repository. For human-facing setup, commands, ports, environment
+variables, and deployment, see [README.md](README.md) — this file does
+not duplicate that material.
 
-## Project Overview
+## Project, in one paragraph
 
-Intelligent Job Management (IJM) — a job management system for GPU deep learning clusters with stoppable/resumable jobs. Modeled after the ANDREAS project (Polimi). Docker-based execution with an Executor abstraction for future SLURM integration. PostgreSQL for state.
+**Intelligent Job Management (IJM)** — a job-management system for GPU
+deep-learning clusters with stoppable/resumable jobs, modelled after the
+ANDREAS project (Polimi). Docker-based execution behind an `Executor`
+abstraction (future SLURM swap); PostgreSQL for state; optional GPUspb
+optimizer for cost-aware batch scheduling. Architecture: FastAPI backend
+(`backend/src/`) dispatching over HTTP to per-node workers (`worker/`);
+React 19 SPA frontend; training containers in `runtime/`. See
+[README.md](README.md#architecture) for the full diagram and the job
+lifecycle.
 
-**Deployment target.** The only supported configuration is the **distributed cluster: API runs on the user's machine, postgres + workers run on remote GPU nodes (matemagician, polimi-gpu) reached over SSH-tunnelled HTTP.** Single-process / docker-compose-on-localhost runs are useful for development but are not the supported topology. Any tradeoff between "local-dev simplicity" and "distributed correctness" resolves toward distributed.
+## Engineering principles
 
-## Common Commands
+These are the project's load-bearing rules — keep them in mind on every
+change.
 
-### Full stack (distributed cluster — the supported path)
-```bash
-# 1. SSH tunnels to remote postgres + workers (one-shot, leave running)
-bash infra/tunnel.sh polimi   # forwards 5433, 8001, 8002 with ServerAlive*
+**No band-aids.** When you find a bug, fix the root cause — do not patch
+the symptom. If a rule of thumb (a guard, an extra `IF`, a sweep, a
+"rescue" UPDATE) compensates for a wrong invariant elsewhere, the wrong
+invariant is the bug; remove the band-aid and fix the source of truth.
+If you cannot identify a root cause, say so explicitly instead of
+inserting a heuristic. Code paths that exist only because "X sometimes
+happens" decay into load-bearing hacks; refuse to write them.
 
-# 2. Native API + dockerised optimizer + frontend.
-bash infra/launch.sh tunnel
+**One source of truth per fact.** A piece of state should be derivable
+in exactly one place. When two stores (DB row, in-memory counter, flag)
+both encode the same fact, they will drift; pick the authoritative one
+and derive the rest from it. Removing redundancy is usually the fix.
 
-# 3. Run scenarios
-bash infra/e2e_scenario.sh                # single-type (lstm-small) sweep
-bash infra/e2e_scenario_2types.sh         # lstm-small + cnn_big, urgent preempts, cross-node resume
-```
+**Never weaken a scenario assertion to make a buggy run pass.** If a
+scenario fails, either the system is wrong (fix the system) or the
+assertion is wrong (justify and rewrite the assertion). Never edit the
+scenario to side-step a real bug.
 
-### Full stack (Docker Compose, local-only — dev / smoke tests)
-```bash
-docker build -t ijm-lstm-small:dev --build-arg SCRIPT=lstm_small.py runtime/  # Build runtime image (needed first)
-mkdir -p data/pg data/checkpoints data/runs   # Create data dirs
-cd infra && docker compose up --build         # Start all services
-```
+## AI-dev gotchas
 
-### Backend (Python 3.13, uses uv)
-```bash
-cd backend
-uv sync                        # Install dependencies
-uv run pytest                  # Run tests (coverage auto-enabled)
-uv run pytest tests/test_main.py::test_health  # Run single test
-uv run ruff check .            # Lint
-uv run ruff format .           # Format
-uv run mypy src                # Type check (strict mode)
-uv run deptry .                # Check for unused/missing deps
-```
+Things that have tripped up past sessions:
 
-### Frontend (Node 23+, uses pnpm)
-```bash
-cd frontend
-pnpm install                   # Install dependencies
-pnpm dev                       # Dev server on :5173
-pnpm build                     # Type-check + production build
-pnpm lint                      # ESLint
-```
+- **Distributed is the supported topology.** API on user's machine,
+  postgres + workers on remote GPU nodes via SSH-tunnelled HTTP. The
+  local-only `docker compose up` path exists for dev convenience but is
+  **not** the target. Any tradeoff between "local-dev simplicity" and
+  "distributed correctness" resolves toward distributed.
 
-## Architecture
+- **matemagician's CUDA-10.1 ceiling.** Its NVIDIA driver (418.x) cannot
+  run the default `:latest` (PyTorch 2.6 / CUDA 12.4) images, so its
+  deploy uses `IMAGE_TAG_OVERRIDE=legacy` to rewrite the tag to the
+  PyTorch 1.5.1 / CUDA 10.1 build from `runtime/Dockerfile.legacy`. The
+  worker code must stay importable under Python 3.7 (the legacy image)
+  — `runtime/base.py` uses `from __future__ import annotations`.
 
-**Async-first, single-process** — the API handles both HTTP requests and job execution:
+- **Cross-node checkpoint resume must work across torch versions.**
+  Checkpoints are written in the pre-1.6 torch serialization format and
+  loaded with `strict=False` + try/except around the optimizer state
+  dict. `cnn_big` specifically migrates between modern A40 and legacy
+  P600 workers and exercises this path — don't tighten the loader.
 
-1. **API** (`backend/src/`) — FastAPI app. Manages job records in PostgreSQL. Contains the `JobRunner` (`job_runner.py`) which executes training containers concurrently via an `Executor` interface. Includes a `ProfilingScheduler` (`profiling.py`) that incrementally profiles ONE untested GPU configuration per submission. Optional integration with the GPUspb optimizer (`optimizer.py`) for cost-aware batch scheduling. Modular layout: `app.py` (factory + lifespan), `job_runner.py` (container execution), `executors/` (Docker/SLURM backends), `cluster.py` (ClusterManager), `profiling.py` (ProfilingScheduler), `optimizer.py` (GPUspb client), `state.py` (shared mutable state), `models.py`, `routers/`.
+- **`cnn_big` is the placement-choice scenario.** Deliberately sized so
+  per-step compute amortises DataParallel sync overhead on both GPU
+  classes (P600×2 is 1.68× faster than P600×1; A40×2 is 1.12× faster
+  than A40×1). It is what `e2e_scenario_2types.sh` uses to exercise
+  Scenario 2's 2-GPU placement path. Don't change its shape without
+  re-measuring.
 
-2. **Frontend** (`frontend/`) — React 19 SPA with Tailwind CSS + shadcn/ui components, React Router for multi-page navigation (Dashboard, Job Queue, Submit Job, Cluster Status, Profiling), TanStack React Query for data fetching (polls every 3-5s). API base URL configurable via `VITE_API_URL` env var (defaults to `http://localhost:8000`).
-   - Path alias: `@/` maps to `src/`
-   - Key directories: `src/api/` (client + React Query hooks), `src/components/ui/` (shadcn primitives), `src/components/` (custom), `src/pages/`, `src/config/features.ts` (feature flags)
+- **Profile-always policy.** The `ProfilingScheduler` runs one untested
+  GPU configuration per submission. Jobs transition
+  `QUEUED → PROFILING → QUEUED → RUNNING`. Re-queuing happens via
+  PostgreSQL `NOTIFY ijm_schedule` after profiling completes — don't
+  add an in-memory fast-path that bypasses it.
 
-3. **Runtime** (`runtime/`) — Training containers matching ANDREAS job types. Shared base class in `base.py`, individual scripts: `lstm_small.py`, `lstm_big.py`, `convnet.py`, `efficientnet.py`, `cnn_big.py`. **Two Dockerfiles**: `Dockerfile` (PyTorch 2.6 + CUDA 12.4, default `:latest` tag) and `Dockerfile.legacy` (PyTorch 1.5.1 + CUDA 10.1, `:legacy` tag — used on matemagician whose driver maxes out at CUDA 10.1). Checkpoints are saved in the **legacy (pre-1.6) torch serialization format** and loaded with `strict=False` + try/except around the optimizer-state dict, so a job can resume across nodes regardless of torch version (cnn_big specifically migrates between modern A40 and legacy P600 workers and needs this). `base.py` uses `from __future__ import annotations` to stay importable on Python 3.7 (the legacy image). `download_dataset` first tries `download=False` (uses pre-staged data at `data/datasets/MNIST/`, `data/datasets/cifar-10-batches-py/`) and only falls back to `download=True` on RuntimeError, which sidesteps the rootless-docker DNS flakiness on polimi-gpu. Each script saves checkpoints after every epoch, loads on startup if exists. No SIGTERM handling — system kills containers between epochs (at most 1 epoch lost). Real datasets: MNIST (LSTM) and CIFAR-10 (CNN/EfficientNet); synthetic 128×128×3 tensors for cnn_big (no torchvision dependency at all).
+- **Slot accounting is `pg` + `node_slots.py`.** `mem_used` is in the
+  DB; `db_used` is reconciled by a periodic drift heartbeat
+  (`IJM_DRIFT_HEARTBEAT_S`). Never paper over a slot mismatch with a
+  rescue UPDATE — fix the producer.
 
-**The cnn_big type** is a deep CNN (10 conv blocks, channels $3{\to}64{\to}128{\to}256{\to}384{\to}512$, $128{\times}128{\times}3$ input, batch 32) designed so per-step compute amortises the DataParallel sync overhead on \emph{both} GPU classes — measured profile: A40×1=6.29 s/epoch vs A40×2=5.63 s/epoch (1.12× faster on 2 GPUs); P600×1=51.06 s/epoch vs P600×2=30.32 s/epoch (1.68× faster). It is the type that exercises Scenario 2's 2-GPU placement-choice path.
+## Design docs
 
-### Executor Abstraction
-Container execution is decoupled via `src/executors/`:
-- `DockerExecutor` — runs containers via Docker CLI (current default)
-- `MockSlurmExecutor` — logs SLURM commands but runs Docker locally (for testing)
-- Future: `SlurmExecutor` for real cluster deployment
+Read these before making non-trivial scheduler or worker changes:
 
-Set via `EXECUTOR` env var: `docker` (default) or `mock-slurm`.
+- [documentation/SLOT_INVARIANTS.md](documentation/SLOT_INVARIANTS.md)
+  — the invariants the slot tracker is required to maintain.
+- [documentation/e2e-scenarios.md](documentation/e2e-scenarios.md)
+  — what each `infra/e2e_scenario*.sh` exercises and why.
+- [documentation/andreas.md](documentation/andreas.md)
+  — notes on the upstream ANDREAS design IJM is modelled after.
+- [documentation/external/](documentation/external/) — third-party
+  reference PDFs (ANDREAS deliverables, GPUspb paper).
 
-### Job State Machine
-```
-QUEUED → PROFILING → QUEUED (re-queued as standard run) → RUNNING → SUCCEEDED / FAILED
-                                                               ↘ PREEMPTED ─┬──→ QUEUED (resume)
-                                                                 FAILED ─────┘
-```
+## Common pitfalls when making changes
 
-### Data Persistence
-- PostgreSQL stores job metadata (`jobs` table) and profiling results (`profiling_results` table)
-- GPU configurations stored as JSONB (`{"A40": 2}` or `{"A40": 1, "L40S": 1}` for mixed nodes)
-- Checkpoints: `data/checkpoints/{job_id}/` mounted to container `/checkpoints`
-- Run outputs: `data/runs/{job_id}/` mounted to container `/runs`
-
-## Code Style
-
-**Python**: ruff (line-length 120, double quotes), mypy strict mode, Python 3.13 target. All functions must have type annotations. Pre-commit hooks enforce ruff + mypy.
-
-**TypeScript/React**: ESLint with react-hooks and react-refresh plugins. Tailwind CSS for styling, shadcn/ui component library. `strict: true` + `verbatimModuleSyntax` in tsconfig.
-
-## Key Environment Variables
-
-| Variable | Used by | Default in Docker Compose |
-|---|---|---|
-| `DATABASE_URL` | API | `postgresql://postgres:postgres@postgres:5432/ijm` |
-| `HOST_ROOT` | API | `/host` (maps to repo root) |
-| `HOST_PROJECT_ROOT` | API | `${PWD}/..` (host-resolvable path for Docker volumes) |
-| `EXECUTOR` | API | `docker` (or `mock-slurm`) |
-| `OPTIMIZER_URL` | API | unset (jobs wait until profiling completes, then sit idle); set to `http://optimizer:8080` for batch optimizer (required for placement). |
-| `IJM_DRIFT_HEARTBEAT_S` | API | `15` — period of the slot-tracker drift heartbeat that reconciles `mem_used` against `db_used` per node.  Lower = faster recovery from acquire/release races, higher = less per-round overhead.  Counted in the `drift_recovery_count` metric exposed at `/admin/slots`. |
-| `WORKER_GPU_MODE` | worker | `runtime` (other values: `cdi` for rootless docker on polimi-gpu, `none` for CPU only). Selects how `docker run` is told to expose GPUs to the training container. |
-| `IMAGE_TAG_OVERRIDE` | worker | unset. If set, rewrites the job's image tag (`:latest` → `:$IMAGE_TAG_OVERRIDE`). Used on matemagician (`legacy`) where the node's NVIDIA driver (418.x, CUDA 10.1 max) cannot run the default CUDA-12.4 PyTorch image. |
-
-## Ports
-
-5173 (frontend), 8000 (API), 5432 (PostgreSQL), 8080 (optimizer, optional)
+- Tests live in `backend/tests/` (real pytest suite, 6 files) and
+  `worker/tests/` (currently empty — covered only by `infra/e2e_scenario*.sh`).
+  Adding worker-side logic without an e2e to back it up is a known gap.
+- Pre-commit hooks enforce ruff + mypy strict + deptry + eslint. See
+  [.pre-commit-config.yaml](.pre-commit-config.yaml). Don't disable
+  hooks; fix the cause.
+- The PostgreSQL data volume must be mounted at `/var/lib/postgresql`
+  (not `/var/lib/postgresql/data`) — enforced by
+  `backend/tests/test_infra.py`. Postgres 18+ requirement.

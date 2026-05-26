@@ -75,10 +75,24 @@ async def handle_complete(
                 job["job_id"],
                 job["assigned_gpu_config"],
             )
+        # Keep is_profiling_run=TRUE if this instance still has unmeasured
+        # claims — otherwise the long-lease GC could collect them on its
+        # 60-min tick and the remaining profile cells would never dispatch.
+        await cur.execute(
+            "SELECT 1 FROM profiling_results WHERE instance_id = %s AND duration_seconds IS NULL LIMIT 1",
+            (job_id,),
+        )
+        still_owes = (await cur.fetchone()) is not None
+        logger.info(
+            "Profile-complete %s: still_owes=%s → is_profiling_run will be %s",
+            job_id[:JOB_ID_DISPLAY_LENGTH],
+            still_owes,
+            still_owes,
+        )
         await cur.execute(
             """UPDATE jobs SET status = %s, assigned_node = NULL, assigned_gpu_config = NULL,
-               is_profiling_run = FALSE, updated_at = %s WHERE id = %s""",
-            (JobStatus.QUEUED, now, job_id),
+               is_profiling_run = %s, updated_at = %s WHERE id = %s""",
+            (JobStatus.QUEUED, still_owes, now, job_id),
         )
         # NOTIFY in the same transaction so the scheduler wake-up can never
         # outlive an unwritten status flip (or vice versa).

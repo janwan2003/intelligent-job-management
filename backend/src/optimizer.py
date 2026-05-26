@@ -25,6 +25,11 @@ logger = logging.getLogger(__name__)
 
 OPTIMIZER_URL: str | None = os.getenv("OPTIMIZER_URL")
 
+# Gate the per-round DIAG INFO logs (OPT GATE/REQ/RESP/PARSE/CLASSIFY) so they
+# don't flood the API log in steady state.  Set OPTIMIZER_VERBOSE=1 (or any
+# non-zero int) to re-enable them when debugging scheduler decisions.
+_OPT_DIAG: bool = bool(int(os.environ.get("OPTIMIZER_VERBOSE", "0") or "0"))
+
 _PROGRESS_RE = re.compile(r"^(\d+)/(\d+)$")
 
 
@@ -216,6 +221,13 @@ async def optimize(
         # and could still claim one (type has unprofiled configs left).
         owes_profile = profiled_count_by_instance.get(instance_id, 0) < scheduler.configs_per_job
         if owes_profile and type_has_unprofiled.get(job_type_id, False):
+            if _OPT_DIAG:
+                logger.info(
+                    "OPT GATE skip job=%s owes_profile=%s type_has_unprofiled=%s",
+                    instance_id[:8],
+                    owes_profile,
+                    type_has_unprofiled.get(job_type_id, False),
+                )
             continue
 
         total_epochs = epochs_total or DEFAULT_EPOCHS_TOTAL
@@ -250,29 +262,47 @@ async def optimize(
             "ProfilingData": profiling_data,
         }
 
-        # currentScheduling represents jobs the API already placed AND that
-        # have a live container on a worker.  The optimizer's update_nGPUs()
-        # adds these GPUs back to its capacity to allow relocation — it then
-        # trusts the resulting nGPUs as the per-node cap.  So sum(
-        # currentScheduling per node) + free_nGPUs MUST equal the real
-        # total_nGPUs; otherwise the optimizer's view of capacity drifts and
-        # we get over- or under-subscription.
+        # currentScheduling represents jobs the API has placed (assigned_node
+        # + assigned_gpu_config set) and that aren't profile-owing.  The
+        # optimizer's update_nGPUs() adds these GPUs back to its capacity to
+        # allow relocation — it then trusts the resulting nGPUs as the per-
+        # node cap.  So sum(currentScheduling per node) + free_nGPUs MUST
+        # equal the real total_nGPUs; otherwise the optimizer's view of
+        # capacity drifts and we get over- or under-subscription.
         #
-        # Status filter: only RUNNING/PROFILING rows are "in place".  A
-        # QUEUED row may carry a stale assigned_node (Phase 1b wrote it, but
-        # the dispatch failed — e.g. worker couldn't pull the image).  If we
-        # let such a row into currentScheduling, downstream filters treat it
-        # as immovable and the optimizer keeps proposing the same placement
-        # forever, even though no container is actually running.  Treating
-        # it as a fresh placement instead lets the optimizer/greedy combo
-        # re-place it.  (The watchdog in app.py separately clears
-        # truly-orphaned assignments and releases their slots.)
+        # Status filter includes QUEUED so just-dispatched jobs (semaphore
+        # acquired, /run sent, worker hasn't flipped status→RUNNING yet) are
+        # treated as occupying their assigned slot.  Without this, the ~5 s
+        # window between API-dispatch and worker-RUNNING leaves the row
+        # subtracted from free_nGPUs (via get_node_gpu_usage) but not added
+        # back here — a phantom 1-GPU shortage that makes the optimizer drop
+        # a *different* co-located peer to "free room" that already exists.
+        # Stale QUEUED-with-assignment from a failed dispatch is age-gated by
+        # _STUCK_DISPATCH_THRESHOLD_S (30 s), but the reaper that acts on it
+        # only runs from _schedule_waiting_jobs (NOTIFY-driven) or from the
+        # 60-min _queue_watcher heartbeat — so the true upper bound is
+        # 30 s **plus** the time to the next scheduler wake, which can be up
+        # to ~1 h in a fully idle cluster.  Practically this is still much
+        # better than the alternative (the always-firing 5 s spurious
+        # cascade), since reserving an unused slot only delays unrelated
+        # placements; the row itself is fine.  If this bound becomes
+        # problematic, the right fix is a periodic reaper, not reverting
+        # this filter.
         #
         # We track per-node usage as we build currentScheduling and skip
         # entries that would push the sum past total_nGPUs.  Excess jobs stay
         # in jobs_payload (without a currentScheduling entry) so the optimizer
         # treats them as fresh placements rather than fixed.
-        if assigned_node and assigned_gpu_config and status in (JobStatus.RUNNING, JobStatus.PROFILING):
+        if (
+            assigned_node
+            and assigned_gpu_config
+            and status
+            in (
+                JobStatus.RUNNING,
+                JobStatus.PROFILING,
+                JobStatus.QUEUED,
+            )
+        ):
             for gpu_type, n_gpus in assigned_gpu_config.items():
                 opt_node = _opt_node_for_real(assigned_node, gpu_type, nodes_payload)
                 if opt_node is None:
@@ -320,12 +350,26 @@ async def optimize(
     if opt_verbose:
         request_body["verbose"] = opt_verbose
 
-    logger.debug(
-        "OPT REQ nodes=%s currentSched=%s jobs=%s",
-        nodes_payload,
-        list(current_scheduling.values()),
-        list(jobs_payload.keys()),
-    )
+    # DIAG: per-round payload trace.  Gated by OPTIMIZER_VERBOSE so steady-
+    # state runs stay quiet; lists each node's free GPUs by type, each job's
+    # (id[:8], prio, epochs, profiling-keys), and which jobs claimed a
+    # currentScheduling slot vs being treated as fresh.
+    if _OPT_DIAG:
+        _diag_nodes = {
+            n: {k: v for k, v in cfg.items() if k in ("GPUtype", "nGPUs", "total_nGPUs")}
+            for n, cfg in nodes_payload.items()
+        }
+        _diag_jobs = [
+            (jid[:8], jp.get("Priority"), jp.get("Epochs"), list(jp.get("ProfilingData", {}).keys()))
+            for jid, jp in jobs_payload.items()
+        ]
+        _diag_cursched = [(jid[:8], v["node"], v["GPUtype"], v["nGPUs"]) for jid, v in current_scheduling.items()]
+        logger.info(
+            "OPT REQ nodes=%s | currentSched=%s | jobs=%s",
+            _diag_nodes,
+            _diag_cursched,
+            _diag_jobs,
+        )
 
     try:
         async with httpx.AsyncClient(timeout=30.0) as client:
@@ -336,7 +380,12 @@ async def optimize(
         logger.exception("Optimizer call failed")
         return OptimizerResult()
 
-    logger.debug("OPT RESP %s", result.get("jobs", {}))
+    # DIAG: raw response from the C++ optimizer, BEFORE any filtering/parsing
+    # decisions on our side.  Tells us which jobs the heuristic placed where
+    # and which it left out entirely.  Use this to distinguish "optimizer
+    # didn't return a placement" from "we dropped the placement during parse".
+    if _OPT_DIAG:
+        logger.info("OPT RESP cost=%.4f jobs=%s", result.get("estimated_cost", 0.0), result.get("jobs", {}))
 
     # Parse response
     node_map = _build_node_map(nodes_payload)
@@ -350,6 +399,18 @@ async def optimize(
         if tardiness > 0:
             logger.warning("Job %s will miss deadline by %.1f hours", opt_job_id[:8], tardiness)
         if not opt_node or n_gpus <= 0 or opt_node not in node_map:
+            # DIAG: distinguish "no placement returned" (opt_node empty) from
+            # "placement returned for a node we don't recognise".  The latter
+            # would be a node_map / nodes_payload key mismatch — a parser bug
+            # silently dropping valid placements.
+            if _OPT_DIAG:
+                logger.info(
+                    "OPT PARSE drop job=%s opt_node=%r n_gpus=%s in_node_map=%s",
+                    opt_job_id[:8],
+                    opt_node,
+                    n_gpus,
+                    opt_node in node_map,
+                )
             continue
         real_node_id, gpu_type = node_map[opt_node]
         assignments.append(Assignment(instance_id=opt_job_id, node_id=real_node_id, gpu_config={gpu_type: n_gpus}))
@@ -364,10 +425,18 @@ async def optimize(
 
     preempt: list[str] = []
     keep_assignments: list[Assignment] = []
+    # DIAG: per-assignment classification — "kept-same" (no-op), "migrate"
+    # (preempt+place), or "new" (was in QUEUED).  Sums let us cross-check
+    # the "Optimizer: N assignment(s)" headline against what actually got
+    # acted on, and against the raw OPT RESP count above.
+    _diag_kept_same: list[str] = []
+    _diag_migrate: list[str] = []
+    _diag_new: list[str] = []
     for a in assignments:
         existing = current_scheduling.get(a.instance_id)
         if existing is None:
             keep_assignments.append(a)
+            _diag_new.append(a.instance_id[:8])
             continue
         cur_real = existing["node"].rsplit("_", 1)[0] if "_" in existing["node"] else existing["node"]
         new_gpu_type = next(iter(a.gpu_config))
@@ -377,20 +446,26 @@ async def optimize(
             # Same exact slot — keep the row where it is.  Phase 1b's UPDATE
             # WHERE assigned_node IS NULL won't match anyway (row already has
             # a node), so dropping the assignment is the only correct action.
-            logger.debug(
-                "Optimizer keeping job %s on %s %s (no migration)",
-                a.instance_id[:8],
-                cur_real,
-                {existing["GPUtype"]: existing["nGPUs"]},
-            )
+            _diag_kept_same.append(a.instance_id[:8])
             continue
         # Migration: preempt + let Phase 1b reapply with new placement.
         preempt.append(a.instance_id)
         keep_assignments.append(a)
+        _diag_migrate.append(a.instance_id[:8])
     # Anything in currentScheduling that the optimizer didn't include at all → preempt.
+    _diag_drop_preempt: list[str] = []
     for job_id in current_scheduling:
         if job_id not in assignment_by_id:
             preempt.append(job_id)
+            _diag_drop_preempt.append(job_id[:8])
+    if _OPT_DIAG:
+        logger.info(
+            "OPT CLASSIFY new=%s migrate=%s kept-same=%s drop-preempt=%s",
+            _diag_new,
+            _diag_migrate,
+            _diag_kept_same,
+            _diag_drop_preempt,
+        )
 
     assignments = keep_assignments
 

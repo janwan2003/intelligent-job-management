@@ -1,43 +1,49 @@
 % !TEX root = main.tex
-\documentclass [11pt,twoside]{article}
+%
+% Preamble for the IJM final report.  Document class is the University
+% of Warsaw bachelor-thesis class (pracamgr.cls), the same class used by
+% the Rift / Duckling LS reference thesis: clean title page, proper
+% chapters, and alpha-style citations.
+\documentclass[licencjacka,en]{pracamgr}
 
+%-- Encoding / fonts -------------------------------------------------------
 \usepackage[utf8]{inputenc}
 \usepackage[T1]{fontenc}
+% Use the default Computer Modern family (same as the Duckling LS thesis).
+% No \usepackage{times} -- CM looks better at thesis sizes.
+
+%-- Math -------------------------------------------------------------------
 \usepackage{amsmath}
-%Page margins, header and footer positions
-\usepackage{geometry}
- \geometry{
- a4paper,
- total={210mm,297mm},
- left=25mm,
- right=25mm,
- top=30mm,
- bottom=25mm,
- headsep=7mm}
+\usepackage{amssymb}
 
-\interfootnotelinepenalty=10000
+%-- Floats / figures -------------------------------------------------------
+\usepackage{graphicx}
+\usepackage[dvipsnames, table]{xcolor}
+\usepackage{float}
+\usepackage{rotating}
+\usepackage{caption}
+\usepackage{subcaption}
 
-%To display filling dots in the TOC for all entries
-\usepackage[titles]{tocloft}
-\renewcommand{\cftsecleader}{\cftdotfill{\cftdotsep}}
+%-- Tables -----------------------------------------------------------------
+\usepackage{tabu}
+\usepackage{tabularx}
+\usepackage{ltablex}
+\usepackage{longtable}
+\usepackage{xltabular}
+\usepackage{booktabs}
 
-%Define new header and footer style
-\usepackage{fancyhdr}
+%-- UML sequence diagrams --------------------------------------------------
+\usepackage{pgf-umlsd}
+\usepackage{tikz}
+\usetikzlibrary{positioning, arrows.meta, calc, patterns, backgrounds}
 
-\newcommand{\authors}{Jan Wangrat}
-\newcommand{\professor}{Prof. Danilo Ardagna, Ph.D. Candidate Federica Filippini}
-\newcommand{\projectName}{Intelligent Job Management}
-
-\pagestyle{fancy}
-\fancyhf{}
-\lhead{\color{Gray}{\small{\projectName\ --\ \authors}}}
-\lfoot{\textcolor{Gray}{\small{Copyright \copyright{} \the\year, \authors -- All rights reserved}}}
-\rfoot{\textcolor{Gray}{\thepage}}
-\renewcommand{\headrulewidth}{0pt}
-
-%PACKAGES
+%-- Misc -------------------------------------------------------------------
 \usepackage{wasysym}
 \usepackage{pifont}
+\usepackage{ifthen}
+\usepackage{xspace}
+\usepackage{enumitem}
+\usepackage{soul}
 
 \newcommand{\supported}{\ding{52}\xspace}
 \newcommand{\unsupported}{\ding{55}\xspace}
@@ -45,105 +51,14 @@
 \newcommand{\lowsupported}{\textcolor{black!20}{\ding{52}}\xspace}
 \newcommand{\unknowsupported}{\textbf{?}\xspace}
 
+\newcommand{\authors}{Jan Wangrat}
+\newcommand{\professor}{Prof.~Danilo Ardagna,\\ Ph.D.~Candidate Federica Filippini}
+\newcommand{\projectName}{Intelligent Job Management}
 
-%Font: Times
-\usepackage{times}
-%Change monospaced font
-\renewcommand{\ttdefault}{lmtt}
+%-- Microtype --------------------------------------------------------------
+\usepackage[protrusion=true]{microtype}
 
-%tables
-\usepackage{tabu}
-\usepackage{tabularx}
-\usepackage{ltablex}
-\usepackage{longtable}
-\usepackage{booktabs} % \toprule \midrule \bottomrule for E2E scenario tables
-\usepackage{float} % To allow the use of H modifier in long tables
-
-%landscape mode
-\usepackage{pdflscape}
-\usepackage{rotating}
-\usepackage{caption}
-\usepackage{subcaption}
-
-%make landscape mode be sensitive to even and odd pages
-%start
-\def\myrotate{\ifodd\c@page\else-\fi 90}
-\makeatletter
-\global\let\orig@begin@landscape=\landscape%
-\global\let\orig@end@landscape=\endlandscape%
-\gdef\@true{1}
-\gdef\@false{0}
-\gdef\landscape{%
-    \global\let\within@landscape=\@true%
-    \orig@begin@landscape%
-}%
-\gdef\endlandscape{%
-    \orig@end@landscape%
-    \global\let\within@landscape=\@false%
-}%
-\@ifpackageloaded{pdflscape}{%
-    \gdef\pdf@landscape@rotate{\PLS@Rotate}%
-}{
-    \gdef\pdf@landscape@rotate#1{}%
-}
-\let\latex@outputpage\@outputpage
-\def\@outputpage{
-    \ifx\within@landscape\@true%
-        \if@twoside%
-            \ifodd\c@page%
-                \gdef\LS@rot{\setbox\@outputbox\vbox{%
-                    \pdf@landscape@rotate{-90}%
-                    \hbox{\rotatebox{90}{\hbox{\rotatebox{180}{\box\@outputbox}}}}}%
-                }%
-            \else%
-                \gdef\LS@rot{\setbox\@outputbox\vbox{%
-                    \pdf@landscape@rotate{+90}%
-                    \hbox{\rotatebox{90}{\hbox{\rotatebox{0}{\box\@outputbox}}}}}%
-                }%
-            \fi%
-        \else%
-            \gdef\LS@rot{\setbox\@outputbox\vbox{%
-                \pdf@landscape@rotate{+90}%
-                \hbox{\rotatebox{90}{\hbox{\rotatebox{0}{\box\@outputbox}}}}}%
-            }%
-        \fi%
-    \fi%
-    \latex@outputpage%
-}
-\makeatother
-%end
-
-%graphics
-\usepackage{graphicx}
-\usepackage[dvipsnames, table]{xcolor}
-
-%References
-%\usepackage[backend=biber, style=numeric, citestyle=numeric, sorting=none]{biblatex}
-%\addbibresource{main.bib}
-
-%Other
-\usepackage{ifthen}
-\usepackage{xspace}
-\usepackage{enumitem}
-\usepackage{amssymb}
-\usepackage{float}
-\usepackage{longtable}
-\usepackage{xltabular}
-\usepackage[colorlinks]{hyperref}
-
-%UML sequence diagrams
-\usepackage{pgf-umlsd}
-
-%TikZ Gantt-style scenario timelines (one row per job, time on x-axis,
-%coloured bars per slot).  Mirrors Fig.~6 of the Path Relinking paper.
-\usepackage{tikz}
-\usetikzlibrary{positioning, arrows.meta, calc, patterns, backgrounds}
-
-%Improve line breaking — font expansion + character protrusion dramatically
-%reduce overfull \hbox warnings on captions containing unbreakable \texttt{...}.
-\usepackage{microtype}
-
-%Allow looser line breaking so long \texttt{} runs and captions don't overfill the line.
+%-- Tight typography -------------------------------------------------------
 \sloppy
 \emergencystretch=6em
 \tolerance=2000
@@ -151,21 +66,75 @@
 \vbadness=10000
 \hfuzz=3pt
 
-%Code highlighting with listings (minted requires -shell-escape, use listings for tectonic)
+% Match the Duckling LS thesis: black serif headings on a clean report
+% layout, no Polimi-blue accents.  We keep titlesec only for the tighter
+% spacing -- the visual style is the report class default.
+\usepackage{titlesec}
+\titleformat{\chapter}[hang]
+  {\normalfont\huge\bfseries}{\thechapter.}{0.6em}{}
+\titlespacing*{\chapter}{0pt}{-15pt}{18pt}
+\titleformat{\section}
+  {\normalfont\Large\bfseries}{\thesection}{0.6em}{}
+\titlespacing*{\section}{0pt}{14pt}{6pt}
+\titleformat{\subsection}
+  {\normalfont\large\bfseries}{\thesubsection}{0.6em}{}
+\titlespacing*{\subsection}{0pt}{10pt}{4pt}
+\titleformat{\subsubsection}
+  {\normalfont\normalsize\bfseries}{\thesubsubsection}{0.6em}{}
+\titlespacing*{\subsubsection}{0pt}{8pt}{3pt}
+
+%-- Captions ---------------------------------------------------------------
+% Match the Duckling LS look: small justified caption text, bold label.
+\captionsetup{font=small,labelfont=bf,format=plain,
+              justification=justified}
+
+%-- Listings ---------------------------------------------------------------
 \usepackage{listings}
-\lstset{
-  basicstyle=\small\ttfamily,
-  breaklines=true,
-  numbers=left,
+\definecolor{lstback}{rgb}{0.96,0.96,0.92}
+\definecolor{lstcomment}{rgb}{0,0.5,0}
+\definecolor{lstkey}{rgb}{0.55,0.10,0.55}
+\definecolor{lststring}{rgb}{0.58,0,0.82}
+\lstdefinestyle{ijm}{
+  backgroundcolor=\color{lstback},
+  basicstyle=\footnotesize\ttfamily,
+  commentstyle=\color{lstcomment}\itshape,
+  keywordstyle=\color{lstkey}\bfseries,
+  stringstyle=\color{lststring},
   numberstyle=\tiny\color{Gray},
+  breaklines=true,
+  breakatwhitespace=true,
+  captionpos=b,
+  numbers=left,
+  numbersep=6pt,
   frame=single,
   framesep=2mm,
-  xleftmargin=1.5em
+  xleftmargin=1.5em,
+  showspaces=false,
+  showstringspaces=false,
+  showtabs=false,
+  tabsize=2,
+  keepspaces=true,
 }
+\lstset{style=ijm}
 
+%-- Float placement (prevent huge whitespace from floats jumping pages) ----
+\renewcommand{\topfraction}{0.95}
+\renewcommand{\bottomfraction}{0.95}
+\renewcommand{\textfraction}{0.05}
+\renewcommand{\floatpagefraction}{0.85}
+\setlength{\textfloatsep}{8pt plus 2pt minus 2pt}
+\setlength{\intextsep}{8pt plus 2pt minus 2pt}
+\setlength{\dbltextfloatsep}{8pt plus 2pt minus 2pt}
 
-% Some utilities...
+%-- Hyperref ---------------------------------------------------------------
+% Loaded by pracamgr.cls; configure quietly -- subtle dark-blue links
+% like the Duckling LS thesis, not bright Polimi-blue.
+\hypersetup{colorlinks=true,
+            linkcolor=black,
+            citecolor=black,
+            urlcolor=black,
+            pdfborder={0 0 0}}
+
+%-- Utilities --------------------------------------------------------------
 \input{util/highlight}
 \input{util/abbrev}
-
-\date{}

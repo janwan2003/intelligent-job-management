@@ -229,27 +229,32 @@ async def list_containers() -> set[str]:
 
 
 async def kill_container(container_name: str) -> None:
-    """Kill a running container by name, then remove it.
+    """Kill a container by name and wait until it's gone.
 
-    `docker run --rm` is supposed to remove the container on exit, but if the
-    kill races with daemon registration (or if SIGTERM/SIGKILL ordering is off)
-    the name reservation can linger.  An explicit `docker rm -f` ensures the
-    name is freed so a subsequent dispatch can reuse it.
-
-    Raises ``RuntimeError`` if the container is still present after the kill+rm
-    sequence — callers must trust this signals real death (the auto-preempt
-    path persists ``status=QUEUED, assigned_node=NULL`` immediately after, and
-    a silent kill failure leaves a divergent row pointing at a live container).
+    The container is started with ``docker run --rm``, so the daemon removes
+    it automatically on exit.  An explicit ``docker rm -f`` covers the case
+    where the kill races daemon registration and ``--rm`` never fires.  Both
+    paths are async wrt daemon state, so the authoritative signal is a
+    ``docker ps`` lookup that no longer finds the name — we poll that until
+    convergence or a deadline.  Raising before convergence (the previous
+    behaviour) caused spurious failures whenever ``--rm`` and the explicit
+    ``rm`` raced and Docker reported ``removal already in progress``.
     """
     kill = await docker_exec("kill", container_name)
     rm = await docker_exec("rm", "-f", container_name)
-    check = await docker_exec("ps", "-a", "--filter", f"name=^{container_name}$", "--format", "{{.Names}}")
-    if check.stdout.strip():
-        raise RuntimeError(
-            f"container {container_name} still present after kill+rm "
-            f"(kill rc={kill.returncode}, rm rc={rm.returncode}, "
-            f"kill_stderr={kill.stderr.strip()!r}, rm_stderr={rm.stderr.strip()!r})"
-        )
+    loop = asyncio.get_event_loop()
+    deadline = loop.time() + 5.0
+    while True:
+        check = await docker_exec("ps", "-a", "--filter", f"name=^{container_name}$", "--format", "{{.Names}}")
+        if not check.stdout.strip():
+            return
+        if loop.time() >= deadline:
+            raise RuntimeError(
+                f"container {container_name} still present 5s after kill+rm "
+                f"(kill rc={kill.returncode}, rm rc={rm.returncode}, "
+                f"kill_stderr={kill.stderr.strip()!r}, rm_stderr={rm.stderr.strip()!r})"
+            )
+        await asyncio.sleep(0.1)
 
 
 async def remove_container_if_exists(container_name: str) -> None:

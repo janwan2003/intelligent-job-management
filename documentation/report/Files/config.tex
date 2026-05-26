@@ -1,12 +1,15 @@
-This section describes the system configuration files and the job submission API.
+IJM is~configured at~three layers: a~pair of~JSON files that describe
+the~cluster, an~HTTP submission API for~jobs, and~a~handful of~runtime
+environment variables.  This section documents each in~turn.
 
-\subsection{Cluster Configuration}
+\section{Cluster configuration}
 
-Cluster topology is defined in two JSON files loaded at startup (paths configurable via environment variables).
+The cluster topology is~loaded at~startup from two JSON files, whose
+paths are configurable via~environment variables.
 
-\subsubsection{Node Configuration (\texttt{nodes\_config.json})}
+\subsection{Nodes (\texttt{nodes\_config.json})}
 
-Each entry describes a compute node with its GPU resources.
+Each entry describes a~compute node and~its GPU resources.
 
 \begin{lstlisting}[language={}, numbers=none]
 [
@@ -33,29 +36,33 @@ Each entry describes a compute node with its GPU resources.
 
 \begin{table}[H]
 \centering
-\begin{tabularx}{\textwidth}{l l X}
-\hline
+\begin{tabularx}{\textwidth}{@{}l l X@{}}
+\toprule
 \textbf{Field} & \textbf{Type} & \textbf{Description} \\
-\hline
-\texttt{id} & string & Unique node identifier \\
-\texttt{isForProfiling} & bool & If \texttt{true}, the node can host profiling runs.  Production jobs may still land on it; profiling jobs may only land on it \\
-\texttt{workerUrl} & string \textbar{} null & HTTP base URL of the worker on this node, typically reached through an SSH tunnel.  When \texttt{null}, dispatch falls through to the in-process \texttt{JobRunner} (only useful for the docker-compose all-in-one development setup) \\
-\texttt{cost} & float & Idle cost of the node ($\$$/h) used by the optimizer \\
-\texttt{resources} & array & GPU resources attached to the node \\
-\texttt{resources[].gpu\_type} & string & GPU model name (e.g.\ \texttt{A40}, \texttt{L40S}, \texttt{QuadroP600}) \\
-\texttt{resources[].gpu\_count} & int & Number of GPUs of this type \\
-\hline
+\midrule
+\texttt{id}                     & string         & Unique node identifier \\
+\texttt{isForProfiling}         & bool           & If \texttt{true}, the~node can host profiling runs.  Production jobs may still land on~it; profiling jobs may only land on~it \\
+\texttt{workerUrl}              & string \textbar{} null & HTTP base URL of~the~worker, typically reached through an~SSH tunnel.  When \texttt{null}, dispatch falls through to~the~in-process \texttt{JobRunner} (development only) \\
+\texttt{cost}                   & float          & Idle cost of~the~node ($\$$/h), used by~the~optimiser \\
+\texttt{resources}              & array          & GPU resources attached to~the~node \\
+\texttt{resources[].gpu\_type}  & string         & GPU model name (e.g.~\texttt{A40}, \texttt{L40S}, \texttt{QuadroP600}) \\
+\texttt{resources[].gpu\_count} & int            & Number of~GPUs of~this type \\
+\bottomrule
 \end{tabularx}
-\caption{Node configuration fields.}
-\label{tab:node-config}
+\caption{Node configuration fields.}\label{tab:node-config}
 \end{table}
 
-GPU type and count are declared explicitly in the configuration rather than auto-detected at runtime.
-This allows mixed-GPU nodes (e.g.\ a node with both A40 and L40S GPUs), which ANDREAS did not support, and lets the operator declare nodes that aren't physically attached to the API host --- the API only ever talks to workers over HTTP.
+GPU type and~count are declared explicitly rather than auto-detected.
+This admits mixed-GPU nodes that ANDREAS did not support (e.g.~a~node
+with~both A40 and~L40S GPUs), and~it~lets the~operator declare nodes
+that are not physically attached to~the~API host~--- the~API only ever
+talks to~workers over HTTP.
 
-\subsubsection{GPU Energy Costs (\texttt{gpu\_energy\_costs.json})}
+\subsection{Energy costs (\texttt{gpu\_energy\_costs.json})}
 
-Maps GPU type and count to hourly energy cost (EUR/h), used by the scheduler.
+A~lookup table that maps a~GPU type and~bundle size to~an~hourly energy
+cost (EUR/h).  The~scheduler consults this table when scoring candidate
+placements.
 
 \begin{lstlisting}[language={}, numbers=none]
 {
@@ -64,11 +71,11 @@ Maps GPU type and count to hourly energy cost (EUR/h), used by the scheduler.
 }
 \end{lstlisting}
 
-\subsection{Job Submission}
+\section{Job submission}
 
 \textbf{Endpoint:} \texttt{POST /jobs}
 
-\subsubsection{Request Body}
+\subsection{Request body}
 
 \begin{lstlisting}[language={}, numbers=none]
 {
@@ -86,33 +93,38 @@ Maps GPU type and count to hourly energy cost (EUR/h), used by the scheduler.
 
 \begin{table}[H]
 \centering
-\begin{tabularx}{\textwidth}{l l l X}
-\hline
+\begin{tabularx}{\textwidth}{@{}l l l X@{}}
+\toprule
 \textbf{Field} & \textbf{Type} & \textbf{Required} & \textbf{Description} \\
-\hline
-\texttt{job\_id} & string & yes & Reusable job type identifier; profiling results are correlated across submissions sharing the same \texttt{job\_id} \\
-\texttt{dockerImage} & string & yes & Docker image to execute \\
-\texttt{scriptPath} & string & no & Path to training script (overrides Docker CMD with \texttt{python3 <scriptPath>}) \\
-\texttt{directoryToMount} & string & no & Host directory mounted into the container at \texttt{/workspace} \\
-\texttt{command} & string[] & no & Command and arguments (defaults to image entrypoint; overridden by \texttt{scriptPath}) \\
-\texttt{Priority} & int 1--5 & no & Job priority (default 3) \\
-\texttt{deadline} & datetime & no & Job deadline (ISO 8601) \\
-\texttt{batchSize} & int & no & Batch size passed as \texttt{BATCH\_SIZE} env var \\
-\texttt{profilingEpochsNo} & int $\geq 1$ & no & Epochs for profiling runs (default 3) \\
-\texttt{epochsTotal} & int $\geq 1$ & no & Total training epochs (default 20) \\
-\hline
+\midrule
+\texttt{job\_id}            & string       & yes & Reusable job type identifier; profile measurements are correlated across submissions sharing the~same \texttt{job\_id} \\
+\texttt{dockerImage}        & string       & yes & Docker image to~execute \\
+\texttt{scriptPath}         & string       & no  & Path to~the~training script (overrides Docker CMD with~\texttt{python3 <scriptPath>}) \\
+\texttt{directoryToMount}   & string       & no  & Host directory mounted into the~container at~\texttt{/workspace} \\
+\texttt{command}            & string[]     & no  & Command and~arguments (defaults to~the~image entrypoint; overridden by~\texttt{scriptPath}) \\
+\texttt{Priority}           & int 1--5     & no  & Job priority (default~3) \\
+\texttt{deadline}           & datetime     & no  & Job deadline (ISO 8601) \\
+\texttt{batchSize}          & int          & no  & Batch size passed as~the~\texttt{BATCH\_SIZE} env var \\
+\texttt{profilingEpochsNo}  & int $\geq 1$ & no  & Epochs per~profiling run (default~3) \\
+\texttt{epochsTotal}        & int $\geq 1$ & no  & Total training epochs (default~20) \\
+\bottomrule
 \end{tabularx}
-\caption{Job creation request fields.}
-\label{tab:job-create}
+\caption{Job creation request fields.}\label{tab:job-create}
 \end{table}
 
-Each submission receives a unique UUID instance ID (\texttt{id}) for lifecycle tracking, separate from the \texttt{job\_id} type identifier.
-When \texttt{scriptPath} is provided, the container runs \texttt{python3 <scriptPath>}; otherwise the Docker image's default CMD is used.
-Unlike ANDREAS, \texttt{Priority} and \texttt{deadline} are optional, and an additional \texttt{command} field provides flexibility for non-standard workloads.
+Each submission receives a~unique UUID instance ID (\texttt{id}) for
+lifecycle tracking, separate from the~\texttt{job\_id} type identifier.
+When \texttt{scriptPath} is~provided the~container runs
+\texttt{python3 <scriptPath>}; otherwise the~image's default CMD is~used.
+Unlike ANDREAS, \texttt{Priority} and~\texttt{deadline} are optional,
+and~an~additional \texttt{command} field gives flexibility for
+non-standard workloads.
 
-\subsubsection{Response (201 Created)}
+\subsection{Response (201 Created)}
 
-Returns the full job object including scheduler decisions:
+The response carries the~full job object, including the~scheduler's
+initial decision: assigned node, GPU configuration, and~whether the
+first run will be~a~profile or~a~standard execution.
 
 \begin{lstlisting}[language={}, numbers=none]
 {
@@ -133,64 +145,76 @@ Returns the full job object including scheduler decisions:
 }
 \end{lstlisting}
 
-The response immediately shows the scheduling decision: assigned node, GPU configuration, and whether this is a profiling run.
+\section{Full API overview}
 
-\subsection{Full API Overview}
-
-Table~\ref{tab:api-endpoints} lists all endpoints.
-Interactive documentation is available at \texttt{/docs} (Swagger~UI) and \texttt{/redoc} when the API is running.
+Table~\ref{tab:api-endpoints} lists every endpoint.  Interactive
+documentation is~available at~\texttt{/docs} (Swagger~UI) and
+\texttt{/redoc} when the~API is~running.
 
 \begin{table}[H]
 \centering
-\begin{tabularx}{\textwidth}{l l X}
-\hline
+\begin{tabularx}{\textwidth}{@{}l l X@{}}
+\toprule
 \textbf{Method} & \textbf{Path} & \textbf{Description} \\
-\hline
-\texttt{GET}    & \texttt{/}                            & Health check (basic) \\
-\texttt{GET}    & \texttt{/health}                      & Detailed health (DB + job runner) \\
-\texttt{GET}    & \texttt{/nodes}                       & List cluster nodes with status \\
-\texttt{GET}    & \texttt{/gpu-costs}                   & GPU energy cost table \\
-\texttt{GET}    & \texttt{/configurations}              & Valid GPU configurations \\
-\texttt{POST}   & \texttt{/jobs}                        & Submit a new job \\
-\texttt{GET}    & \texttt{/jobs}                        & List all jobs (paginated) \\
-\texttt{GET}    & \texttt{/jobs/\{id\}}                 & Get job by ID \\
-\texttt{DELETE} & \texttt{/jobs/\{id\}}                 & Delete a job \\
-\texttt{DELETE} & \texttt{/jobs}                        & Delete all jobs \\
-\texttt{POST}   & \texttt{/jobs/\{id\}/stop}            & Stop a running job \\
-\texttt{POST}   & \texttt{/jobs/\{id\}/resume}          & Resume a stopped/failed job \\
-\texttt{GET}    & \texttt{/jobs/\{id\}/logs}            & Retrieve job output log \\
-\texttt{GET}    & \texttt{/profiling-results/\{id\}}    & Profiling results for a job type \\
-\hline
+\midrule
+\texttt{GET}    & \texttt{/}                            & Health check endpoint \\
+\texttt{GET}    & \texttt{/health}                      & Detailed health check~--- pings DB and~checks job runner \\
+\texttt{GET}    & \texttt{/nodes}                       & List all~cluster nodes with~their current status \\
+\texttt{GET}    & \texttt{/gpu-costs}                   & Hourly GPU energy costs used by~the~scheduler for~optimisation \\
+\texttt{GET}    & \texttt{/configurations}              & List all~valid hardware configurations in~the~cluster \\
+\texttt{POST}   & \texttt{/jobs}                        & Create a~new job \\
+\texttt{GET}    & \texttt{/jobs}                        & List all~jobs ordered by~creation time (paginated via \texttt{limit}/\texttt{offset}) \\
+\texttt{GET}    & \texttt{/jobs/\{id\}}                 & Get a~specific job by~ID \\
+\texttt{POST}   & \texttt{/jobs/\{id\}/stop}            & Request job to~be stopped (user-driven; sticky \textsc{preempted} state) \\
+\texttt{POST}   & \texttt{/jobs/\{id\}/resume}          & Request job to~be resumed \\
+\texttt{DELETE} & \texttt{/jobs/\{id\}}                 & Delete a~job, killing any~running container first \\
+\texttt{DELETE} & \texttt{/jobs}                        & Delete all~jobs and~their profiling results \\
+\texttt{GET}    & \texttt{/jobs/\{id\}/logs}            & Return the~output log for~a~job by~proxying to~the~worker that~owns it \\
+\texttt{GET}    & \texttt{/profiling-results/\{id\}}    & All~profiling results for~a~job, ordered by~duration (fastest first) \\
+\texttt{GET}    & \texttt{/admin/slots}                 & NodeSlots snapshot: in-memory \texttt{used} vs.\ DB-authoritative count \\
+\texttt{POST}   & \texttt{/admin/reconcile-slots}       & Force NodeSlots to~match DB-authoritative state (idempotent) \\
+\texttt{GET}    & \texttt{/admin/dispatch-tasks}        & List in-flight \texttt{\_dispatch\_when\_slot\_free} tasks \\
+\bottomrule
 \end{tabularx}
-\caption{API endpoints.}
-\label{tab:api-endpoints}
+\caption{API endpoints.}\label{tab:api-endpoints}
 \end{table}
 
-All scheduling, profiling, and dispatch decisions are consolidated into a single FastAPI service, in contrast to ANDREAS which split these across a Java Jobs Manager and a C++ Jobs Optimizer.
-The actual execution lives in per-node \emph{workers} (also FastAPI), which the API reaches over HTTP through SSH tunnels.  The external GPUspb optimizer is reached the same way and is responsible for all standard-run placement decisions.
-IJM exposes explicit \texttt{stop}, \texttt{resume}, \texttt{logs}, and \texttt{delete} endpoints, as well as \texttt{/profiling-results} and \texttt{/configurations} to give users visibility into the scheduler's state.
+Three architectural choices set the~API apart from ANDREAS.
+First, scheduling, profiling, and~dispatch are consolidated into a
+single FastAPI service, in~contrast to~ANDREAS's split between a~Java
+Jobs Manager and~a~C++ Jobs Optimiser.
+Second, execution lives in~per-node \emph{workers}~--- also FastAPI~---
+that the~API reaches over HTTP through SSH tunnels; the~external GPUspb
+optimiser is~reached the~same way and~owns every standard-run placement
+decision.
+Third, IJM exposes explicit \texttt{stop}, \texttt{resume},
+\texttt{logs}, and~\texttt{delete} endpoints, together with
+\texttt{/profiling-results} and~\texttt{/configurations}, so the~user
+has direct visibility into the~scheduler's state.
 
-\subsection{Runtime environment}
+\section{Runtime environment}
 
-The most important runtime knobs (all set in the API process unless noted otherwise) are:
+Table~\ref{tab:env-vars} lists the~runtime knobs that influence the
+scheduler.  Unless noted otherwise, every variable is~read by~the~API
+process at~startup.
 
 \begin{table}[H]
 \centering
-\begin{tabularx}{\textwidth}{l l X}
-\hline
+\begin{tabularx}{\textwidth}{@{}l l X@{}}
+\toprule
 \textbf{Variable} & \textbf{Default} & \textbf{Description} \\
-\hline
-\texttt{DATABASE\_URL}                  & \texttt{postgresql://\ldots/ijm} & PostgreSQL DSN, reached via SSH tunnel \\
-\texttt{OPTIMIZER\_URL}                 & unset & The API delegates standard-run placement to the GPUspb HTTP service \\
-\texttt{OPTIMIZER\_METHOD}              & \texttt{RG} & GPUspb solver method passed in the request body \\
-\texttt{OPTIMIZER\_VERBOSE}             & 0 & GPUspb per-call log verbosity (0--3) \\
-\texttt{PROFILING\_CONFIGS\_PER\_JOB}   & 1 & How many distinct GPU configs a single job \emph{instance} profiles before falling through to a standard run \\
-\texttt{EXECUTOR}                       & \texttt{docker} & Executor backend for the in-process \texttt{JobRunner}: \texttt{docker} or \texttt{mock-slurm} (workers always use the docker CLI) \\
-\texttt{WORKER\_GPU\_MODE}              & \texttt{runtime} & Worker-side; how Docker exposes GPUs to training containers: \texttt{runtime} / \texttt{cdi} (rootless) / \texttt{none} \\
-\texttt{IMAGE\_TAG\_OVERRIDE}           & unset & Worker-side; rewrites \texttt{:latest} to the given tag.  Used on matemagician to pick the CUDA-10.1-compatible \texttt{:legacy} image \\
-\texttt{HOST\_ROOT}, \texttt{HOST\_PROJECT\_ROOT} & \texttt{/host}, \texttt{\$\{PWD\}/..} & Resolve container-internal vs.\ host paths for Docker bind mounts \\
-\hline
+\midrule
+\texttt{DATABASE\_URL}                  & \texttt{postgresql://\ldots/ijm} & PostgreSQL DSN, reached via~SSH tunnel \\
+\texttt{OPTIMIZER\_URL}                 & unset & The~GPUspb HTTP service used for~standard-run placement \\
+\texttt{OPTIMIZER\_METHOD}              & \texttt{RG} & GPUspb solver method passed in~the~request body \\
+\texttt{OPTIMIZER\_VERBOSE}             & 0 & Per-call log verbosity (0--3) \\
+\texttt{PROFILING\_CONFIGS\_PER\_JOB}   & 2 & How many distinct GPU configurations a~single instance profiles before falling through to~a~standard run \\
+\texttt{EXECUTOR}                       & \texttt{docker} & Executor backend for~the~in-process \texttt{JobRunner}: \texttt{docker} or~\texttt{mock-slurm}.  Workers always use the~Docker~CLI \\
+\texttt{IJM\_DRIFT\_HEARTBEAT\_S}       & 15 & Period of~the~slot-tracker drift heartbeat that reconciles \texttt{mem\_used} against \texttt{db\_used} per~node \\
+\texttt{WORKER\_GPU\_MODE}              & \texttt{runtime} & Worker-side; how Docker exposes GPUs to~training containers (\texttt{runtime} / \texttt{cdi} / \texttt{none}) \\
+\texttt{IMAGE\_TAG\_OVERRIDE}           & unset & Worker-side; rewrites \texttt{:latest} to~the~given tag.  Used on~\texttt{matemagician} to~pick the~CUDA-10.1-compatible \texttt{:legacy} image \\
+\texttt{HOST\_ROOT}, \texttt{HOST\_PROJECT\_ROOT} & \texttt{/host}, \texttt{\$\{PWD\}/..} & Resolve container-internal vs.~host paths for~Docker bind mounts \\
+\bottomrule
 \end{tabularx}
-\caption{Key environment variables.}
-\label{tab:env-vars}
+\caption{Key environment variables.}\label{tab:env-vars}
 \end{table}

@@ -1,6 +1,7 @@
 services:
-  # No postgres — uses remote server's postgres via SSH tunnel (localhost:5433)
-  # Requires tunnel to be open first: ./infra/tunnel.sh
+  # No postgres — uses remote server's postgres via SSH tunnel (localhost:5433).
+  # Requires tunnel to be open first: `bash infra/tunnel.sh polimi` in another terminal.
+  # Then: `docker compose -f infra/docker-compose.tunnel.yml up`.
 
   api:
     build:
@@ -8,7 +9,7 @@ services:
       dockerfile: backend/Dockerfile
     container_name: ijm-api
     restart: unless-stopped
-    network_mode: host   # reach tunnel ports at localhost:5433 and localhost:8001
+    network_mode: host   # reach tunnel ports at localhost:5433/8001/8002 and optimizer at localhost:8080
     environment:
       DATABASE_URL: postgresql://postgres:postgres@localhost:5433/ijm
       NODES_CONFIG: config/nodes_config.tunnel.json
@@ -18,7 +19,10 @@ services:
       OPTIMIZER_VERBOSE: ${OPTIMIZER_VERBOSE:-2}
     volumes:
       - ../backend/src:/app/src
+      - ../shared:/app/shared:ro
       - ../config:/app/config:ro
+    depends_on:
+      - optimizer
 
   optimizer:
     build:

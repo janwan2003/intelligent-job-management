@@ -13,6 +13,7 @@ from uuid import uuid4
 import psycopg
 from psycopg.types.json import Json
 from shared.constants import JobStatus
+from shared.profiling_sql import delete_unmeasured_claims
 
 from src.cluster import cluster
 from src.constants import DEFAULT_PROFILING_CONFIGS_PER_JOB
@@ -79,22 +80,25 @@ class ProfilingScheduler:
         configs.sort(key=lambda c: (sum(c.values()), sorted(c.keys())))
         return configs
 
-    async def get_node_gpu_usage(self, conn: psycopg.AsyncConnection[Any]) -> dict[str, dict[str, int]]:
+    async def get_node_gpu_usage(
+        self,
+        conn: psycopg.AsyncConnection[Any],
+        exclude_instance: str | None = None,
+        *,
+        include_cross_instance_claims: bool = True,
+    ) -> dict[str, dict[str, int]]:
         """Query allocated GPUs per node from currently running/profiling jobs.
 
-        Subtracts ``state.pending_evictions`` (jobs whose ``/stop`` is in
-        flight but the worker's terminal commit hasn't landed yet) so
-        scheduling decisions reflect the post-eviction state immediately.
-        Without this, a profile-preempt that needs to free 2+ GPUs
-        deadlocks: the first eviction commits, the scheduler re-runs,
-        sees N-1 slots free, falls back to a 1-GPU standard placement
-        on the same victim, and the second eviction's commit lands into
-        a re-occupied slot.
+        Adds in-flight profile claims (``profiling_results`` rows with
+        ``duration_seconds IS NULL`` whose owning instance does not yet
+        have ``assigned_node`` set).  These cells are reserved for a future
+        profile dispatch on a specific node, so the optimizer must treat
+        them as occupied or it will hand the slot to a standard job and
+        starve the profile run (observed 2026-05-19 cnn_big rerun:
+        JOB1's P600x2 profile sat 6 min behind JOB2's standard placement).
 
         Returns ``{node_id: {gpu_type: allocated_count, ...}, ...}``.
         """
-        from src import state
-
         async with conn.cursor() as cur:
             await cur.execute(
                 "SELECT id, assigned_node, assigned_gpu_config FROM jobs "
@@ -104,9 +108,46 @@ class ProfilingScheduler:
             rows = await cur.fetchall()
 
         usage: dict[str, dict[str, int]] = {}
-        for job_id, node_id, gpu_config in rows:
-            if job_id in state.pending_evictions:
-                continue  # treat the slot as already freed
+        for _job_id, node_id, gpu_config in rows:
+            node_usage = usage.setdefault(node_id, {})
+            for gpu_type, count in gpu_config.items():
+                node_usage[gpu_type] = node_usage.get(gpu_type, 0) + count
+
+        # Reserve slots for in-flight profile claims whose owning instance
+        # is not yet dispatched (assigned_node IS NULL on the jobs row).
+        # Exclude the requesting instance's OWN claims — otherwise an
+        # instance scheduling its remaining profile cell sees the slot it
+        # needs as already-occupied by itself.  Skip the whole block when
+        # ``include_cross_instance_claims=False`` — used by profile-placement
+        # decisions, where cross-instance claims for the same physical slot
+        # must not block each other (the node-slot semaphore is the real
+        # arbiter at dispatch time, and reserving for everyone would
+        # deadlock peers competing for the same cell).
+        if not include_cross_instance_claims:
+            return usage
+        async with conn.cursor() as cur:
+            if exclude_instance:
+                await cur.execute(
+                    """SELECT pr.node_id, pr.gpu_config
+                       FROM profiling_results pr
+                       JOIN jobs j ON j.id = pr.instance_id
+                       WHERE pr.duration_seconds IS NULL
+                         AND pr.node_id IS NOT NULL
+                         AND j.assigned_node IS NULL
+                         AND pr.instance_id <> %s""",
+                    (exclude_instance,),
+                )
+            else:
+                await cur.execute(
+                    """SELECT pr.node_id, pr.gpu_config
+                       FROM profiling_results pr
+                       JOIN jobs j ON j.id = pr.instance_id
+                       WHERE pr.duration_seconds IS NULL
+                         AND pr.node_id IS NOT NULL
+                         AND j.assigned_node IS NULL""",
+                )
+            claim_rows = await cur.fetchall()
+        for node_id, gpu_config in claim_rows:
             node_usage = usage.setdefault(node_id, {})
             for gpu_type, count in gpu_config.items():
                 node_usage[gpu_type] = node_usage.get(gpu_type, 0) + count
@@ -214,8 +255,9 @@ class ProfilingScheduler:
     ) -> None:
         """Write the scheduling decision to the jobs table.
 
-        Profile claims are inserted upfront by ``_atomic_claim_remaining``;
-        this method only updates the ``jobs`` row.
+        ``result.is_profiling_run`` is derived by ``schedule_job`` from the
+        existence of unmeasured claim rows — see the source-of-truth note in
+        that function and the matching derivation in worker ``handle_complete``.
         """
         del type_id, instance_id  # unused; kept for signature stability
         now = datetime.now(UTC)
@@ -274,71 +316,61 @@ class ProfilingScheduler:
             row = await cur.fetchone()
         return row[0] if row else 0
 
-    async def _sweep_stale_claims(self, conn: psycopg.AsyncConnection[Any], type_id: str) -> int:
-        """Backward-compat wrapper: sweep stale claims, scoped to one type.
+    async def delete_instance_claims(self, conn: psycopg.AsyncConnection[Any], instance_id: str) -> int:
+        """Delete every unmeasured claim owned by *instance_id*.
 
-        New callers should prefer :meth:`sweep_all_stale_claims` (no type
-        scope) so claims for *every* type are reclaimed on every scheduler
-        round, not just on submission.
+        Called by lifecycle paths that know the instance is no longer eligible
+        to profile: ``DELETE /jobs`` (already inline), ``FAILED`` transitions
+        in the worker reconcile path.  Measured rows (``duration_seconds``
+        not NULL) are preserved because they are cached results for the type.
         """
-        return await self._sweep_stale_claims_filtered(conn, type_id=type_id)
-
-    async def sweep_all_stale_claims(self, conn: psycopg.AsyncConnection[Any]) -> int:
-        """Reclaim every stale profile claim across all types.
-
-        Called at the top of every ``_schedule_waiting_jobs`` round.
-        Sweeping on submission alone (the old behaviour) wasn't enough: if
-        a profile run got repurposed mid-flight (e.g., the optimizer
-        re-assigned its row to a standard run, so ``is_profiling_run``
-        flipped to FALSE), or the owning job finished while ``schedule_job``
-        wasn't being called for that type, the claim row sat forever and
-        ``remaining`` undercounted that config — permanently blocking
-        re-profile attempts.
-        """
-        return await self._sweep_stale_claims_filtered(conn, type_id=None)
-
-    async def _sweep_stale_claims_filtered(self, conn: psycopg.AsyncConnection[Any], *, type_id: str | None) -> int:
-        """Shared body for the scoped and unscoped sweeps.
-
-        A claim row (``duration_seconds IS NULL``) is stale when no live
-        profile run owns it.  "Live profile run" means a job that:
-          - exists, AND
-          - has ``is_profiling_run = TRUE``, AND
-          - is in QUEUED (claim written, awaiting dispatch) or PROFILING
-            (worker running the measurement) — *not* RUNNING (RUNNING is a
-            standard run, so the row was repurposed and the claim is stale).
-        Anything else: the claim is garbage and we delete it.
-        """
-        if type_id is None:
-            query = """DELETE FROM profiling_results pr
-                       WHERE pr.duration_seconds IS NULL
-                         AND (pr.instance_id IS NULL
-                              OR NOT EXISTS (
-                                  SELECT 1 FROM jobs j
-                                  WHERE j.id = pr.instance_id
-                                    AND j.is_profiling_run = TRUE
-                                    AND j.status IN (%s, %s)
-                              ))"""
-            params: tuple[Any, ...] = (JobStatus.QUEUED, JobStatus.PROFILING)
-            scope_desc = "all types"
-        else:
-            query = """DELETE FROM profiling_results pr
-                       WHERE pr.job_id = %s
-                         AND pr.duration_seconds IS NULL
-                         AND (pr.instance_id IS NULL
-                              OR NOT EXISTS (
-                                  SELECT 1 FROM jobs j
-                                  WHERE j.id = pr.instance_id
-                                    AND j.is_profiling_run = TRUE
-                                    AND j.status IN (%s, %s)
-                              ))"""
-            params = (type_id, JobStatus.QUEUED, JobStatus.PROFILING)
-            scope_desc = f"type {type_id}"
         async with conn.cursor() as cur:
-            await cur.execute(query, params)
+            deleted = await delete_unmeasured_claims(cur, instance_id)
+        if deleted > 0:
+            logger.info(
+                "Deleted %d unmeasured claim(s) for instance %s",
+                deleted,
+                instance_id[:8],
+            )
+        return deleted
+
+    async def gc_orphaned_claims(self, conn: psycopg.AsyncConnection[Any], *, max_age_seconds: int = 900) -> int:
+        """Long-lease GC for unmeasured claims that have outlived their owner.
+
+        Runs from the 60-min ``_queue_watcher`` heartbeat (not from the hot
+        scheduler path).  Deletes a claim when *both* hold:
+
+          - the row has been NULL for longer than ``max_age_seconds`` (default
+            15 min), AND
+          - the owning instance no longer has ``is_profiling_run=TRUE`` in
+            QUEUED or PROFILING (i.e. nothing alive intends to fulfil it).
+
+        The lifecycle paths (``DELETE /jobs``, worker reconcile FAILED) clean
+        up promptly; this is the safety net for cases those paths miss
+        (e.g. an API crash mid-claim leaving an orphan, or a worker that
+        vanished without the reconcile having run yet).
+        """
+        async with conn.cursor() as cur:
+            await cur.execute(
+                """DELETE FROM profiling_results pr
+                   WHERE pr.duration_seconds IS NULL
+                     AND pr.created_at < NOW() - make_interval(secs => %s)
+                     AND (pr.instance_id IS NULL
+                          OR NOT EXISTS (
+                              SELECT 1 FROM jobs j
+                              WHERE j.id = pr.instance_id
+                                AND j.is_profiling_run = TRUE
+                                AND j.status IN (%s, %s)
+                          ))""",
+                (max_age_seconds, JobStatus.QUEUED, JobStatus.PROFILING),
+            )
             deleted = getattr(cur, "rowcount", 0) or 0
         if deleted > 0:
-            logger.info("Cleared %d stale profile claim(s) (%s)", deleted, scope_desc)
+            logger.info(
+                "gc_orphaned_claims: deleted %d unmeasured claim(s) older than %ds",
+                deleted,
+                max_age_seconds,
+            )
         return deleted
 
     async def try_preempt_for_profile(
@@ -547,14 +579,16 @@ class ProfilingScheduler:
         what cells this instance owns or can still claim.
         """
         type_id = job_type_id or job_id
-        await self._sweep_stale_claims(conn, type_id)
-        node_gpu_usage = await self.get_node_gpu_usage(conn)
+        # Profile-placement view: ignore cross-instance reservations because
+        # they would mutually block peers competing for the same cell.  The
+        # node-slot semaphore arbitrates actual concurrent runtime.
+        node_gpu_usage = await self.get_node_gpu_usage(
+            conn, exclude_instance=job_id, include_cross_instance_claims=False
+        )
         all_configs = self.get_valid_configurations()
 
         gpu_config: dict[str, int] | None = None
         node: NodeConfig | None = None
-        mode = "standard"
-        is_profiling_run = False
 
         if not all_configs:
             logger.warning(
@@ -571,12 +605,11 @@ class ProfilingScheduler:
                 candidate_node = self._find_node_for_config(cfg, is_for_profiling=True, node_gpu_usage=node_gpu_usage)
                 if candidate_node is not None:
                     gpu_config, node = cfg, candidate_node
-                    mode, is_profiling_run = "profiling", True
                     break
 
         # If no in-flight claim was ready, atomically claim more cells.
         # _count_profiled_this_round counts claimed+completed, so a claim = budget used.
-        if not is_profiling_run:
+        if node is None:
             already_claimed = await self._count_profiled_this_round(conn, job_id)
             budget_left = self.configs_per_job - already_claimed
             if budget_left > 0:
@@ -589,8 +622,16 @@ class ProfilingScheduler:
                         )
                         if candidate_node is not None:
                             gpu_config, node = cfg, candidate_node
-                            mode, is_profiling_run = "profiling", True
                             break
+
+        # Source of truth: the instance is in profiling mode iff it owns at
+        # least one unmeasured claim row, regardless of whether this pass
+        # found a node with capacity.  Re-read after the atomic claim above
+        # so newly inserted rows are visible.  Worker ``handle_complete``
+        # applies the same derivation to keep the flag consistent across
+        # processes.
+        is_profiling_run = bool(await self._get_in_flight_claims(conn, job_id))
+        mode = "profiling" if is_profiling_run and node is not None else "standard"
 
         # Counters read AFTER the claim above so new claims show up.
         profiled = await self.get_profiled_configs(conn, type_id)

@@ -33,3 +33,6 @@ dist/
 
 # Data directories
 data/
+
+# Generated chart outputs (regenerable via infra/generate_chart.py)
+documentation/charts/

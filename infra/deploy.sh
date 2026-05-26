@@ -45,6 +45,7 @@ for f in "${WORKER_FILES[@]}"; do
 done
 eval "$RSYNC '$REPO_ROOT/worker/Dockerfile.server' '$HOST:$REMOTE_DIR/Dockerfile'"
 eval "$RSYNC '$REPO_ROOT/shared/constants.py' '$HOST:$REMOTE_DIR/shared/'"
+eval "$RSYNC '$REPO_ROOT/shared/profiling_sql.py' '$HOST:$REMOTE_DIR/shared/'"
 if [ "$WORKER_ONLY" = 1 ]; then
   eval "$RSYNC '$REPO_ROOT/infra/docker-compose.worker.yml' '$HOST:$REMOTE_DIR/docker-compose.yml'"
 else

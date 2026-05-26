@@ -11,7 +11,16 @@ from src.job_runner import JobRunner
 
 logger = logging.getLogger(__name__)
 
-_HTTP_TIMEOUT = 10.0  # seconds for dispatch calls to worker
+_HTTP_TIMEOUT = 10.0  # seconds for /run and other quick worker calls
+# /stop on the worker can legitimately take up to ~60 s — it awaits the
+# in-flight run task drain (worker/app.py: asyncio.wait_for(run_task,
+# timeout=60.0)) which includes SIGTERM grace, CUDA context release, and
+# checkpoint write.  Set the client-side timeout above the worker's
+# upper bound so the in-flight stop task stays open for the whole worker
+# drain — this keeps _await_inflight_stops_on() correctly blocking new
+# dispatches to the same node, instead of giving up at 10 s and letting
+# a new /run race the still-draining old /stop.
+_STOP_TIMEOUT = 65.0
 
 
 class JobDispatcher:
@@ -38,7 +47,10 @@ class JobDispatcher:
         # and clobber assigned_node on the worker side.  The worker has a
         # stale-stop guard, but deduping here keeps the network quieter and
         # protects against a regression in that guard.
-        self._inflight_stops: dict[str, asyncio.Task[None]] = {}
+        #
+        # Keyed by (node_id, job_id) so ``_await_inflight_stops_on`` can find
+        # the stops affecting a given node without a DB roundtrip per task.
+        self._inflight_stops: dict[tuple[str, str], asyncio.Task[None]] = {}
 
     def set_node_slots(self, node_slots: Any) -> None:
         """Late-binding hook — NodeSlots is built after JobDispatcher in lifespan."""
@@ -69,6 +81,15 @@ class JobDispatcher:
             await self._node_slots.acquire(node_id, n)
             acquired = True
         try:
+            # Wait for any in-flight /stop calls targeting THIS node to finish
+            # before issuing /run.  Otherwise the worker can race the two
+            # requests: a /run that arrives while the previous container's
+            # CUDA context hasn't yet released can fail to claim a GPU and
+            # exit with a non-zero code (observed as FAILED ec=1 in the
+            # PR-method scenario run).  Per-node await is finer-grained than
+            # per-job since multiple stops on a single node have to complete
+            # before we can trust the GPU state.
+            await self._await_inflight_stops_on(node_id)
             current_node = await self._fetch_assigned_node(instance_id)
             if current_node != node_id:
                 raise RuntimeError(
@@ -80,6 +101,35 @@ class JobDispatcher:
             if acquired and self._node_slots is not None:
                 self._node_slots.release(node_id, n)
             raise
+
+    async def _await_inflight_stops_on(self, node_id: str) -> None:
+        """Block until every in-flight /stop targeting *node_id* completes.
+
+        Looks up stops by their ``(node_id, _)`` key directly — no DB roundtrip.
+        Defensive 10 s bound: if the worker has truly hung, the drift heartbeat
+        repairs the slot count regardless, so we don't need to wait the full
+        ``_STOP_TIMEOUT`` here.
+        """
+        if not self._inflight_stops:
+            return
+        relevant = [task for (n, _jid), task in self._inflight_stops.items() if n == node_id and not task.done()]
+        if not relevant:
+            return
+        logger.info(
+            "Waiting for %d in-flight stop(s) on %s before dispatch",
+            len(relevant),
+            node_id,
+        )
+        try:
+            await asyncio.wait_for(
+                asyncio.shield(asyncio.gather(*relevant, return_exceptions=True)),
+                timeout=10.0,
+            )
+        except TimeoutError:
+            logger.warning(
+                "Timed out waiting for /stop drain on %s (after 10s) — proceeding; drift heartbeat will reconcile",
+                node_id,
+            )
 
     def get_worker_url(self, node_id: str | None) -> str | None:
         """Return the workerUrl for *node_id*, or None if local execution."""
@@ -136,7 +186,15 @@ class JobDispatcher:
         cleared, ready to be picked up by the next scheduler pass without an
         intermediate PREEMPTED state.
         """
-        existing = self._inflight_stops.get(job_id)
+        # Resolve the node up-front so _inflight_stops can be keyed by
+        # (node_id, job_id) — _await_inflight_stops_on can then locate the
+        # relevant stops without a per-task DB roundtrip.  If the row has no
+        # assigned_node (already cleared / never assigned), _do_stop will
+        # no-op via the worker's stale-stop guard; tag it under a sentinel
+        # so duplicate-stop dedup still works.
+        node_id = await self._fetch_assigned_node(job_id) or ""
+        key = (node_id, job_id)
+        existing = self._inflight_stops.get(key)
         if existing is not None and not existing.done():
             logger.info(
                 "Skipping duplicate /stop for %s (reason=%s) — already in flight",
@@ -146,10 +204,10 @@ class JobDispatcher:
             return
 
         task = asyncio.create_task(self._do_stop(job_id, reason=reason), name=f"stop-{job_id[:8]}")
-        self._inflight_stops[job_id] = task
+        self._inflight_stops[key] = task
 
-        def _cleanup(_t: asyncio.Task[None], jid: str = job_id) -> None:
-            self._inflight_stops.pop(jid, None)
+        def _cleanup(_t: asyncio.Task[None], k: tuple[str, str] = key) -> None:
+            self._inflight_stops.pop(k, None)
 
         task.add_done_callback(_cleanup)
 
@@ -182,9 +240,10 @@ class JobDispatcher:
         max_retries = 3 if action == "run" else 1
         retry_delay = 0.3
         last_exc: Exception | None = None
+        timeout = _STOP_TIMEOUT if action == "stop" else _HTTP_TIMEOUT
         for attempt in range(max_retries):
             try:
-                async with httpx.AsyncClient(timeout=_HTTP_TIMEOUT) as client:
+                async with httpx.AsyncClient(timeout=timeout) as client:
                     resp = await client.post(f"{worker_url}/jobs/{job_id}/{action}", params=params)
                     if resp.status_code == 409 and action == "run":
                         last_exc = httpx.HTTPStatusError(

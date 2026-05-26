@@ -1,0 +1,50 @@
+Modern deep-learning research depends on shared GPU clusters in which
+training jobs compete for a~small number of~expensive accelerators.
+Operators are expected to~place each job on~the~hardware that meets its
+deadline at~the~lowest cost, despite per-GPU prices that vary by~more
+than an~order of~magnitude between generations.  Manual scheduling
+quickly becomes the~bottleneck, and~off-the-shelf cluster managers
+(Kubernetes, plain SLURM) treat GPU bundles as~interchangeable and~have
+no~notion of~per-job energy budgets or~deadline-aware preemption.
+
+The ANDREAS project~\cite{andreas} at~Politecnico di~Milano demonstrated
+that a~cost-aware optimiser, fed with~profile measurements of~each job
+type on~each hardware bundle, can~plan placements that beat the~typical
+operator's intuition.  ANDREAS, however, is~a~single-host prototype: it
+runs every container on~the~machine that hosts the~API, has~no~remote
+worker, and~assumes one homogeneous GPU pool.  Real laboratories~--- the
+two-node MIM~UW / Polimi cluster used in~this work being a~representative
+example~--- run jobs across nodes with~different driver generations,
+must resume preempted training across CUDA versions, and~want to~consume
+a~standalone optimiser as~an~HTTP service rather than ship it~inside
+the~scheduler.
+
+This report describes Intelligent Job~Management (IJM), a~scheduler that
+extends the~ANDREAS model to~a~distributed cluster.  The~control plane
+is~a~single FastAPI service that hosts the~profiling scheduler, the
+optimiser client, and~the~per-node slot semaphores.  Each GPU node runs
+a~lightweight worker that owns the~local Docker daemon.  The~two are
+glued together by~plain HTTP over SSH~tunnels, so the~same code runs on
+a~laptop talking to~a~remote cluster and~on~a~single-host development
+machine.  IJM integrates the~GPUspb optimiser as~the~external decision
+maker, enforces a~\emph{profile-always} policy so no~standard run~ever
+starts on~an~unmeasured bundle, and~saves checkpoints in~a~format that
+loads across torch versions, allowing a~job to~migrate between an~A40
+node and~a~legacy P600 node mid-training.
+
+We validate the~design with~two end-to-end scenarios on~the~two-node
+cluster.  Scenario~1 submits five \texttt{cnn\_big} jobs to~probe the
+profile sweep and~the~deadline-driven URGENT migration sequence.
+Scenario~2 mixes two job types and~forces the~optimiser to~place an
+urgent cnn\_big on~a~2-GPU bundle to~meet a~tight deadline while
+preempting two slack lstm-small patients.  Both scenarios complete
+without manual intervention, with~all jobs reaching \textsc{succeeded}.
+
+Chapter~\ref{ch:architecture} describes the~deployment topology, the
+scheduling pipeline, the~state machine, and~the~invariants that protect
+the~control plane from concurrency hazards.
+Chapter~\ref{ch:config} documents the~cluster and~job configuration
+files, the~submission API, and~the~runtime knobs.
+Chapter~\ref{ch:e2e} presents the~two scenarios, the~cost model used
+by~the~optimiser, and~the~implementation notes accumulated while bringing
+the~scenarios to~a~reproducible state.
