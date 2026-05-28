@@ -1,7 +1,30 @@
 This section presents IJM's deployment topology, the~four-phase
 scheduling pipeline that drives every dispatch decision, the~job state
-machine, and~the~concurrency invariants that keep the~control plane
-consistent under racing API calls and~worker notifications.
+machine, the~persistent state held in~PostgreSQL, and~the~concurrency
+invariants that keep the~control plane consistent under racing API
+calls and~worker notifications.  Table~\ref{tab:components} catalogues
+every component referenced in~the~rest of~the~chapter.
+
+\begin{table}[H]
+\centering\small
+\begin{tabularx}{\textwidth}{@{}l l X@{}}
+\toprule
+\textbf{Component} & \textbf{Process} & \textbf{Responsibility} \\
+\midrule
+API                       & \texttt{ijm-api} (FastAPI) & HTTP frontend; hosts the~scheduling and~dispatch loops \\
+\texttt{ProfilingScheduler} & in-API & Picks the~next unmeasured \texttt{(node, GPU-count)} cell for~profile-owing rows \\
+\texttt{JobDispatcher}      & in-API & Acquires the~destination's \texttt{NodeSlots} permit, then~POSTs \texttt{/jobs/\{id\}/run} to~the~target worker \\
+\texttt{NodeSlots}          & in-API & Per-node semaphore tracking GPU permits; reconciled with the~DB by~a~periodic drift heartbeat \\
+\texttt{ClusterManager}     & in-API & Loads \texttt{nodes\_config.json} and~exposes node and~GPU resources \\
+Optimizer client          & in-API & Packages the~GPUspb request, parses the~returned assignments and~preempts \\
+Worker                    & \texttt{ijm-worker} (FastAPI) & Owns the~local Docker daemon; performs atomic claim, runs the~container, emits slot-freed notifications \\
+PostgreSQL                & DB & Source of~truth for~job rows and~profile measurements \\
+GPUspb optimiser          & external HTTP & Cost-aware standard-run placement (reached via~\texttt{OPTIMIZER\_URL}) \\
+SPA                       & static (Vite) & Operator UI; polls the~API every 3--5~s \\
+\bottomrule
+\end{tabularx}
+\caption{IJM components and~their responsibilities.}\label{tab:components}
+\end{table}
 
 \section{Deployment topology}
 
@@ -275,6 +298,59 @@ scheduler stop returns the~row to~\textsc{queued} with~a~cleared
 assignment, so the~next pass can place it~elsewhere automatically.  The
 worker enforces this distinction and~ignores stale \texttt{/stop} calls
 aimed at~a~row that has~since been re-assigned to~another node.
+
+\section{Persistent state}\label{sec:persistent-state}
+
+Two PostgreSQL tables hold every fact the~scheduler reads or~writes;
+both are created idempotently on~startup from~\texttt{backend/schema.sql}.
+
+\begin{lstlisting}[language=SQL, numbers=none]
+CREATE TABLE jobs (
+    id                  TEXT PRIMARY KEY,
+    job_id              TEXT NOT NULL,
+    image               TEXT NOT NULL,
+    command             JSONB NOT NULL,
+    script_path         TEXT,
+    directory_to_mount  TEXT,
+    status              TEXT NOT NULL,
+    created_at          TIMESTAMPTZ NOT NULL,
+    updated_at          TIMESTAMPTZ NOT NULL,
+    container_name      TEXT,
+    exit_code           INT,
+    progress            TEXT,
+    priority            INT DEFAULT 3,
+    deadline            TIMESTAMPTZ,
+    batch_size          INT,
+    epochs_total        INT,
+    profiling_epochs_no INT,
+    assigned_node       TEXT,
+    assigned_gpu_config JSONB,
+    is_profiling_run    BOOLEAN DEFAULT FALSE
+);
+
+CREATE TABLE profiling_results (
+    id               TEXT PRIMARY KEY,
+    job_id           TEXT NOT NULL,
+    instance_id      TEXT,
+    gpu_config       JSONB NOT NULL,
+    node_id          TEXT NOT NULL,
+    duration_seconds FLOAT,
+    created_at       TIMESTAMPTZ NOT NULL
+);
+\end{lstlisting}
+
+Two columns of~\texttt{jobs} are load-bearing for~the~scheduling pass
+above: \texttt{assigned\_node} is~the~target the~optimiser pass writes
+under \texttt{WHERE assigned\_node IS NULL}, and~\texttt{is\_profiling\_run}
+is~the~flag that makes a~row invisible to~the~optimiser (Phase~1b) and
+visible to~the~\texttt{ProfilingScheduler} (Phase~1c).
+
+A~unique index on~\texttt{(job\_id, gpu\_config)} makes the
+cross-instance profile claim atomic.  Profile measurements are keyed
+by~the~\emph{job type} (\texttt{job\_id}) and~the~GPU configuration, so
+two concurrent submissions of~the~same type race to~own each unmeasured
+cell; the~loser's INSERT trips the~unique constraint and~the~winner's
+measurement is~shared by~every subsequent instance of~that type.
 
 \section{Concurrency invariants}
 

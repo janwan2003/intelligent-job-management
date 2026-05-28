@@ -1,0 +1,49 @@
+\section{Summary of contributions}
+
+IJM extends the~ANDREAS prototype from a~single-host scheduler into
+a~distributed control plane: one FastAPI service drives per-node
+workers over SSH-tunnelled HTTP, and~an~external GPUspb optimiser is
+consumed as~a~peer service rather than embedded in~the~scheduler.  On
+top of~that topology the~report names three substantive
+contributions.  A~\emph{profile-always} policy keyed by~the~unique
+index on~\texttt{(job\_id, gpu\_config)}~--- so~that profile
+measurements are atomically shared across instances of~the~same job
+type.  \emph{Cross-version checkpoint resume} between
+PyTorch~1.5.1 (CUDA~10.1, \texttt{matemagician}) and~PyTorch~2.6
+(CUDA~12.4, \texttt{polimi-gpu}), enabling an~in-flight job to~migrate
+between heterogeneous GPU generations without losing progress.  And
+an~empirical characterisation of~the~horizon-myopia in~GPUspb's
+\texttt{method=RG} proxy (Chapter~\ref{ch:e2e}), traced through both
+scenarios to~three combining mechanics: horizon-myopic tardiness,
+\texttt{Heuristic::assign}'s refusal to~displace incumbents, and~the
+``cheapest if~deadline reachable, else fastest'' fallback.
+
+\section{Limitations}
+
+The reference deployment uses GPUspb's \texttt{method=RG}, whose proxy
+is~horizon-myopic; the~deadline-aware \texttt{method=PR} variant
+exists upstream but is~not the~default and~has not been validated end
+to~end against the~IJM control plane.  The~report contains
+no~baseline-algorithm comparison~--- IJM's behaviour is~documented
+against the~true objective, but not yet against FIFO, EDF, or
+priority-only baselines on~the~same workloads.  Worker-side coverage
+is~end-to-end only (\texttt{worker/tests/} is~empty); only two GPU
+generations (A40 and~QuadroP600) have been validated; and~the~cluster
+used throughout Chapter~\ref{ch:e2e} is~two nodes with~four GPU slots
+in~total, so the~scaling properties of~the~four-phase pass at~tens
+of~nodes are an~open question.
+
+\section{Future work}
+
+Three follow-ups have concrete entry points in~the~codebase.  First,
+swap the~Docker executor for~SLURM: the~\texttt{Executor} abstraction
+in~\texttt{backend/src/job\_runner.py} already isolates the~Docker
+calls, and~the~worker's HTTP surface is~small enough to~back with~a
+SLURM batch-submit shim.  Second, re-run Scenarios~1 and~2 with
+\texttt{OPTIMIZER\_METHOD=PR}: \texttt{proxy\_function\_max} is~per-job
+deadline-aware, so the~prediction from~\S\ref{sec:e2e-s1-urgent-math}
+is~that URGENT lands on~A40$\times$2 in~round~1 rather than migrating
+into it~over two patient-completion events.  Third, extend the
+two-node evaluation to~a~larger cluster once a~third GPU class is
+available; this is~where the~profile-claim's atomicity and~the
+optimiser-call latency (currently a~30~s timeout) will be~stressed.
