@@ -27,18 +27,21 @@ a~lightweight worker that owns the~local Docker daemon.  The~two are
 glued together by~plain HTTP over SSH~tunnels, so the~same code runs on
 a~laptop talking to~a~remote cluster and~on~a~single-host development
 machine.  IJM integrates the~GPUspb optimiser as~the~external decision
-maker, enforces a~\emph{profile-always} policy so no~standard run~ever
-starts on~an~unmeasured bundle, and~saves checkpoints in~a~format that
-loads across torch versions, allowing a~job to~migrate between an~A40
-node and~a~legacy P600 node mid-training.
+maker for~standard-run placement.  Before any instance is~placed as~a
+standard run, the~scheduler first executes a~small number of~profile
+runs for~it on~previously-unmeasured (node, GPU-count) cells, so the
+optimiser is~never asked to~score an~unmeasured bundle.  Checkpoints
+are written in~a~format that loads across torch versions, allowing
+a~job to~migrate between an~A40 node and~a~legacy P600 node
+mid-training.
 
 We validate the~design with~two end-to-end scenarios on~the~two-node
 cluster.  Scenario~1 submits five \texttt{cnn\_big} jobs to~probe the
 profile sweep and~the~deadline-driven URGENT migration sequence.
-Scenario~2 mixes two job types and~forces the~optimiser to~place an
-urgent cnn\_big on~a~2-GPU bundle to~meet a~tight deadline while
-preempting two slack lstm-small patients.  Both scenarios complete
-without manual intervention, with~all jobs reaching \textsc{succeeded}.
+Scenario~2 mixes two job types and~constructs a~workload that pits
+URGENT against priority-5 pins on~A40 and~slack lstm-small patients
+on~P600.  Both scenarios expose the~same horizon-myopia behaviour in
+the~upstream GPUspb proxy.
 
 Chapter~\ref{ch:architecture} describes the~deployment topology, the
 scheduling pipeline, the~state machine, and~the~invariants that protect

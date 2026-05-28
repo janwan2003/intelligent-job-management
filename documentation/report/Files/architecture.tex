@@ -49,24 +49,30 @@ the~next one is~computed.
 The pass walks four phases under a~single \texttt{schedule\_lock}:
 
 \begin{enumerate}[leftmargin=*,itemsep=2pt,topsep=4pt]
-  \item \textbf{Phase~0 --- sweep stale state.}
-    Sweep stale profile claims and~reset stuck \texttt{QUEUED} rows
-    whose \texttt{assigned\_node} was set $\geq 30$~s ago without the
-    worker advancing them.
-  \item \textbf{Phase~1b --- optimiser pass.}
+  \item \textbf{Reset stuck assignments.}
+    Reset \texttt{QUEUED} rows whose \texttt{assigned\_node} was set
+    $\geq 30$~s ago without the~worker advancing them, so a~later phase
+    can re-place the~row.
+  \item \textbf{Optimiser pass.}
     Call the~optimiser outside the~lock (to~accommodate its 30~s HTTP
     timeout) and~apply its assignments through a~conditional
     \texttt{UPDATE \ldots WHERE assigned\_node IS NULL}, collecting the
-    optimiser's preempt list.
-  \item \textbf{Greedy fallback.}
-    For~\texttt{QUEUED} rows the~optimiser did not place~--- typically
-    rows that still owe a~profile run~--- the~\texttt{ProfilingScheduler}
-    picks one profile configuration or~a~profiled standard slot.
-  \item \textbf{Phase~1c --- profile-preempt.}
-    If~a~row still has~no~slot and~still owes a~profile, find the
-    cheapest set of~low-priority \texttt{RUNNING} jobs whose eviction
-    would free enough GPUs for~the~next unprofiled configuration
-    (the~\emph{profile-always} policy).
+    optimiser's preempt list.  The~optimiser only ever scores rows with
+    \texttt{is\_profiling\_run = FALSE}~--- rows still owing a~profile
+    run are invisible to~it.
+  \item \textbf{Profile placement.}
+    For~\texttt{QUEUED} rows that still owe a~profile run, the
+    \texttt{ProfilingScheduler} atomically claims one unmeasured
+    (node, GPU-count) cell using a~best-fit-on-remaining-capacity rule.
+    This is~the~mechanism behind the~\emph{profile-always} policy: an
+    instance must complete \texttt{PROFILING\_CONFIGS\_PER\_JOB}
+    profile runs (default~2) before it~becomes a~candidate for~the
+    optimiser-driven standard placement above.
+  \item \textbf{Profile-preempt.}
+    If~a~profile-owing row still has~no~slot after the~placement pass,
+    find the~cheapest set of~low-priority \texttt{RUNNING} jobs whose
+    eviction would free enough GPUs for~the~next unmeasured
+    configuration.
 \end{enumerate}
 
 Outside the~lock the~pass spawns one task per~preempt and~one per
@@ -74,8 +80,18 @@ dispatch.  Each dispatch goes through
 \texttt{JobDispatcher.dispatch\_with\_slot}, which acquires the
 destination's \texttt{NodeSlots} permit before sending
 \texttt{POST /jobs/\{id\}/run} to~the~right worker.  Permits are
-released when the~worker emits a~\texttt{NOTIFY ijm\_slot\_freed} that
-carries the~freed \texttt{(node\_id,\,n\_gpus)} pair.
+released when the~worker emits a~\texttt{NOTIFY ijm\_slot\_freed}
+payload of~the~form
+\texttt{<node\_id>:<n\_gpus>:<reason>}.  The~listener always releases
+the~permit; whether it~also wakes the~optimiser is~gated by~the
+reason.  \texttt{terminal} (job ended naturally), \texttt{user\_stop}
+(UI-initiated), and~\texttt{orphan\_drain} (zombie cleanup) are
+external events and~trigger an~optimiser pass.  \texttt{auto\_preempt}
+is~the~API's own \texttt{/stop} issued as~part of~an~in-flight plan;
+the~plan's own dispatch step will pick up~the~just-released slot, so
+re-running the~optimiser there would thrash the~plan it~is~already
+executing.  The~reason is~set at~the~worker's emit site
+(\texttt{SlotFreedReason} in~\texttt{shared/constants.py}).
 
 Figure~\ref{fig:seq-submit} shows the~submission path,
 Figure~\ref{fig:seq-profiling-loop} the~cross-instance profile cycle,
@@ -178,7 +194,7 @@ per-instance claim row guards against duplicate measurements.}
   \begin{call}{victim}{kill container, drain run task}{db}{}
     \begin{call}{victim}{UPDATE jobs SET status=QUEUED, assigned\_node=NULL}{db}{}
     \end{call}
-    \begin{messcall}{victim}{NOTIFY ijm\_slot\_freed "node:n"}{db}
+    \begin{messcall}{victim}{NOTIFY ijm\_slot\_freed "node:n:auto\_preempt"}{db}
     \end{messcall}
   \end{call}
   \begin{callself}{sched}{release NodeSlots permit on LISTEN}{}
@@ -212,7 +228,7 @@ assignment so Phase~1b can re-apply the~new placement on~the~next pass.}
   \end{call}
   \begin{call}{worker}{UPDATE jobs SET SUCCEEDED/FAILED}{db}{}
   \end{call}
-  \begin{messcall}{worker}{NOTIFY ijm\_slot\_freed "node:n"; NOTIFY ijm\_schedule}{db}
+  \begin{messcall}{worker}{NOTIFY ijm\_slot\_freed "node:n:terminal"; NOTIFY ijm\_schedule}{db}
   \end{messcall}
   \begin{sdblock}{next scheduling pass}{}
     \begin{callself}{sched}{place a waiting job on the freed slot}{}
@@ -242,6 +258,7 @@ other's work.
 \midrule
 \textsc{queued}     & \textsc{profiling} / \textsc{running} & Worker Phase~1 atomic claim \\
 \textsc{profiling}  & \textsc{queued}     & Profile run finished; \texttt{is\_profiling\_run} flips to~\texttt{false} \\
+\textsc{profiling}  & \textsc{failed}     & Profile container exited non-zero \\
 \textsc{running}    & \textsc{succeeded} / \textsc{failed} & Container exit \\
 \textsc{running}    & \textsc{preempted}  & User \texttt{POST /jobs/\{id\}/stop?reason=user} \\
 \textsc{running}    & \textsc{queued}     & Scheduler preempt (\texttt{reason=auto}): clears \texttt{assigned\_node} for~the~next pass \\

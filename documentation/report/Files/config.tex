@@ -9,7 +9,11 @@ paths are configurable via~environment variables.
 
 \subsection{Nodes (\texttt{nodes\_config.json})}
 
-Each entry describes a~compute node and~its GPU resources.
+Each entry describes a~compute node and~its GPU resources.  The~example
+below is~the~deployment used throughout
+Chapter~\ref{ch:e2e}~(\texttt{config/nodes\_config.tunnel.json}); the
+file checked in~at~\texttt{config/nodes\_config.json} is~a~mock cluster
+used by~the~unit tests.
 
 \begin{lstlisting}[language={}, numbers=none]
 [
@@ -17,7 +21,7 @@ Each entry describes a~compute node and~its GPU resources.
     "id": "matemagician",
     "isForProfiling": true,
     "workerUrl": "http://localhost:8001",
-    "cost": 0.06,
+    "cost": 0.10,
     "resources": [
       { "gpu_type": "QuadroP600", "gpu_count": 2 }
     ]
@@ -26,7 +30,7 @@ Each entry describes a~compute node and~its GPU resources.
     "id": "polimi-gpu",
     "isForProfiling": true,
     "workerUrl": "http://localhost:8002",
-    "cost": 0.55,
+    "cost": 0.30,
     "resources": [
       { "gpu_type": "A40", "gpu_count": 2 }
     ]
@@ -66,8 +70,10 @@ placements.
 
 \begin{lstlisting}[language={}, numbers=none]
 {
-  "A40":  { "1": 0.15, "2": 0.28, "4": 0.54 },
-  "L40S": { "1": 0.18, "2": 0.34, "4": 0.65 }
+  "A40":        { "1": 0.30, "2": 0.55, "4": 1.05 },
+  "L40S":       { "1": 0.40, "2": 0.75, "4": 1.40 },
+  "QuadroP600": { "1": 0.03, "2": 0.055 },
+  "Blackwell":  { "1": 1.00, "2": 1.85, "4": 3.50 }
 }
 \end{lstlisting}
 

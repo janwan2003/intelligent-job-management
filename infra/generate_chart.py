@@ -85,8 +85,14 @@ def parse_log(log_path: Path, anchor_day: datetime) -> list[dict]:
         if latest_inline is not None:
             mtime = datetime.fromtimestamp(log_path.stat().st_mtime)
             drift = (mtime - latest_inline).total_seconds()
-            if abs(drift) >= 1800:
-                api_offset = timedelta(hours=round(drift / 3600))
+            # ≥ 1.5 h drift ⇒ the log was written by a UTC-clock container and
+            # we are reading it on a non-UTC host.  Use the host's actual TZ
+            # offset rather than ``round(drift/3600)``: rounding mis-snaps to
+            # 3 h when the snapshot was copied/saved well after the last log
+            # event (drift > 2.5 h) even though the real offset is still 2 h.
+            if abs(drift) >= 5400:
+                tz_off = datetime.now().astimezone().utcoffset() or timedelta(0)
+                api_offset = tz_off if drift > 0 else -tz_off
 
     for raw in raw_lines:
         m = LINE.match(raw.strip())
@@ -165,8 +171,15 @@ def parse_worker_log(log_path: Path, anchor_day: datetime) -> list[dict]:
     mtime = datetime.fromtimestamp(log_path.stat().st_mtime)
     last_log_ts = max(ts for ts, _ in parsed)
     drift = (mtime - last_log_ts).total_seconds()
-    # ≥30 min drift ⇒ log is in a different TZ; round to nearest hour and apply.
-    offset = timedelta(hours=round(drift / 3600)) if abs(drift) >= 1800 else timedelta(0)
+    # ≥1.5 h drift ⇒ log was written in UTC by a containerised worker;
+    # use the host's exact TZ offset (rounding misfires for snapshots
+    # copied/saved well after the last log event).  Smaller drift is just
+    # the local-clock worker's slack — leave offset at zero.
+    if abs(drift) >= 5400:
+        tz_off = datetime.now().astimezone().utcoffset() or timedelta(0)
+        offset = tz_off if drift > 0 else -tz_off
+    else:
+        offset = timedelta(0)
     for ts, msg in parsed:
         ts_local = ts + offset
         if d := PROF_COMPLETE.search(msg):

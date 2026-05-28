@@ -398,6 +398,29 @@ async def lifespan(_app: FastAPI) -> AsyncGenerator[None]:
             async with state.get_conn() as conn:
                 now = datetime.now(UTC)
                 for a in opt_result.assignments:
+                    optimizer_handled.add(a.instance_id)
+                    # Migrate: the optimiser wants to move an already-RUNNING
+                    # instance to a different node.  The conditional UPDATE
+                    # below requires ``assigned_node IS NULL`` so it can't
+                    # write the new destination while the row is still
+                    # RUNNING on the source.  Stash the planned assignment
+                    # in ``state.pending_migrates``; the slot listener
+                    # applies it the moment the source ``/stop`` drains the
+                    # row to QUEUED+NULL, then queues the dispatch task.
+                    # Pre-AUTO_PREEMPT-wake-suppression this used to work
+                    # because the slot-freed NOTIFY would wake a fresh
+                    # optimiser pass that re-applied the same plan; with
+                    # the suppression the migrate has to be carried across
+                    # the preempt explicitly.
+                    if a.instance_id in opt_result.preempt:
+                        state.pending_migrates[a.instance_id] = a
+                        logger.info(
+                            "Queued migrate %s → node %s %s (awaiting source /stop drain)",
+                            a.instance_id[:8],
+                            a.node_id,
+                            a.gpu_config,
+                        )
+                        continue
                     cur = await conn.execute(
                         """UPDATE jobs
                            SET assigned_node = %s, assigned_gpu_config = %s,
@@ -414,7 +437,6 @@ async def lifespan(_app: FastAPI) -> AsyncGenerator[None]:
                             a.node_id,
                             a.gpu_config,
                         )
-                    optimizer_handled.add(a.instance_id)
                 await conn.commit()
 
                 # Profile-placement pass for QUEUED jobs the optimizer skipped.
@@ -628,6 +650,59 @@ async def lifespan(_app: FastAPI) -> AsyncGenerator[None]:
             except Exception:
                 logger.exception("Scheduler pass triggered by notify failed")
 
+    async def _apply_pending_migrates() -> None:
+        """Apply migrate plans whose source ``/stop`` has just drained.
+
+        Called from the slot listener after every NOTIFY.  Each entry in
+        ``state.pending_migrates`` is a planned move whose UPDATE we
+        deferred at apply time because the source row was still RUNNING.
+        The conditional UPDATE here writes the new destination only if
+        the row is now QUEUED with assigned_node=NULL (the state the
+        worker leaves it in after ``/stop?reason=auto``), so calling
+        this on every NOTIFY is safe — it only fires for the migrating
+        instance whose stop has actually drained.
+
+        On a successful write we spawn the dispatch task the same way
+        the in-lock apply path would have.
+        """
+        if not state.pending_migrates:
+            return
+        now = datetime.now(UTC)
+        applied: list[Assignment] = []
+        async with state.schedule_lock, state.get_conn() as conn:
+            for jid, a in list(state.pending_migrates.items()):
+                cur = await conn.execute(
+                    """UPDATE jobs
+                       SET assigned_node = %s, assigned_gpu_config = %s,
+                           is_profiling_run = FALSE, updated_at = %s
+                       WHERE id = %s AND status = %s AND assigned_node IS NULL
+                       RETURNING id""",
+                    (a.node_id, Json(a.gpu_config), now, jid, JobStatus.QUEUED),
+                )
+                if await cur.fetchone():
+                    state.pending_migrates.pop(jid, None)
+                    applied.append(a)
+                    logger.info(
+                        "Applied pending migrate %s → node %s %s",
+                        jid[:8],
+                        a.node_id,
+                        a.gpu_config,
+                    )
+            await conn.commit()
+        for a in applied:
+            existing = _dispatch_tasks.get(a.instance_id)
+            if existing is not None and not existing.done():
+                logger.info(
+                    "Skipping duplicate dispatch task for %s (already in flight)",
+                    a.instance_id[:8],
+                )
+                continue
+            task = asyncio.create_task(
+                _dispatch_when_slot_free(a),
+                name=f"dispatch-migrate-{a.instance_id[:8]}",
+            )
+            _dispatch_tasks[a.instance_id] = task
+
     async def _slot_listener() -> None:
         """LISTEN ijm_slot_freed: release the permit and (conditionally) wake the optimiser.
 
@@ -671,6 +746,17 @@ async def lifespan(_app: FastAPI) -> AsyncGenerator[None]:
                             continue
                         node_id, count, reason = parsed
                         state.node_slots.release(node_id, count)
+                        # The just-released slot may be the source of an
+                        # in-flight migrate whose new assignment we stashed
+                        # in ``state.pending_migrates`` at apply time.  Try
+                        # to commit any whose row is now QUEUED+NULL and
+                        # spawn their dispatch tasks — the UPDATE filter
+                        # guarantees only the right ones match.
+                        if state.pending_migrates:
+                            asyncio.create_task(
+                                _apply_pending_migrates(),
+                                name="apply-pending-migrates",
+                            )
                         if reason == SlotFreedReason.AUTO_PREEMPT:
                             logger.info(
                                 "slot freed by auto-preempt on %s (%d GPU) — skipping wake "

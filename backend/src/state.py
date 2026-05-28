@@ -27,6 +27,18 @@ node_slots: Any = None
 # reaper to coordinate cancellation rather than double-releasing.
 dispatch_tasks: dict[str, asyncio.Task[None]] = {}
 
+# Migrate plans that are mid-flight: the optimiser told us to move an
+# instance from one node to another, but the row is currently RUNNING on
+# the source so the apply step's ``WHERE assigned_node IS NULL`` UPDATE
+# can't write the new destination yet.  We stash the planned assignment
+# here; ``_apply_pending_migrates`` (invoked from the slot listener)
+# reads it back and writes the new assignment once the source ``/stop``
+# has drained the row back to QUEUED with assigned_node=NULL.  Keyed by
+# ``instance_id``; ``Any`` is the ``optimizer.Assignment`` dataclass
+# (typed loosely to avoid a circular import — state must not import
+# optimizer).
+pending_migrates: dict[str, Any] = {}
+
 # Serialises all scheduling decisions so two coroutines cannot assign the same node
 schedule_lock: asyncio.Lock = asyncio.Lock()
 
