@@ -1040,10 +1040,6 @@ class TestMultiJobRegression:
             assert (config,) not in profiled
             profiled.append((config,))
 
-            std_result = await sched.schedule_standard_run(conn, "job-regression")
-            assert std_result.is_profiling_run is False
-            assert std_result.mode == "standard"
-
         result = await sched.schedule_job(conn, "job-regression")
         assert result.is_profiling_run is False
         assert result.mode == "standard"

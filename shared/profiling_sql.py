@@ -1,9 +1,8 @@
 """SQL helpers for profile-claim cleanup, shared by API and worker.
 
 These helpers operate on a psycopg cursor so the caller controls transaction
-boundaries.  Logging is left to the caller — the API logs at ``logger.info``
-via ``ProfilingScheduler.delete_instance_claims`` and the worker logs through
-its own module loggers.
+boundaries.  Logging is left to the caller — callers in the API
+(``routers/jobs.py``) and worker log through their own module loggers.
 """
 
 from __future__ import annotations

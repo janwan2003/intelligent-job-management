@@ -1,0 +1,5 @@
+capture_kind: full-drain (live run after Stage-2 abort; DEADLINE_PIN=+25min)
+run_start_utc: 2026-06-03T11:01:00Z
+drain_wait_s: 855
+captured_utc: 2026-06-03T11:48:59Z
+note: URGENT placed on QuadroP600x2 (deadline-aware); see investigation re: report S2 discrepancy

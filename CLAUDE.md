@@ -9,9 +9,9 @@ not duplicate that material.
 
 **Intelligent Job Management (IJM)** — a job-management system for GPU
 deep-learning clusters with stoppable/resumable jobs, modelled after the
-ANDREAS project (Polimi). Docker-based execution behind an `Executor`
-abstraction (future SLURM swap); PostgreSQL for state; optional GPUspb
-optimizer for cost-aware batch scheduling. Architecture: FastAPI backend
+ANDREAS project (Polimi). Docker-based execution on per-node workers
+(`worker/` drives the Docker CLI directly); PostgreSQL for state; optional
+GPUspb optimizer for cost-aware batch scheduling. Architecture: FastAPI backend
 (`backend/src/`) dispatching over HTTP to per-node workers (`worker/`);
 React 19 SPA frontend; training containers in `runtime/`. See
 [README.md](README.md#architecture) for the full diagram and the job

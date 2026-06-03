@@ -38,7 +38,6 @@ services:
       # docker run -v paths are resolved by the Docker daemon on the HOST, not
       # inside the API container.  ${PWD}/.. works when running from infra/.
       HOST_PROJECT_ROOT: ${HOST_PROJECT_ROOT:-${PWD}/..}
-      EXECUTOR: docker
       OPTIMIZER_URL: ${OPTIMIZER_URL:-http://optimizer:8080}
       # 0=cost summary, 1=per step, 2=per-job analysis, 3=heuristic internals.
       # Forwarded verbatim to the optimizer's request body so the per-call
@@ -54,7 +53,7 @@ services:
       # well-conditioned scenarios.  See the comment above the gate in
       # backend/src/optimizer.py for the math.
       IJM_OPTIMIZER_GUARD_MIGRATIONS: ${IJM_OPTIMIZER_GUARD_MIGRATIONS:-}
-      NODES_CONFIG: ${NODES_CONFIG:-config/nodes_config.json}
+      NODES_CONFIG: ${NODES_CONFIG:-config/nodes_config.local_worker.json}
     ports:
       - "${IJM_API_PORT:-8000}:8000"
     # Lets the API reach the host's SSH-tunneled worker ports via
@@ -83,11 +82,12 @@ services:
         limits:
           memory: 512M
 
-  # Optional worker service for multi-node simulation.
-  # To activate: set "workerUrl": "http://worker:8001" in config/nodes_config.json
-  # and add `--profile worker` to docker compose up.
+  # Local worker — runs jobs for the all-in-one `docker compose up`.  The
+  # default config (nodes_config.local_worker.json) has one node `local-worker`
+  # whose workerUrl points here.  CPU-only by default (WORKER_GPU_MODE=none) so
+  # it launches on a dev box without an NVIDIA runtime.  To simulate a second
+  # node, add `--profile worker2` and NODES_CONFIG=config/nodes_config.local_2workers.json.
   worker:
-    profiles: [worker]
     build:
       context: ..
       dockerfile: worker/Dockerfile
@@ -98,6 +98,8 @@ services:
       HOST_ROOT: /host
       HOST_PROJECT_ROOT: ${HOST_PROJECT_ROOT:-${PWD}/..}
       NODE_ID: local-worker
+      WORKER_GPU_MODE: none
+      NODE_TOTAL_GPUS: "2"
     ports:
       - "8001:8001"
     depends_on:
@@ -123,6 +125,8 @@ services:
       HOST_ROOT: /host
       HOST_PROJECT_ROOT: ${HOST_PROJECT_ROOT:-${PWD}/..}
       NODE_ID: local-worker2
+      WORKER_GPU_MODE: none
+      NODE_TOTAL_GPUS: "2"
     ports:
       - "8002:8001"
     depends_on:

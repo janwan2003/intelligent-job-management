@@ -58,6 +58,78 @@ def parse_time(s: str, day: datetime) -> datetime:
     return out
 
 
+def tz_offset_from_drift(mtime: datetime, latest_ts: datetime) -> timedelta:
+    """TZ offset to apply to a log's timestamps, inferred from clock drift.
+
+    A UTC-clock containerised process leaves its in-line timestamps ≥1.5 h
+    behind the host-local file mtime; snap to the host's exact TZ offset
+    (rounding ``drift/3600`` mis-snaps when the snapshot was saved well after
+    the last log event).  Smaller drift is just local-clock slack ⇒ zero.
+    Shared by the API-log parser, the worker-log parser, and the TeX
+    submit-time parser so all three stay in one coordinate system.
+    """
+    drift = (mtime - latest_ts).total_seconds()
+    if abs(drift) >= 5400:
+        tz_off = datetime.now().astimezone().utcoffset() or timedelta(0)
+        return tz_off if drift > 0 else -tz_off
+    return timedelta(0)
+
+
+def load_jobs_and_anchor(snap_dir: Path) -> tuple[list, datetime]:
+    """Load ``jobs.json`` and derive the anchor day: today's date, with H:M:S
+    taken from the first ``scenario.log`` timestamp when present."""
+    jobs = json.loads((snap_dir / "jobs.json").read_text())
+    sc = (snap_dir / "scenario.log").read_text() if (snap_dir / "scenario.log").exists() else ""
+    first_t = re.search(r"\[(\d{2}:\d{2}:\d{2})\]", sc)
+    anchor_day = datetime.now().replace(microsecond=0)
+    if first_t:
+        h, m, s = map(int, first_t.group(1).split(":"))
+        anchor_day = anchor_day.replace(hour=h, minute=m, second=s)
+    return jobs, anchor_day
+
+
+def append_worker_events(snap_dir: Path, events: list[dict]) -> list[dict]:
+    """Merge ``worker_*.log`` events into *events* (which must be non-empty),
+    keeping only those inside the api.log window, then return it sorted by ts.
+
+    Worker logs span multiple runs (matemagician's container holds days of
+    history); the ``api_first`` lower bound + a generous +4 h upper bound
+    constrain them to the current run.  Callers MUST guard the empty-events
+    case before calling — the ``api_first`` ``min()`` raises on an empty list,
+    and the two callers diverge in how they report it.
+    """
+    api_first = min(e["ts"] for e in events)
+    api_last = max(e["ts"] for e in events)
+    window_end = api_last + timedelta(hours=4)
+    for worker_log in snap_dir.glob("worker_*.log"):
+        for ev in parse_worker_log(worker_log):
+            if api_first <= ev["ts"] <= window_end:
+                events.append(ev)
+    events.sort(key=lambda e: e["ts"])
+    return events
+
+
+def chart_t0(events: list[dict], jobs: list, anchor_day: datetime) -> datetime:
+    """t=0 for the chart: first dispatch of a job still present in jobs.json
+    (so a chart captured after an earlier run was cleared doesn't anchor on
+    dead events)."""
+    current_jids = {j["id"][:8] for j in jobs}
+    return min(
+        (ev["ts"] for ev in events if ev["kind"] == "dispatch" and ev.get("jid") in current_jids),
+        default=anchor_day,
+    )
+
+
+def first_dispatch_times(events: list[dict]) -> dict[str, datetime]:
+    """Map each job's 8-char id to the ts of its first ``dispatch`` event
+    (used to order chart rows by submission)."""
+    job_first_ts: dict[str, datetime] = {}
+    for ev in events:
+        if ev["kind"] == "dispatch" and "jid" in ev:
+            job_first_ts.setdefault(ev["jid"], ev["ts"])
+    return job_first_ts
+
+
 def parse_log(log_path: Path, anchor_day: datetime) -> list[dict]:
     """Return a flat list of dispatch/preempt/complete events keyed by timestamp."""
     events: list[dict] = []
@@ -84,15 +156,7 @@ def parse_log(log_path: Path, anchor_day: datetime) -> list[dict]:
                     latest_inline = cand
         if latest_inline is not None:
             mtime = datetime.fromtimestamp(log_path.stat().st_mtime)
-            drift = (mtime - latest_inline).total_seconds()
-            # ≥ 1.5 h drift ⇒ the log was written by a UTC-clock container and
-            # we are reading it on a non-UTC host.  Use the host's actual TZ
-            # offset rather than ``round(drift/3600)``: rounding mis-snaps to
-            # 3 h when the snapshot was copied/saved well after the last log
-            # event (drift > 2.5 h) even though the real offset is still 2 h.
-            if abs(drift) >= 5400:
-                tz_off = datetime.now().astimezone().utcoffset() or timedelta(0)
-                api_offset = tz_off if drift > 0 else -tz_off
+            api_offset = tz_offset_from_drift(mtime, latest_inline)
 
     for raw in raw_lines:
         m = LINE.match(raw.strip())
@@ -108,7 +172,7 @@ def parse_log(log_path: Path, anchor_day: datetime) -> list[dict]:
             jid, node, gpus_s = d.group(1), d.group(2), d.group(3)
             last_intent[jid] = {"node": node, "gpus": parse_gpu(gpus_s), "profile": False}
         elif d := REMOTE_RUN.search(msg):
-            jid, port = d.group(1), d.group(2)
+            jid = d.group(1)
             intent = last_intent.get(jid)
             if not intent:
                 continue  # no prior schedule info — skip
@@ -142,18 +206,17 @@ def parse_log(log_path: Path, anchor_day: datetime) -> list[dict]:
     return events
 
 
-def parse_worker_log(log_path: Path, anchor_day: datetime) -> list[dict]:
+def parse_worker_log(log_path: Path) -> list[dict]:
     """Profile-complete and completion events from a worker log.
 
     Worker logs carry an explicit ``YYYY-MM-DD HH:MM:SS`` timestamp, but the
     timezone varies: matemagician's worker runs in a docker container with
     ``TZ=UTC``, while polimi-gpu's native worker logs in the host's CEST
-    clock.  Detect the offset by comparing the file's mtime (always local)
-    to the latest in-line timestamp: if they're within a few minutes the
-    log is local, otherwise it's UTC.  Without this, the
-    ``api_first <= ev["ts"] <= window_end`` filter mis-rejects local-TZ
-    worker events as 2 h late and ``profile_done`` / ``completed`` signals
-    never close their segments.
+    clock.  ``tz_offset_from_drift`` detects the offset by comparing the
+    file's mtime (always local) to the latest in-line timestamp.  Without
+    this, the ``api_first <= ev["ts"] <= window_end`` filter mis-rejects
+    local-TZ worker events as 2 h late and ``profile_done`` / ``completed``
+    signals never close their segments.
     """
     out: list[dict] = []
     if not log_path.exists():
@@ -170,16 +233,7 @@ def parse_worker_log(log_path: Path, anchor_day: datetime) -> list[dict]:
         return out
     mtime = datetime.fromtimestamp(log_path.stat().st_mtime)
     last_log_ts = max(ts for ts, _ in parsed)
-    drift = (mtime - last_log_ts).total_seconds()
-    # ≥1.5 h drift ⇒ log was written in UTC by a containerised worker;
-    # use the host's exact TZ offset (rounding misfires for snapshots
-    # copied/saved well after the last log event).  Smaller drift is just
-    # the local-clock worker's slack — leave offset at zero.
-    if abs(drift) >= 5400:
-        tz_off = datetime.now().astimezone().utcoffset() or timedelta(0)
-        offset = tz_off if drift > 0 else -tz_off
-    else:
-        offset = timedelta(0)
+    offset = tz_offset_from_drift(mtime, last_log_ts)
     for ts, msg in parsed:
         ts_local = ts + offset
         if d := PROF_COMPLETE.search(msg):
@@ -304,52 +358,23 @@ def make_chart(snap_dir: Path, out: Path) -> None:
     import matplotlib.patches as mpatches  # noqa: PLC0415
     import matplotlib.pyplot as plt  # noqa: PLC0415
 
-    jobs = json.loads((snap_dir / "jobs.json").read_text())
-    sc = (snap_dir / "scenario.log").read_text() if (snap_dir / "scenario.log").exists() else ""
-    first_t = re.search(r"\[(\d{2}:\d{2}:\d{2})\]", sc)
-    anchor_day = datetime.now().replace(microsecond=0)
-    if first_t:
-        h, m, s = map(int, first_t.group(1).split(":"))
-        anchor_day = anchor_day.replace(hour=h, minute=m, second=s)
+    jobs, anchor_day = load_jobs_and_anchor(snap_dir)
 
     events = parse_log(snap_dir / "api.log", anchor_day)
     if not events:
         print("No events parsed from api.log", file=sys.stderr)
         return
-    # Worker logs span multiple runs (matemagician's container holds days of
-    # history).  Constrain worker events to the current run's window only.
-    api_first = min(e["ts"] for e in events)
-    api_last = max(e["ts"] for e in events)
-    # Generous upper bound: worker completion can lag api.log's last entry by
-    # the full length of a training run (the API may go silent for ~30+ min
-    # between optimizer cycles). Worker events now carry real dates, so the
-    # api_first lower bound is what excludes prior days of history.
-    window_end = api_last + timedelta(hours=4)
-    for worker_log in snap_dir.glob("worker_*.log"):
-        for ev in parse_worker_log(worker_log, anchor_day):
-            if api_first <= ev["ts"] <= window_end:
-                events.append(ev)
-    events.sort(key=lambda e: e["ts"])
+    events = append_worker_events(snap_dir, events)
     progress = parse_progress(snap_dir / "jobs")
     segs = derive_segments(events, jobs)
 
-    # t=0: first dispatch event for a job that's still in jobs.json (so a chart
-    # captured after an earlier run was cleared doesn't anchor on dead events).
-    current_jids = {j["id"][:8] for j in jobs}
-    first_dispatch = min(
-        (ev["ts"] for ev in events if ev["kind"] == "dispatch" and ev.get("jid") in current_jids),
-        default=anchor_day,
-    )
-    t0 = first_dispatch
+    t0 = chart_t0(events, jobs, anchor_day)
 
     def to_min(t: datetime) -> float:
         return (t - t0).total_seconds() / 60.0
 
     # Sort jobs by first dispatch time (so chart rows match submission order).
-    job_first_ts: dict[str, datetime] = {}
-    for ev in events:
-        if ev["kind"] == "dispatch" and "jid" in ev:
-            job_first_ts.setdefault(ev["jid"], ev["ts"])
+    job_first_ts = first_dispatch_times(events)
     sorted_jobs = sorted(jobs, key=lambda j: job_first_ts.get(j["id"][:8], anchor_day))
 
     # Job numbers by submission order (created_at).

@@ -818,7 +818,7 @@ async def test_schedule_job_packs_onto_partially_used_node() -> None:
 
 
 async def test_one_config_per_submit_then_standard() -> None:
-    """Each schedule_job profiles ONE config, then schedule_standard_run goes to real run."""
+    """Each schedule_job profiles ONE config; once all are profiled, schedule_job returns standard."""
     cluster.nodes = [
         {
             "id": "n1",
@@ -876,10 +876,6 @@ async def test_one_config_per_submit_then_standard() -> None:
         assert result.mode == "profiling"
         assert result.gpu_config is not None
         profiled.append((result.gpu_config,))
-
-        std = await sched.schedule_standard_run(conn, f"job-{i}")
-        assert std.is_profiling_run is False
-        assert std.mode == "standard"
 
     result = await sched.schedule_job(conn, "job-final")
     assert result.is_profiling_run is False

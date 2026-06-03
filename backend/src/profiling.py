@@ -13,7 +13,6 @@ from uuid import uuid4
 import psycopg
 from psycopg.types.json import Json
 from shared.constants import JobStatus
-from shared.profiling_sql import delete_unmeasured_claims
 
 from src.cluster import cluster
 from src.constants import DEFAULT_PROFILING_CONFIGS_PER_JOB
@@ -198,52 +197,16 @@ class ProfilingScheduler:
         candidates.sort(key=lambda pair: pair[1])
         return candidates[0][0] if candidates else None
 
-    async def get_profiled_configs(
-        self, conn: psycopg.AsyncConnection[Any], job_id: str, *, completed_only: bool = False
-    ) -> list[dict[str, int]]:
-        """Get configs claimed or completed for this job type.
+    async def get_profiled_configs(self, conn: psycopg.AsyncConnection[Any], job_id: str) -> list[dict[str, int]]:
+        """Get all configs claimed or completed for this job type.
 
-        With ``completed_only=True``, only returns configs with a recorded duration
-        (used by ``_find_available_config`` to pick a config for standard runs).
-        By default returns all claimed configs (including in-flight profiling runs),
-        so the scheduler naturally skips them.
+        Returns all claimed configs (including in-flight profiling runs), so
+        the scheduler naturally skips them.
         """
-        if completed_only:
-            query = (
-                "SELECT DISTINCT gpu_config FROM profiling_results WHERE job_id = %s AND duration_seconds IS NOT NULL"
-            )
-        else:
-            query = "SELECT DISTINCT gpu_config FROM profiling_results WHERE job_id = %s"
         async with conn.cursor() as cur:
-            await cur.execute(query, (job_id,))
+            await cur.execute("SELECT DISTINCT gpu_config FROM profiling_results WHERE job_id = %s", (job_id,))
             rows = await cur.fetchall()
         return [row[0] for row in rows]
-
-    async def _find_available_config(
-        self,
-        conn: psycopg.AsyncConnection[Any],
-        job_id: str,
-        node_gpu_usage: dict[str, dict[str, int]] | None = None,
-    ) -> tuple[dict[str, int], NodeConfig] | None:
-        """Find a profiled config that has an available production node.
-
-        Iterates profiled configs in canonical sort order (fewest GPUs first,
-        then GPU type name alphabetically — same key
-        :py:meth:`get_valid_configurations` uses) and returns the first
-        ``(config, node)`` pair for which a non-profiling node has room.
-        The sort matters: without it, the iteration order is whatever the
-        DB returns for ``SELECT DISTINCT gpu_config``, which can land the
-        scheduler on a strictly-worse multi-GPU placement (e.g.
-        ``lstm-small`` on ``A40$\times$2`` when both A40 slots are free,
-        even though ``A40$\times$1`` finishes faster AND is cheaper).
-        """
-        profiled = await self.get_profiled_configs(conn, job_id, completed_only=True)
-        profiled.sort(key=lambda c: (sum(c.values()), sorted(c.keys())))
-        for gpu_config in profiled:
-            node = self._find_node_for_config(gpu_config, is_for_profiling=False, node_gpu_usage=node_gpu_usage)
-            if node:
-                return gpu_config, node
-        return None
 
     async def _persist_assignment(
         self,
@@ -276,36 +239,6 @@ class ProfilingScheduler:
                 ),
             )
 
-    async def schedule_standard_run(self, conn: psycopg.AsyncConnection[Any], job_id: str) -> ScheduleResult:
-        """Schedule a standard (non-profiling) run using any available profiled config.
-
-        Called after a profiling run completes to immediately transition to real
-        execution on any configuration that has been measured.
-        """
-        node_gpu_usage = await self.get_node_gpu_usage(conn)
-        available = await self._find_available_config(conn, job_id, node_gpu_usage)
-        if available:
-            gpu_config, node = available
-        else:
-            gpu_config, node = None, None
-
-        result = ScheduleResult(
-            mode="standard",
-            gpu_config=gpu_config,
-            node_id=node.id if node else None,
-            is_profiling_run=False,
-        )
-
-        await self._persist_assignment(conn, job_id, result)
-
-        logger.info(
-            "Scheduled standard run for job %s: config=%s, node=%s",
-            job_id[:8],
-            result.gpu_config,
-            result.node_id,
-        )
-        return result
-
     async def _count_profiled_this_round(self, conn: psycopg.AsyncConnection[Any], instance_id: str) -> int:
         """Count how many profiling configs this specific job instance has claimed."""
         async with conn.cursor() as cur:
@@ -315,24 +248,6 @@ class ProfilingScheduler:
             )
             row = await cur.fetchone()
         return row[0] if row else 0
-
-    async def delete_instance_claims(self, conn: psycopg.AsyncConnection[Any], instance_id: str) -> int:
-        """Delete every unmeasured claim owned by *instance_id*.
-
-        Called by lifecycle paths that know the instance is no longer eligible
-        to profile: ``DELETE /jobs`` (already inline), ``FAILED`` transitions
-        in the worker reconcile path.  Measured rows (``duration_seconds``
-        not NULL) are preserved because they are cached results for the type.
-        """
-        async with conn.cursor() as cur:
-            deleted = await delete_unmeasured_claims(cur, instance_id)
-        if deleted > 0:
-            logger.info(
-                "Deleted %d unmeasured claim(s) for instance %s",
-                deleted,
-                instance_id[:8],
-            )
-        return deleted
 
     async def gc_orphaned_claims(self, conn: psycopg.AsyncConnection[Any], *, max_age_seconds: int = 900) -> int:
         """Long-lease GC for unmeasured claims that have outlived their owner.

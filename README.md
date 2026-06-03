@@ -212,19 +212,18 @@ Opens:
 - **Optimizer** → http://localhost:8080
 - **Postgres** → localhost:5432
 
-The API runs jobs directly via its embedded `JobRunner` + `DockerExecutor` — no separate worker process needed for local dev. The GPUspb optimizer is started by default; to disable it set `OPTIMIZER_URL=` (the API falls back to a greedy FIFO scheduler).
+`docker compose up` starts a local **worker container** (`ijm-worker`, `NODE_ID=local-worker`) alongside the API; jobs are dispatched to it over HTTP exactly as in a distributed deployment — there is no separate in-process execution path. The default [config/nodes_config.local_worker.json](config/nodes_config.local_worker.json) has one node (`local-worker`, `A40×2`) whose `workerUrl` points at that container. The worker is CPU-only by default (`WORKER_GPU_MODE=none`) so it launches on a box without an NVIDIA runtime; GPU presence is trusted from the config rather than probed, so you can declare any `resources` you like to exercise scheduling/preemption end-to-end without real GPUs. The GPUspb optimizer is started by default; to disable it set `OPTIMIZER_URL=` (the API falls back to a greedy FIFO scheduler).
 
-### 4. (Optional) Simulate multi-node locally
+### 4. (Optional) Simulate a second node locally
 
-By default every node in [config/nodes_config.json](config/nodes_config.json) has `workerUrl: null`, so the API runs jobs in-process. To exercise the real HTTP dispatch path against a separate worker container:
+To exercise multi-node scheduling/preemption, start a second worker and point the API at the 2-node config:
 
-1. In [config/nodes_config.json](config/nodes_config.json), set `"workerUrl": "http://worker:8001"` on one node.
-2. Start with the `worker` profile:
-   ```bash
-   cd infra && docker compose --profile worker up --build
-   ```
+```bash
+cd infra && NODES_CONFIG=config/nodes_config.local_2workers.json \
+  docker compose --profile worker2 up --build
+```
 
-The fake worker (`ijm-worker`, `NODE_ID=local-worker`) runs containers via the host Docker socket. GPU presence is trusted from the config rather than probed, so you can declare any `resources` you like (e.g. `4× A40` on a laptop) to exercise scheduling/preemption end-to-end without real GPUs.
+This adds `ijm-worker2` (`NODE_ID=local-worker2`, `QuadroP600×2`); [config/nodes_config.local_2workers.json](config/nodes_config.local_2workers.json) declares both nodes.
 
 ---
 
@@ -249,7 +248,7 @@ Central API  (FastAPI — scheduler + state + dispatch)
               └── cost-aware scheduling with deadlines & priorities
 ```
 
-**Local dev**: nodes without `workerUrl` in config use the embedded `JobRunner + DockerExecutor` — no worker server needed.
+**Local dev**: `docker compose up` runs a single worker container (`local-worker`) on the same box; the API dispatches to it over HTTP — the same path as a real deployment, just CPU-only.
 
 **Multi-node**: each GPU node runs a worker container; set `"workerUrl": "http://<host>:8001"` in nodes_config.
 
@@ -396,11 +395,11 @@ data/       Persistent data (pg/, checkpoints/, runs/)
 | `DATABASE_URL` | API, worker | `postgresql://postgres:postgres@postgres:5432/ijm` | In tunnel mode the host is `localhost:5433`. |
 | `HOST_ROOT` | API | `/host` | Maps to repo root inside the API container. |
 | `HOST_PROJECT_ROOT` | API | `${PWD}/..` | Host-resolvable path used for Docker bind mounts. |
-| `EXECUTOR` | API | `docker` | Set to `mock-slurm` to log SLURM commands while still running locally. |
 | `OPTIMIZER_URL` | API | `http://optimizer:8080` | Set to empty string to fall back to greedy FIFO scheduling. |
 | `OPTIMIZER_VERBOSE` | API | unset | Set to `1` for verbose optimizer-client diagnostic logs. |
 | `IJM_DRIFT_HEARTBEAT_S` | API | `15` | Period of the slot-tracker drift heartbeat (reconciles `mem_used` vs `db_used` per node). |
-| `WORKER_GPU_MODE` | worker | `runtime` | `runtime` (rootful + nvidia default runtime), `cdi` (rootless via CDI spec), or `none` (CPU-only). |
+| `WORKER_GPU_MODE` | worker | `runtime` | `runtime` (rootful + nvidia default runtime), `cdi` (rootless via CDI spec), or `none` (CPU-only — used by the all-in-one compose). |
+| `NODE_TOTAL_GPUS` | worker | (probes `nvidia-smi`) | Declares the node's GPU count without probing; set on GPU-less hosts (the all-in-one worker uses `2`). |
 | `IMAGE_TAG_OVERRIDE` | worker | unset | Rewrites the job's image tag (`:latest` → `:$IMAGE_TAG_OVERRIDE`). Set to `legacy` on matemagician. |
 | `NODE_ID` | worker | from deploy script | Identifies the node in `config/nodes_config.json`. |
 | `VITE_API_URL` | frontend | `http://localhost:8000` | API base URL the SPA talks to. |

@@ -35,15 +35,12 @@ of~nodes are an~open question.
 
 \section{Future work}
 
-Three follow-ups have concrete entry points in~the~codebase.  First,
-swap the~Docker executor for~SLURM: the~\texttt{Executor} abstraction
-in~\texttt{backend/src/job\_runner.py} already isolates the~Docker
-calls, and~the~worker's HTTP surface is~small enough to~back with~a
-SLURM batch-submit shim.  Second, re-run Scenarios~1 and~2 with
+Two follow-ups have concrete entry points in~the~codebase.  First,
+re-run Scenarios~1 and~2 with
 \texttt{OPTIMIZER\_METHOD=PR}: \texttt{proxy\_function\_max} is~per-job
 deadline-aware, so the~prediction from~\S\ref{sec:e2e-s1-urgent-math}
 is~that URGENT lands on~A40$\times$2 in~round~1 rather than migrating
-into it~over two patient-completion events.  Third, extend the
+into it~over two patient-completion events.  Second, extend the
 two-node evaluation to~a~larger cluster once a~third GPU class is
 available; this is~where the~profile-claim's atomicity and~the
 optimiser-call latency (currently a~30~s timeout) will be~stressed.

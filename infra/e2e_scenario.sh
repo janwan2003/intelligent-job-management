@@ -1,20 +1,33 @@
 #!/usr/bin/env bash
 # Scenario 1 — single-type end-to-end demo.
 #
-# Exercises, in order, the four behaviours the system promises:
-#   1. Multi-GPU placement     — during the profile sweep, every instance
-#                                runs on a 2-GPU bundle for at least one
-#                                config (visible in profiling_results).
-#   2. Auto-preempt by urgency — an urgent past-deadline submission forces
-#                                the optimizer to evict a lower-priority
-#                                running job and place itself on the freed
-#                                fastest slot.
-#   3. Manual user-stop        — the operator pauses one running job; the
-#                                row sticks at PREEMPTED until /resume.
-#   4. Cross-node resume       — when the auto-preempted job comes back,
-#                                it lands on a different node than its
-#                                origin and the legacy-format checkpoint
-#                                loads cleanly.
+# Exercises, in order, the behaviours the system ACTUALLY exhibits — as
+# documented in the thesis Scenario 1 (documentation/report/Files/e2e.tex,
+# §sec:e2e-s1 and §sec:e2e-s1-urgent-math).  NOTE: an earlier version of this
+# script asserted an "auto-preempt by urgency" (URGENT evicts a patient and
+# takes the fastest slot).  The report PROVES GPUspb's Random Greedy does the
+# opposite, so that assertion was rewritten to match the documented behaviour
+# (the system is correct-as-documented; the old assertion was wrong):
+#   1. Multi-GPU placement      — during the profile sweep, every instance
+#                                 runs on a 2-GPU bundle for at least one
+#                                 config (visible in profiling_results).
+#   2. Horizon-myopic placement — an urgent prio-5 submission lands on the
+#                                 SLOWER free QuadroP600 bundle, NOT on A40,
+#                                 and preempts NO incumbent.  Both A40 slots
+#                                 are held by the patient jobs; RG only places
+#                                 on currently-free capacity and never evicts
+#                                 an incumbent, and its horizon-myopic proxy
+#                                 reads URGENT's tardiness as zero, so it picks
+#                                 the cheapest free P600 bundle.  This is the
+#                                 documented bug, NOT an auto-preempt.
+#   3. Natural-finish migration — as the A40 patients finish on their own, the
+#                                 optimizer re-plans and MIGRATES URGENT from
+#                                 QuadroP600 onto the now-free A40 (cross-node).
+#                                 No policy decision clears A40 for URGENT;
+#                                 migrations follow patients finishing.
+#   4. Cross-version checkpoint — URGENT's P600->A40 migration crosses torch
+#                                 1.5.1 (matemagician) -> torch 2.6 (polimi-gpu);
+#                                 the legacy-format checkpoint loads cleanly.
 #
 # Default job type is ``cnn_big`` — this is the type documented in the
 # thesis Scenario 1 (see documentation/report/Files/e2e.tex:147 which
@@ -28,7 +41,7 @@
 #
 # Usage:
 #   bash infra/e2e_scenario.sh                # default settings
-#   bash infra/e2e_scenario.sh --strict       # cross-node-resume becomes fatal
+#   bash infra/e2e_scenario.sh --strict       # a non-cross-node migration becomes fatal
 set -euo pipefail
 
 API="${API:-http://localhost:8000}"
@@ -170,11 +183,22 @@ PRE_URGENT_RUNNING=$(all_jobs | jq -c '[.[] | select(.status == "RUNNING") | {id
 log "  pre-urgent RUNNING (id@node): $(echo "$PRE_URGENT_RUNNING" | jq -r 'map("\(.id[0:8])@\(.node)") | join(" ")')"
 
 # -----------------------------------------------------------------------------
-# Stage 2 — Auto-preempt by urgency
+# Stage 2 — Horizon-myopic placement (the documented GPUspb-RG behaviour)
 # -----------------------------------------------------------------------------
-# Submit an URGENT prio=5 job with a deadline so tight every node is at least
-# somewhat tardy; A40 is dramatically less tardy than P600, so the optimizer
-# is forced to place it on A40 and evict whatever's there.
+# Submit an URGENT prio=5 job with a +10-min deadline that NO bundle can
+# actually meet (200 epochs >> any bundle's reachable work in 10 min).  The
+# thesis (e2e.tex §e2e-s1-urgent-math) proves what GPUspb's Random Greedy does
+# here, and it is NOT what a deadline-aware scheduler would do:
+#   * Both A40 slots are held by the prio-4 patients.  RG only places on
+#     currently-free capacity (Heuristic::assign -> assign_to_node returns
+#     empty for an occupied node) and has no path that preempts an incumbent,
+#     so A40 plans are never generated.
+#   * Among the free QuadroP600 configs, the horizon-myopic proxy reads
+#     URGENT's in-proxy tardiness as zero (deadline still future at the
+#     next-finish horizon), so RG picks the cheapest free P600 bundle.
+# Net effect: URGENT lands on a QuadroP600 bundle (matemagician) and preempts
+# NOBODY.  We assert exactly that — a preempt here would be a *regression*
+# away from the documented behaviour, not a success.
 log "  settling: 60s wait after profile sweep so the cluster reaches steady state before URGENT"
 sleep 60
 
@@ -190,25 +214,38 @@ wait_for "urgent placed" 180 3 \
     || fail "URGENT still QUEUED after 180s"
 pass "URGENT placed in $(( $(date +%s) - T0 ))s"
 
-# Identify the victim: an id that was RUNNING pre-urgent but is now QUEUED or
-# PREEMPTED.  Save its origin node for the cross-node-resume check.
-log "  identifying auto-preempt victim…"
+# Assert the documented horizon-myopic placement: URGENT on QuadroP600 (the
+# slower free hardware), NOT on A40.  Save its origin for the Stage-4 migration
+# check.
+URGENT_ORIGIN=$(job_field "$JOB_URGENT" assigned_node)
+URGENT_CFG=$(job_field "$JOB_URGENT" assigned_gpu_config)
+URGENT_P600=$(echo "$URGENT_CFG" | jq -r '.QuadroP600 // 0')
+log "  URGENT placed on $URGENT_ORIGIN: $URGENT_CFG"
+(( URGENT_P600 >= 1 )) \
+    || fail "expected URGENT on a QuadroP600 bundle (horizon-myopia), got $URGENT_CFG on $URGENT_ORIGIN"
+pass "horizon-myopia confirmed: URGENT on QuadroP600×${URGENT_P600} (slower free bundle), not A40"
+
+# Confirm A40 stayed held by the patients — i.e. URGENT did NOT evict an
+# incumbent to grab the fast hardware.  Both A40 slots must still be occupied
+# by non-URGENT jobs, and none of the pre-URGENT RUNNING ids may have bounced
+# to QUEUED/PREEMPTED on URGENT's arrival.
+log "  asserting URGENT preempted no incumbent (A40 still held by patients)…"
 PRE_IDS=$(echo "$PRE_URGENT_RUNNING" | jq -r '.[].id')
-VICTIM=""
-VICTIM_ORIGIN=""
-for _ in $(seq 30); do
+preempted=""
+for _ in $(seq 15); do
+    preempted=""
     for prev_id in $PRE_IDS; do
-        cur_status=$(job_field "$prev_id" status)
-        if [[ "$cur_status" == "QUEUED" || "$cur_status" == "PREEMPTED" ]]; then
-            VICTIM="$prev_id"
-            VICTIM_ORIGIN=$(echo "$PRE_URGENT_RUNNING" | jq -r ".[] | select(.id == \"$prev_id\") | .node")
-            break 2
-        fi
+        st=$(job_field "$prev_id" status)
+        [[ "$st" == "QUEUED" || "$st" == "PREEMPTED" ]] && preempted="$preempted ${prev_id:0:8}($st)"
     done
     sleep 1
 done
-[[ -n "$VICTIM" ]] || fail "no auto-preempt victim observed (after 30s polling)"
-pass "auto-preempt victim: ${VICTIM:0:8} (origin: $VICTIM_ORIGIN, status: $(job_field "$VICTIM" status))"
+a40_held=$(all_jobs | jq "[.[] | select(.status == \"RUNNING\" and .assigned_node == \"polimi-gpu\" and .id != \"$JOB_URGENT\")] | length")
+[[ -z "$preempted" ]] \
+    || fail "incumbent(s) preempted ($preempted) — regression: RG must never evict an incumbent for URGENT"
+(( a40_held >= 1 )) \
+    || warn "expected A40 still held by patient(s); saw $a40_held A40-resident patients"
+pass "no incumbent preempted — URGENT took free capacity only ($a40_held patient(s) still on A40)"
 
 # -----------------------------------------------------------------------------
 # Stage 3 — (removed)  Manual user-stop has been intentionally dropped from
@@ -218,33 +255,36 @@ pass "auto-preempt victim: ${VICTIM:0:8} (origin: $VICTIM_ORIGIN, status: $(job_
 # -----------------------------------------------------------------------------
 
 # -----------------------------------------------------------------------------
-# Stage 4 — Cross-node resume of the auto-preempt victim
+# Stage 4 — Natural-finish migration of URGENT onto A40 (cross-node)
 # -----------------------------------------------------------------------------
-# Wait for the auto-preempted victim from Stage 2 to come back online.
-# Its re-dispatch can land on either node — we *want* a different node from
-# its origin (cross-node resume).  Under --strict this is fatal; otherwise
-# warn-only since same-node resume is also a valid outcome under cost-min.
-log "Stage 4: waiting for auto-preempt victim ${VICTIM:0:8} to resume (≤ 10 min)…"
-wait_for "victim resumed" 600 5 \
-    "[.[] | select(.id == \"$VICTIM\" and (.status == \"RUNNING\" or .status == \"PROFILING\"))] | length == 1" \
-    || fail "victim ${VICTIM:0:8} did not resume in 10 min"
-VICTIM_RESUME_NODE=$(job_field "$VICTIM" assigned_node)
-pass "victim resumed on $VICTIM_RESUME_NODE"
-if [[ "$VICTIM_RESUME_NODE" != "$VICTIM_ORIGIN" ]]; then
-    pass "cross-node resume: ${VICTIM:0:8} moved from $VICTIM_ORIGIN → $VICTIM_RESUME_NODE"
+# URGENT is stuck on the slow QuadroP600.  As the A40 patients finish on their
+# OWN (no policy preempt), the optimizer re-plans: with URGENT now in
+# currentScheduling, migrating it onto a freed A40 slot collapses its projected
+# completion, so it migrates QuadroP600 -> A40 (and may later upgrade A40×1 ->
+# A40×2 as the second A40 frees).  This crosses matemagician (torch 1.5.1) ->
+# polimi-gpu (torch 2.6), exercising the legacy-format checkpoint loader.
+# Under --strict a non-cross-node outcome is fatal; otherwise warn-only.
+log "Stage 4: waiting for URGENT ${JOB_URGENT:0:8} to migrate $URGENT_ORIGIN -> A40 (≤ 12 min)…"
+wait_for "urgent migrated to A40" 720 5 \
+    "[.[] | select(.id == \"$JOB_URGENT\" and .assigned_node == \"polimi-gpu\" and (.status == \"RUNNING\" or .status == \"PROFILING\"))] | length == 1" \
+    || fail "URGENT did not migrate onto A40 (polimi-gpu) within 12 min"
+URGENT_MIG_CFG=$(job_field "$JOB_URGENT" assigned_gpu_config)
+pass "URGENT migrated to polimi-gpu (A40): $URGENT_MIG_CFG"
+if [[ "$URGENT_ORIGIN" != "polimi-gpu" ]]; then
+    pass "cross-node migration confirmed: $URGENT_ORIGIN (P600) -> polimi-gpu (A40), torch 1.5.1 -> 2.6"
 else
-    warn "victim resumed on origin node $VICTIM_ORIGIN — same-node resume (not strict-fatal under cost-min)"
+    warn "URGENT originated on A40 — no cross-node hop this run (not strict-fatal under cost-min)"
 fi
 
-# Verify the checkpoint actually loaded (trainer log line on the resume node).
-# grep returns 1 with no match → pipefail trips set -e and exits the
-# whole script.  Force the grep step's exit to 0 so an absent log line
-# is reported as "warn" rather than aborting.
-RESUMED_LOG=$(curl -sS "$API/jobs/$VICTIM/logs" 2>/dev/null | tail -200 | { grep -i "resumed from\|resuming from\|loaded checkpoint" || true; } | tail -1)
+# Verify the checkpoint actually loaded on the A40 node after the migrate.
+# grep returns 1 with no match → pipefail trips set -e and exits the whole
+# script.  Force the grep step's exit to 0 so an absent log line is reported
+# as "warn" rather than aborting.
+RESUMED_LOG=$(curl -sS "$API/jobs/$JOB_URGENT/logs" 2>/dev/null | tail -300 | { grep -i "resumed from\|resuming from\|loaded checkpoint" || true; } | tail -1)
 if [[ -n "$RESUMED_LOG" ]]; then
     pass "checkpoint load confirmed in logs: $(echo "$RESUMED_LOG" | head -c 120)"
 else
-    warn "no 'resumed from' line in logs (logs may still be in flight)"
+    warn "no 'resumed from' line in URGENT logs (logs may still be in flight)"
 fi
 
 # -----------------------------------------------------------------------------
@@ -290,4 +330,4 @@ else
 fi
 pass "drift heartbeat fired ${recovery}× (15s cadence; auto-recovered)"
 
-pass "Scenario 1 complete: 2-GPU profiling, auto-preempt, manual-stop, cross-node-or-same resume, slot-tracker clean"
+pass "Scenario 1 complete: 2-GPU profiling, horizon-myopic P600 placement (no preempt), natural-finish migration P600->A40, slot-tracker clean"

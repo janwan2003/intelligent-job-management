@@ -46,7 +46,7 @@ used by~the~unit tests.
 \midrule
 \texttt{id}                     & string         & Unique node identifier \\
 \texttt{isForProfiling}         & bool           & If \texttt{true}, the~node can host profiling runs.  Production jobs may still land on~it; profiling jobs may only land on~it \\
-\texttt{workerUrl}              & string \textbar{} null & HTTP base URL of~the~worker, typically reached through an~SSH tunnel.  When \texttt{null}, dispatch falls through to~the~in-process \texttt{JobRunner} (development only) \\
+\texttt{workerUrl}              & string         & HTTP base URL of~the~node's worker, reached through an~SSH tunnel.  The~API dispatches by~posting \texttt{/jobs/\{id\}/run} and~\texttt{/jobs/\{id\}/stop} here; every node must be~backed by~a~worker \\
 \texttt{cost}                   & float          & Idle cost of~the~node ($\$$/h), used by~the~optimiser \\
 \texttt{resources}              & array          & GPU resources attached to~the~node \\
 \texttt{resources[].gpu\_type}  & string         & GPU model name (e.g.~\texttt{A40}, \texttt{L40S}, \texttt{QuadroP600}) \\
@@ -215,7 +215,6 @@ process at~startup.
 \texttt{OPTIMIZER\_METHOD}              & \texttt{RG} & GPUspb solver method passed in~the~request body \\
 \texttt{OPTIMIZER\_VERBOSE}             & 0 & Per-call log verbosity (0--3) \\
 \texttt{PROFILING\_CONFIGS\_PER\_JOB}   & 2 & How many distinct GPU configurations a~single instance profiles before falling through to~a~standard run \\
-\texttt{EXECUTOR}                       & \texttt{docker} & Executor backend for~the~in-process \texttt{JobRunner}: \texttt{docker} or~\texttt{mock-slurm}.  Workers always use the~Docker~CLI \\
 \texttt{IJM\_DRIFT\_HEARTBEAT\_S}       & 15 & Period of~the~slot-tracker drift heartbeat that reconciles \texttt{mem\_used} against \texttt{db\_used} per~node \\
 \texttt{WORKER\_GPU\_MODE}              & \texttt{runtime} & Worker-side; how Docker exposes GPUs to~training containers (\texttt{runtime} / \texttt{cdi} / \texttt{none}) \\
 \texttt{IMAGE\_TAG\_OVERRIDE}           & unset & Worker-side; rewrites \texttt{:latest} to~the~given tag.  Used on~\texttt{matemagician} to~pick the~CUDA-10.1-compatible \texttt{:legacy} image \\

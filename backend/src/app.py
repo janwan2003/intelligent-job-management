@@ -25,9 +25,7 @@ from shared.constants import (
 import src.state as state
 from src.cluster import cluster
 from src.constants import CORS_ALLOWED_ORIGINS, DEFAULT_DATABASE_URL
-from src.executors import create_executor
 from src.job_dispatcher import JobDispatcher
-from src.job_runner import JobRunner
 from src.node_slots import NodeSlots
 from src.optimizer import Assignment, optimize
 from src.profiling import scheduler
@@ -94,96 +92,16 @@ async def lifespan(_app: FastAPI) -> AsyncGenerator[None]:
     logger.info("Database initialized")
 
     # ------------------------------------------------------------------
-    # Job runner
+    # Job dispatcher
     # ------------------------------------------------------------------
+    #
+    # Jobs run on per-node worker containers (worker/), reached over HTTP.
+    # The worker records profiling results (worker/profiling.py handle_complete)
+    # and releases slots on completion via ``NOTIFY ijm_slot_freed`` /
+    # ``ijm_schedule`` — picked up by ``_slot_listener`` / ``_notify_listener``
+    # below — so the API needs no in-process completion callbacks.
 
-    executor_name = os.getenv("EXECUTOR", "docker")
-    executor = create_executor(executor_name)
-    logger.info("Executor: %s", executor_name)
-
-    async def _on_profiling_complete(
-        job_id: str,
-        gpu_config: dict[str, int],
-        node_id: str,
-        duration: float,
-        job_type_id: str | None = None,
-    ) -> None:
-        """Handle profiling result — record it, then defer placement to the
-        full scheduling pass so the optimizer (not greedy) decides the next run."""
-        type_id = job_type_id or job_id
-        async with state.get_conn() as pconn, pconn.transaction():
-            now = datetime.now(UTC)
-            # Filter by instance_id so a stray finish from a different instance
-            # can never overwrite this row, and surface a warning if no claim
-            # row matches (e.g. it was deleted by a concurrent failure path).
-            cur = await pconn.execute(
-                """UPDATE profiling_results
-                   SET duration_seconds = %s, node_id = %s
-                   WHERE job_id = %s AND gpu_config = %s::jsonb
-                     AND instance_id = %s AND duration_seconds IS NULL""",
-                (duration, node_id, type_id, Json(gpu_config), job_id),
-            )
-            if cur.rowcount == 0:
-                logger.warning(
-                    "No in-flight profiling claim for job %s (type=%s, %s) — result not recorded",
-                    job_id[:8],
-                    type_id,
-                    gpu_config,
-                )
-            # Keep is_profiling_run=TRUE if this instance still has unmeasured
-            # claims — otherwise the long-lease GC could collect them on its
-            # 60-min tick and the remaining profile cells would never dispatch.
-            cur = await pconn.execute(
-                "SELECT 1 FROM profiling_results WHERE instance_id = %s AND duration_seconds IS NULL LIMIT 1",
-                (job_id,),
-            )
-            still_owes = (await cur.fetchone()) is not None
-            await pconn.execute(
-                """UPDATE jobs
-                   SET status = %s, assigned_node = NULL, assigned_gpu_config = NULL,
-                       is_profiling_run = %s, updated_at = %s
-                   WHERE id = %s""",
-                (JobStatus.QUEUED, still_owes, now, job_id),
-            )
-
-        logger.info(
-            "Recorded profiling result for job %s (type=%s): %s = %.1fs", job_id[:8], type_id, gpu_config, duration
-        )
-        await _schedule_waiting_jobs()
-
-    async def _on_job_completed(job_id: str) -> None:
-        """When an in-process job finishes, release its slot semaphore and
-        re-trigger scheduling.
-
-        The slot release uses (assigned_node, assigned_gpu_config) read from
-        the row — at this point the row's status is terminal (SUCCEEDED /
-        FAILED / PREEMPTED) but ``assigned_node`` is still set (the auto-
-        preempt path that nullifies it doesn't go through this callback).
-        Tolerate a missing row / missing assignment defensively.
-        """
-        if state.node_slots is not None:
-            try:
-                async with state.get_conn() as conn:
-                    cur = await conn.execute(
-                        "SELECT assigned_node, assigned_gpu_config FROM jobs WHERE id = %s",
-                        (job_id,),
-                    )
-                    row = await cur.fetchone()
-                if row and row[0] and row[1]:
-                    n_gpus = sum(int(v) for v in row[1].values())
-                    state.node_slots.release(row[0], n_gpus)
-            except Exception:
-                logger.exception("Failed to release slot for completed job %s", job_id[:8])
-        await _schedule_waiting_jobs()
-
-    local_runner = JobRunner(
-        executor=executor,
-        get_conn=state.get_conn,
-        on_profiling_complete=_on_profiling_complete,
-        on_job_completed=_on_job_completed,
-    )
-    state.job_runner = JobDispatcher(local_runner, state.get_conn, cluster)
-    await state.job_runner.start()
+    state.job_runner = JobDispatcher(state.get_conn, cluster)
 
     # NodeSlots: per-node semaphores that gate dispatches.  Reconciled from
     # DB so that already-occupied slots are pre-acquired.
@@ -811,7 +729,6 @@ async def lifespan(_app: FastAPI) -> AsyncGenerator[None]:
     consumer_task.cancel()
     slot_listener_task.cancel()
     drift_task.cancel()
-    await state.job_runner.shutdown()
     if state.pool:
         await state.pool.close()
 

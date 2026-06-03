@@ -42,7 +42,7 @@ talking to~a~remote cluster and~a~single-host development setup.
 An~optional GPUspb \emph{optimiser} HTTP service is~reached the~same
 way.
 
-\begin{figure}[!htb]
+\begin{figure}[H]
 \centering
 \includegraphics[width=\textwidth]{Images/CurrentPrototype.png}
 \caption{Distributed prototype.  The~SPA, API, and~optimiser run on
@@ -59,6 +59,18 @@ the~distributed topology.
 
 \section{Scheduling pipeline}
 
+The pipeline is~shaped by~a~single governing assumption: \emph{profiling
+is~always worth its cost}.  A~deep-learning job runs for~hours, whereas
+profiling one GPU~configuration takes minutes; leaving a~configuration
+unmeasured risks overlooking the~placement that~would have saved hours
+of~computation, or~missing a~hard deadline.  The~scheduler therefore
+treats profiling as~privileged work that~may preempt running jobs,
+rather than as~best-effort measurement deferred until the~cluster falls
+idle.  How~aggressively the~system profiles is~a~tunable policy:
+\texttt{PROFILING\_CONFIGS\_PER\_JOB} (default~2) sets how~many
+configurations each instance must measure before it~is~handed to~the
+cost-aware optimiser for~standard placement.
+
 A~single scheduling pass~--- \texttt{\_schedule\_waiting\_jobs} in
 \texttt{app.py}~--- handles every dispatch decision.  It is~invoked
 whenever a~job is~submitted, a~profiling run finishes, or~a~slot is
@@ -69,7 +81,10 @@ Wake-ups are coalesced through a~single
 five~seconds, so the~cluster has time to~apply the~previous plan before
 the~next one is~computed.
 
-The pass walks four phases under a~single \texttt{schedule\_lock}:
+The pass runs four phases, all guarded by~a~single
+\texttt{schedule\_lock} except the~optimiser's HTTP call (phase~2),
+which is~made outside the~lock so its timeout cannot stall concurrent
+scheduler work:
 
 \begin{enumerate}[leftmargin=*,itemsep=2pt,topsep=4pt]
   \item \textbf{Reset stuck assignments.}
@@ -85,12 +100,15 @@ The pass walks four phases under a~single \texttt{schedule\_lock}:
     run are invisible to~it.
   \item \textbf{Profile placement.}
     For~\texttt{QUEUED} rows that still owe a~profile run, the
-    \texttt{ProfilingScheduler} atomically claims one unmeasured
-    (node, GPU-count) cell using a~best-fit-on-remaining-capacity rule.
-    This is~the~mechanism behind the~\emph{profile-always} policy: an
-    instance must complete \texttt{PROFILING\_CONFIGS\_PER\_JOB}
-    profile runs (default~2) before it~becomes a~candidate for~the
-    optimiser-driven standard placement above.
+    \texttt{ProfilingScheduler} atomically reserves the~instance's
+    outstanding unmeasured \texttt{(node, GPU-count)} cells~--- up to~its
+    \texttt{PROFILING\_CONFIGS\_PER\_JOB} budget (default~2)~--- and
+    dispatches one of~them this pass, choosing the~node by~best fit
+    on~remaining capacity; the~rest follow on~later passes as~slots
+    free.  This is~the~mechanism behind the~\emph{profile-always}
+    policy: an~instance must complete all~its profile runs before
+    it~becomes a~candidate for~the optimiser-driven standard placement
+    above.
   \item \textbf{Profile-preempt.}
     If~a~profile-owing row still has~no~slot after the~placement pass,
     find the~cheapest set of~low-priority \texttt{RUNNING} jobs whose
@@ -98,30 +116,39 @@ The pass walks four phases under a~single \texttt{schedule\_lock}:
     configuration.
 \end{enumerate}
 
-Outside the~lock the~pass spawns one task per~preempt and~one per
-dispatch.  Each dispatch goes through
-\texttt{JobDispatcher.dispatch\_with\_slot}, which acquires the
-destination's \texttt{NodeSlots} permit before sending
-\texttt{POST /jobs/\{id\}/run} to~the~right worker.  Permits are
-released when the~worker emits a~\texttt{NOTIFY ijm\_slot\_freed}
-payload of~the~form
-\texttt{<node\_id>:<n\_gpus>:<reason>}.  The~listener always releases
-the~permit; whether it~also wakes the~optimiser is~gated by~the
-reason.  \texttt{terminal} (job ended naturally), \texttt{user\_stop}
-(UI-initiated), and~\texttt{orphan\_drain} (zombie cleanup) are
-external events and~trigger an~optimiser pass.  \texttt{auto\_preempt}
-is~the~API's own \texttt{/stop} issued as~part of~an~in-flight plan;
-the~plan's own dispatch step will pick up~the~just-released slot, so
-re-running the~optimiser there would thrash the~plan it~is~already
-executing.  The~reason is~set at~the~worker's emit site
-(\texttt{SlotFreedReason} in~\texttt{shared/constants.py}).
+Once the~lock is~released, the~plan is~executed asynchronously: each
+preempt and~each dispatch runs as~an~independent task, so a~slow stop
+on~one node never delays placements on~another.  Before launching a~job,
+the~dispatcher must acquire a~permit from the~destination node's
+\texttt{NodeSlots} semaphore, whose count is~that node's GPU~capacity;
+the~permit is~what bounds the~number of~concurrent jobs per~node and
+arbitrates between tasks competing for~the~last free slot.
+
+Permits are released asynchronously, because a~job's GPUs are not free
+the~instant the~API decides to~stop it~--- only once the~worker has
+killed the~container, drained its logs, and~written a~checkpoint.  The
+worker therefore signals each release, and~the~API returns the~permit
+at~that moment, keeping its in-memory count in~step with actual
+occupancy.  Each release also records \emph{why} it~happened, because
+the~cause determines whether the~scheduler should re-plan.  A~release
+triggered by~an~event outside the~current plan~--- a~job finishing
+on~its own, an~operator stopping a~job, or~the~cleanup of~an~orphaned
+container~--- frees capacity the~optimiser did not foresee, and~so wakes
+a~fresh scheduling pass.  A~release caused by~the~scheduler's \emph{own}
+in-flight preempt is~the~one exception: the~plan that~issued the~preempt
+already contains the~dispatch that~will reclaim the~freed slot, so
+re-running the~optimiser at~that point would let it~rewrite a~plan it~is
+still executing.  Only that case suppresses the~re-plan, and~doing so
+is~safe because independent watchdogs~--- a~drift heartbeat, the
+stuck-dispatch reaper, and~a~periodic queue watcher~--- re-wake the
+scheduler if~a~planned dispatch ever fails to~land.
 
 Figure~\ref{fig:seq-submit} shows the~submission path,
 Figure~\ref{fig:seq-profiling-loop} the~cross-instance profile cycle,
 Figure~\ref{fig:seq-optimizer-cycle} an~optimiser-driven preempt and
 migrate round, and~Figure~\ref{fig:seq-standard-run} the~standard run.
 
-\begin{figure}[!htb]
+\begin{figure}[H]
 \centering
 \footnotesize
 \setlength{\unitlength}{0.7cm}
@@ -160,7 +187,7 @@ block other passes.}
 \label{fig:seq-submit}
 \end{figure}
 
-\begin{figure}[!htb]
+\begin{figure}[H]
 \centering
 \footnotesize
 \setlength{\unitlength}{0.7cm}
@@ -196,7 +223,7 @@ per-instance claim row guards against duplicate measurements.}
 \label{fig:seq-profiling-loop}
 \end{figure}
 
-\begin{figure}[!htb]
+\begin{figure}[H]
 \centering
 \footnotesize
 \setlength{\unitlength}{0.7cm}
@@ -234,7 +261,7 @@ assignment so Phase~1b can re-apply the~new placement on~the~next pass.}
 \label{fig:seq-optimizer-cycle}
 \end{figure}
 
-\begin{figure}[!htb]
+\begin{figure}[H]
 \centering
 \footnotesize
 \setlength{\unitlength}{0.7cm}
@@ -275,7 +302,7 @@ other's work.
 
 \begin{table}[H]
 \centering\small
-\begin{tabular}{@{}l l p{8.2cm}@{}}
+\begin{tabularx}{\textwidth}{@{}l l X@{}}
 \toprule
 \textbf{From} & \textbf{To} & \textbf{Trigger} \\
 \midrule
@@ -287,7 +314,7 @@ other's work.
 \textsc{running}    & \textsc{queued}     & Scheduler preempt (\texttt{reason=auto}): clears \texttt{assigned\_node} for~the~next pass \\
 \textsc{preempted} / \textsc{failed} & \textsc{queued} & \texttt{POST /jobs/\{id\}/resume} \\
 \bottomrule
-\end{tabular}
+\end{tabularx}
 \caption{Job state transitions.}\label{tab:state-machine}
 \end{table}
 

@@ -53,7 +53,7 @@ async def get_conn() -> AsyncGenerator[psycopg.AsyncConnection[Any]]:
 
 
 def require_runner() -> Any:
-    """Return the JobRunner or raise 503 if not initialized."""
+    """Return the JobDispatcher or raise 503 if not initialized."""
     if job_runner is None:
         raise HTTPException(status_code=503, detail="Job runner not initialized")
     return job_runner

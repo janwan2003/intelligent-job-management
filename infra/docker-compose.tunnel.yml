@@ -14,7 +14,6 @@ services:
       DATABASE_URL: postgresql://postgres:postgres@localhost:5433/ijm
       NODES_CONFIG: config/nodes_config.tunnel.json
       HOST_PROJECT_ROOT: /home/wangrat/ijm
-      EXECUTOR: docker
       OPTIMIZER_URL: ${OPTIMIZER_URL:-http://localhost:8080}
       OPTIMIZER_VERBOSE: ${OPTIMIZER_VERBOSE:-2}
     volumes:

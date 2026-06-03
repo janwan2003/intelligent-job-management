@@ -34,6 +34,20 @@ if [ "$STATUS" != "healthy" ]; then
     exit 1
 fi
 
+echo "==> Waiting for the local worker to respond (max ${MAX_WAIT}s)..."
+elapsed=0
+until curl -sf "http://localhost:8001/health" > /dev/null 2>&1; do
+    if [ "$elapsed" -ge "$MAX_WAIT" ]; then
+        echo "FAIL: worker did not become healthy within ${MAX_WAIT}s"
+        $COMPOSE logs --tail=30 worker
+        $COMPOSE down
+        exit 1
+    fi
+    sleep 2
+    elapsed=$((elapsed + 2))
+done
+echo "==> Worker is healthy."
+
 echo "==> Checking all containers are running..."
 UNHEALTHY=$($COMPOSE ps --format json | python3 -c "
 import sys, json

@@ -1,34 +1,111 @@
 @startuml CurrentPrototype
 title Current Prototype Architecture (distributed)
 
+' ───────────────────────────── global style ─────────────────────────────
+' stereotypes drive per-element colour only — never render their labels
+hide stereotype
+skinparam backgroundColor #FFFFFF
 skinparam shadowing false
+skinparam roundCorner 14
 skinparam componentStyle rectangle
+skinparam defaultFontName "Helvetica Neue"
+skinparam defaultFontSize 13
+skinparam TitleFontSize 20
+skinparam TitleFontColor #1F2933
 
+skinparam ArrowColor #6B7A8D
+skinparam ArrowFontColor #4A5563
+skinparam ArrowFontSize 11
+skinparam ArrowThickness 1.2
+
+skinparam actor {
+    BackgroundColor #E8EDF3
+    BorderColor #44515E
+    FontColor #1F2933
+}
+
+' ── package (zone) colours ──
+skinparam package {
+    FontColor #1F2933
+    FontSize 14
+    BorderThickness 1.5
+    BackgroundColor<<user>>   #F4F7FF
+    BorderColor<<user>>       #3B5BDB
+    BackgroundColor<<legacy>> #FFF8F0
+    BorderColor<<legacy>>     #D9822B
+    BackgroundColor<<modern>> #F0FBF6
+    BorderColor<<modern>>     #2F9E68
+}
+
+' ── component (box) colours ──
+skinparam rectangle {
+    FontColor #1F2933
+    BorderThickness 1.3
+    BackgroundColor<<ui>>     #DCE6FF
+    BorderColor<<ui>>         #3B5BDB
+    BackgroundColor<<core>>   #C7D6FF
+    BorderColor<<core>>       #2A44B8
+    BackgroundColor<<opt>>    #ECE3FF
+    BorderColor<<opt>>        #7C5CD6
+    BackgroundColor<<wlegacy>> #FFE9CC
+    BorderColor<<wlegacy>>    #D9822B
+    BackgroundColor<<wmodern>> #CFF0DE
+    BorderColor<<wmodern>>    #2F9E68
+}
+
+skinparam database {
+    BackgroundColor #EDE3FF
+    BorderColor #6B46C1
+    BorderThickness 1.5
+    FontColor #1F2933
+}
+
+skinparam cloud {
+    BackgroundColor #EEF1F5
+    BorderColor #8593A3
+    BorderThickness 1.4
+    FontColor #44515E
+}
+
+skinparam folder {
+    BackgroundColor #F2F4F7
+    BorderColor #8593A3
+    FontColor #44515E
+}
+
+skinparam note {
+    BackgroundColor #FFFDF2
+    BorderColor #D9C97A
+    FontColor #4A4530
+    FontSize 11
+}
+
+' ───────────────────────────── nodes ─────────────────────────────
 actor User
 
-package "User machine" {
-    rectangle "React SPA\n(Vite dev / nginx)" as UI
-    rectangle "REST API (FastAPI)\n+ ProfilingScheduler\n+ JobDispatcher\n+ NodeSlots (per-node semaphores)\n+ Optimizer client" as API
-    rectangle "GPUspb Optimizer\n(HTTP, optional)" as OPT
+package "User machine" <<user>> {
+    rectangle "**React SPA**\nVite dev / nginx" as UI <<ui>>
+    rectangle "**REST API** (FastAPI)\n+ ProfilingScheduler\n+ JobDispatcher\n+ NodeSlots (per-node semaphores)\n+ Optimizer client" as API <<core>>
+    rectangle "**GPUspb Optimizer**\nHTTP, optional" as OPT <<opt>>
 }
 
-cloud "SSH tunnels\n(ports 5432, 800x)" as SSH
+cloud "SSH tunnels\nports 5432, 800x" as SSH
 
-package "Remote GPU node A\n(matemagician — legacy CUDA 10.1)" {
-    rectangle "Worker (FastAPI HTTP)" as WorkerA
-    rectangle "Docker containers\n(:legacy image)" as DockerA
-    folder "Checkpoints / Run logs\n(shared rclone-SFTP mount)" as FSA
+package "Remote GPU node A\nmatemagician — legacy CUDA 10.1" <<legacy>> {
+    rectangle "**Worker** (FastAPI HTTP)" as WorkerA <<wlegacy>>
+    rectangle "Docker containers\n:legacy image" as DockerA <<wlegacy>>
+    folder "Checkpoints / Run logs\nshared rclone-SFTP mount" as FSA
 }
 
-package "Remote GPU node B\n(polimi-gpu — A40)" {
-    rectangle "Worker (FastAPI HTTP)" as WorkerB
-    rectangle "Docker containers\n(:latest image)" as DockerB
-    folder "Checkpoints / Run logs\n(shared rclone-SFTP mount)" as FSB
+package "Remote GPU node B\npolimi-gpu — A40" <<modern>> {
+    rectangle "**Worker** (FastAPI HTTP)" as WorkerB <<wmodern>>
+    rectangle "Docker containers\n:latest image" as DockerB <<wmodern>>
+    folder "Checkpoints / Run logs\nshared rclone-SFTP mount" as FSB
 }
 
-database "PostgreSQL\n(on a GPU node)" as DB
+database "PostgreSQL\non a GPU node" as DB
 
-' Interactions
+' ───────────────────────────── interactions ─────────────────────────────
 User --> UI
 UI --> API : HTTP (CORS-gated)
 

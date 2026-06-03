@@ -20,7 +20,24 @@ where \texttt{GPUcost} is~wall-clock $\times$~hourly rate
 priority (right).  Slack deadlines favour the~cheapest bundle; deadline
 pressure shifts urgent jobs onto the~fastest available.
 
-\begin{table}[h!]\centering\small
+\textbf{Cluster (idle) cost.}  Energy cost is~not the~only cost the
+upstream optimiser models.  Its~\texttt{RG} proxy
+(\texttt{proxy\_function\_min} in~\texttt{optimizer.cpp}) charges a
+third, \emph{fixed} term~--- a~per-node \emph{idle cost}
+$\sum_{n\ \mathrm{open}}\texttt{cost}_n\cdot\Delta t$ summed over~every
+node hosting at~least one~job over~the~next-event horizon~$\Delta t$,
+with~\texttt{cost}$_n$ sourced from~\texttt{nodes\_config.json}.  This
+captures the~cluster's fixed cost~--- leasing, baseline power, cooling,
+independent of~GPU draw~--- and~rewards consolidating jobs onto~fewer
+open nodes, unlike the~per-GPU \emph{marginal} energy term above.  IJM
+passes this per-node \texttt{cost} through to~the~optimiser, but~we~omit
+it~from~\textsc{TotalCost} here: both nodes carry jobs throughout both
+scenarios, so the~term is~a~constant offset that does~not change the
+relative ranking of~the~plans we~compare.  We~therefore leave
+\texttt{cost} at~small uniform placeholders and~do~not analyse it
+further.
+
+\begin{table}[H]\centering\small
 \begin{tabular}{lr}\toprule
 GPU bundle & \$/hour \\\midrule
 \texttt{QuadroP600$\times$1} & 0.030 \\
@@ -163,7 +180,7 @@ URGENT$^{\star}$ & \texttt{cnn\_big} & 5 & $+10$\,min & 200 & $t{=}7.5$\,min \\\
 \caption{Scenario~1 submissions.}\label{tab:e2e-s1-jobs}
 \end{table}
 
-\begin{figure}[!htb]\centering
+\begin{figure}[H]\centering
 \resizebox{\linewidth}{!}{\input{Files/chart_s1.tex}}
 \caption{Scenario~1 timeline (run~2026-05-28, $t{=}0$ at first
 dispatch).  URGENT lands on~the~free P600$\times$2 even though
@@ -174,13 +191,13 @@ in~\S\ref{sec:e2e-s1-urgent-math}.}\label{fig:e2e-s1}
 \end{figure}
 
 \begin{table}[H]\centering\small
-\begin{tabular}{@{}l r r r r l@{}}\toprule
+\begin{tabularx}{\textwidth}{@{}l r r r r X@{}}\toprule
 Bundle & per-epoch [s] & GPUcost/ep [\$] & 50-ep [\$] & 200-ep [\$] & Best for \\\midrule
 A40$\times$1        & 3.118  & 0.000260 & \textbf{0.0130} & 0.0520 & medium-deadline cnn\_big \\
 A40$\times$2        & 2.849  & 0.000435 & 0.0217 & 0.0870 & \textbf{$\leq$10-min URGENT} \\
 QuadroP600$\times$1 & 46.376 & 0.000386 & 0.0193 & 0.0772 & \textbf{slack runs (cheapest)} \\
 QuadroP600$\times$2 & 27.693 & 0.000423 & 0.0211 & 0.0846 & --- (dominated) \\\bottomrule
-\end{tabular}
+\end{tabularx}
 \caption{Per-bundle data the~optimiser sees for~\texttt{cnn\_big} after
 Scenario~1's profile sweep.  Per-epoch is~the~steady-state mean from
 \texttt{profiling\_results} (warmup epoch excluded).  Full 200-epoch
@@ -223,13 +240,13 @@ the~plans by~full-job ExecTime~$+$~TardCost against URGENT's $+10$-min
 deadline; priority-5 tardiness is~weighted at~$w_5{=}0.000444$~\$/s.
 
 \begin{table}[H]\centering\scriptsize
-\begin{tabular}{l r r r r r l}\toprule
+\begin{tabularx}{\textwidth}{@{}X r r r r r X@{}}\toprule
 Plan for URGENT             & ExecTime [s] & Tardy [s] & GPUcost [\$] & TardCost [\$] & \textbf{TotalCost [\$]} & True-cost rank \\\midrule
 A40$\times$1 (preempt 1)    & 624    & 24     & 0.0520 & 0.011 & \textbf{0.063}  & \textbf{1 (best)} \\
 A40$\times$2 (preempt 2)    & 570    & 0      & 0.0870 & 0.000 & 0.087           & 2 \\
 P600$\times$2 (preempt 2)   & 5\,539 & 4\,939 & 0.0846 & 2.193 & 2.278           & 3 \\
 P600$\times$1 (preempt 1)   & 9\,275 & 8\,675 & 0.0772 & 3.852 & 3.929           & 4 \\\bottomrule
-\end{tabular}
+\end{tabularx}
 \caption{True-objective ranking of~URGENT plans at~submission.
 ExecTime $=$ 200$\times$per-epoch from~Table~\ref{tab:e2e-s1-opt};
 Tardy $=$ $\max(\text{ExecTime}-600,\,0)$ against the~10-min deadline;
@@ -288,14 +305,14 @@ cheaper per epoch, but~the~``cheapest'' branch only runs when the
 deadline is~reachable; here it~is~not, so cost is~ignored.
 \end{enumerate}
 
-\begin{table}[H]\centering\scriptsize
-\begin{tabular}{l l l l}\toprule
+\begin{table}[H]\centering\scriptsize\setlength{\tabcolsep}{4pt}
+\begin{tabularx}{\textwidth}{@{}l l l X@{}}\toprule
 Configuration considered by~RG & Free at~submit? & RG outcome & Why \\\midrule
 A40$\times$1 (single slot) & \emph{no} (both A40s held by patients) & not considered & \texttt{assign\_to\_node} returns empty for occupied node \\
 A40$\times$2 (both slots) & \emph{no} (both A40s held by patients) & not considered & \texttt{assign\_to\_node} returns empty for occupied node \\
 P600$\times$1 & yes (both P600s free) & considered, rejected & deadline unreachable; ``pick fastest'' branch chooses P600$\times$2 instead \\
 \textbf{P600$\times$2} & yes (both P600s free) & \textbf{chosen} & deadline unreachable; this is~the fastest free configuration \\\bottomrule
-\end{tabular}
+\end{tabularx}
 \caption{What Random Greedy actually evaluates at~URGENT submission.
 A40 configurations never enter the~comparison because
 \texttt{Heuristic::assign} has no~path that preempts an~incumbent in
@@ -349,7 +366,7 @@ P600$\times$2 ($18.5$\,min) but~not P600$\times$1 ($31$\,min); A40 is
 blocked by~the~priority-5 pins.}\label{tab:e2e-s2-jobs}
 \end{table}
 
-\begin{figure}[!htb]\centering
+\begin{figure}[H]\centering
 \resizebox{\linewidth}{!}{\input{Files/chart_s2.tex}}
 \caption{Scenario~2 timeline (run~2026-05-28, $t{=}0$ at~first
 dispatch).  URGENT lands on~P600$\times$1 (not~P600$\times$2) by
@@ -360,13 +377,13 @@ ends.}\label{fig:e2e-s2}
 \subsection{URGENT plan comparison}
 
 \begin{table}[H]\centering\scriptsize\setlength{\tabcolsep}{3pt}
-\begin{tabular}{l r r r r r l}\toprule
+\begin{tabularx}{\textwidth}{@{}X r r r r r X@{}}\toprule
 Plan & ExecTime [s] & GPUcost [\$] & Tardiness [s] & TardCost [\$] & Total [\$] & Decision \\\midrule
 A40$\times$1 (preempt 1 pin)            & 125    & 0.0104 & 0              & 0.0              & $\approx$1.56$^{\dagger}$ & rejected (unsched pin) \\
 A40$\times$2 (preempt both pins)        & 114    & 0.0174 & 0              & 0.0              & $\approx$3.11$^{\dagger}$ & rejected (2 unsched pins) \\
 P600$\times$2 (preempt both lstm-small) & 1\,108 & 0.0169 & 0              & 0.0              & $\approx$0.017            & not chosen (myopia $+$ slack) \\
 \textbf{P600$\times$1 (preempt 1 lstm-small)} & \textbf{1\,855} & \textbf{0.0154} & 0$^{\ddagger}$ & 0.0$^{\ddagger}$ & \textbf{$\approx$0.015} & \checkmark\ chosen \\\bottomrule
-\end{tabular}
+\end{tabularx}
 \caption{URGENT plan comparison.  ExecTime~$=$~40~$\times$~per-epoch
 from~Table~\ref{tab:e2e-bundle-costs}; TardCost uses the~priority-5
 weight.  $^{\dagger}$\,A40 plans look free of~URGENT's tardiness,

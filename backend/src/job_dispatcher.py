@@ -1,4 +1,4 @@
-"""JobDispatcher — routes enqueue/stop to local runner or remote worker HTTP server."""
+"""JobDispatcher — routes enqueue/stop to the assigned node's worker HTTP server."""
 
 import asyncio
 import logging
@@ -7,7 +7,6 @@ from typing import Any
 import httpx
 
 from src.cluster import ClusterManager
-from src.job_runner import JobRunner
 
 logger = logging.getLogger(__name__)
 
@@ -24,20 +23,20 @@ _STOP_TIMEOUT = 65.0
 
 
 class JobDispatcher:
-    """Dispatches job execution to the local JobRunner or a remote worker server.
+    """Dispatches job execution to the assigned node's worker over HTTP.
 
-    Nodes with ``workerUrl`` set in nodes_config receive HTTP dispatch calls.
-    Nodes without it fall through to the embedded JobRunner + DockerExecutor.
+    Every node in nodes_config must set ``workerUrl``; the dispatcher posts
+    ``/run`` and ``/stop`` to that worker.  (The embedded in-process runner
+    that used to back ``workerUrl``-less nodes has been removed — local dev
+    runs a worker container too.)
     """
 
     def __init__(
         self,
-        local_runner: JobRunner,
         get_conn: Any,
         cluster: ClusterManager,
         node_slots: Any = None,
     ) -> None:
-        self._local = local_runner
         self._get_conn = get_conn
         self._cluster = cluster
         self._node_slots = node_slots
@@ -147,21 +146,18 @@ class JobDispatcher:
         return row[0] if row else None
 
     async def enqueue(self, job_id: str) -> None:
-        """Dispatch a job to run — remote worker or local runner.
+        """Dispatch a job to its assigned node's worker via HTTP ``/run``.
 
-        For remote workers we await the HTTP /run call so dispatch failures
-        (worker unreachable, image pull error) propagate back to the caller
-        and the slot is released by ``_dispatch_when_slot_free``.  Previously
-        the call was fire-and-forget, which silently masked unreachable
-        workers and left slots claimed for the row's lifetime.
+        We await the HTTP /run call so dispatch failures (worker unreachable,
+        image pull error) propagate back to the caller and the slot is released
+        by ``_dispatch_when_slot_free``.  Previously the call was fire-and-forget,
+        which silently masked unreachable workers and left slots claimed for the
+        row's lifetime.
 
-        Distributed deployments only have remote workers — if the row's
-        ``assigned_node`` was cleared between Phase 1b and now (concurrent
-        preempt, delete, or scheduler churn), there is no valid worker to
-        target.  Raising surfaces the race so the dispatcher releases the
-        slot; falling through to the local runner here would silently try
-        to ``docker run`` inside the API container (no docker socket → exit
-        125 → FAILED rows that the user has to clean up).
+        If the row's ``assigned_node`` was cleared between Phase 1b and now
+        (concurrent preempt, delete, or scheduler churn), there is no valid
+        worker to target.  Raising surfaces the race so the dispatcher releases
+        the slot.
         """
         node_id = await self._fetch_assigned_node(job_id)
         worker_url = self.get_worker_url(node_id)
@@ -172,9 +168,14 @@ class JobDispatcher:
                 f"enqueue({job_id[:8]}): no assigned_node — likely cleared by a concurrent preempt/delete"
             )
         else:
-            # Local node (no workerUrl in config) — used by docker-compose
-            # all-in-one deployments and tests.
-            await self._local.enqueue(job_id)
+            # A node with an id but no workerUrl is a configuration error now
+            # that the embedded local runner is gone — every node must point at
+            # a worker.  Raise so dispatch_with_slot releases the slot instead
+            # of wedging the row in QUEUED forever.
+            raise RuntimeError(
+                f"enqueue({job_id[:8]}): node {node_id!r} has no workerUrl — "
+                "every node must be backed by a worker (local execution removed)"
+            )
 
     async def stop(self, job_id: str, *, reason: str = "user") -> None:
         """Stop a job — remote worker or local runner.
@@ -222,14 +223,19 @@ class JobDispatcher:
                 # Stops are best-effort; worker reconcile catches orphans on startup.
                 logger.warning("Remote stop for job %s failed (suppressed)", job_id[:8])
         elif node_id is None:
-            # No assigned_node — nothing to stop.  Falling through to local would
-            # be wrong in distributed deployments where local has no container.
+            # No assigned_node — nothing to stop.
             logger.info(
                 "Skipping /stop for %s — assigned_node already cleared",
                 job_id[:8],
             )
         else:
-            await self._local.stop(job_id, reason=reason)
+            # Node has an id but no workerUrl — misconfig (no local runner to
+            # fall back to).  Nothing to stop here; log so it's visible.
+            logger.warning(
+                "Skipping /stop for %s — node %s has no workerUrl (local execution removed)",
+                job_id[:8],
+                node_id,
+            )
 
     async def _remote_request(
         self, worker_url: str, job_id: str, action: str, params: dict[str, str] | None = None
@@ -276,13 +282,3 @@ class JobDispatcher:
         # Callers (enqueue) need the failure so they can release the slot.
         if last_exc is not None:
             raise last_exc
-
-    def _local_node_ids(self) -> frozenset[str]:
-        """IDs of nodes that use the local runner (no workerUrl configured)."""
-        return frozenset(raw["id"] for raw in self._cluster.nodes if not raw.get("workerUrl"))
-
-    async def start(self) -> None:
-        await self._local.start(local_node_ids=self._local_node_ids())
-
-    async def shutdown(self) -> None:
-        await self._local.shutdown()

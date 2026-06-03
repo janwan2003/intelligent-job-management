@@ -30,12 +30,15 @@ from pathlib import Path
 # Reuse the PNG generator's parsing helpers so the two charts stay in sync.
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from generate_chart import (  # noqa: E402
+    append_worker_events,
+    chart_t0,
     derive_segments,
+    first_dispatch_times,
+    load_jobs_and_anchor,
     parse_log,
     parse_progress,
-    parse_worker_log,
+    tz_offset_from_drift,
 )
-import json  # noqa: E402
 import re  # noqa: E402
 from datetime import timedelta  # noqa: E402
 
@@ -80,14 +83,7 @@ def _parse_submit_times(api_log: Path, anchor_day: datetime) -> dict[str, dateti
                 latest_inline = cand
     if latest_inline is not None:
         mtime = datetime.fromtimestamp(api_log.stat().st_mtime)
-        drift = (mtime - latest_inline).total_seconds()
-        # Match ``parse_log``: a UTC-clock containerised API leaves drift
-        # > 1.5 h vs.\ a non-UTC host; snap to the host's exact TZ offset
-        # so submit times line up with segment times (rounding misfires
-        # when the snapshot was copied/saved well after the run).
-        if abs(drift) >= 5400:
-            tz_off = datetime.now().astimezone().utcoffset() or timedelta(0)
-            api_offset = tz_off if drift > 0 else -tz_off
+        api_offset = tz_offset_from_drift(mtime, latest_inline)
     for raw in raw_lines:
         m = _SUBMIT_LINE.match(raw)
         if not m:
@@ -99,34 +95,17 @@ def _parse_submit_times(api_log: Path, anchor_day: datetime) -> dict[str, dateti
     return out
 
 
-def _load(snap_dir: Path) -> tuple[list, dict, dict, datetime]:
+def _load(snap_dir: Path) -> tuple[list, list, dict, datetime]:
     """Replicate ``generate_chart.make_chart`` up to (segments, jobs, progress, t0)."""
-    jobs = json.loads((snap_dir / "jobs.json").read_text())
-    sc = (snap_dir / "scenario.log").read_text() if (snap_dir / "scenario.log").exists() else ""
-    first_t = re.search(r"\[(\d{2}:\d{2}:\d{2})\]", sc)
-    anchor_day = datetime.now().replace(microsecond=0)
-    if first_t:
-        h, m, s = map(int, first_t.group(1).split(":"))
-        anchor_day = anchor_day.replace(hour=h, minute=m, second=s)
+    jobs, anchor_day = load_jobs_and_anchor(snap_dir)
     events = parse_log(snap_dir / "api.log", anchor_day)
     if not events:
         raise SystemExit("No events parsed from api.log")
-    api_first = min(e["ts"] for e in events)
-    api_last = max(e["ts"] for e in events)
-    window_end = api_last + timedelta(hours=4)
-    for worker_log in snap_dir.glob("worker_*.log"):
-        for ev in parse_worker_log(worker_log, anchor_day):
-            if api_first <= ev["ts"] <= window_end:
-                events.append(ev)
-    events.sort(key=lambda e: e["ts"])
+    events = append_worker_events(snap_dir, events)
     segs = derive_segments(events, jobs)
     progress = parse_progress(snap_dir / "jobs")
     submit_ts = _parse_submit_times(snap_dir / "api.log", anchor_day)
-    current_jids = {j["id"][:8] for j in jobs}
-    t0 = min(
-        (ev["ts"] for ev in events if ev["kind"] == "dispatch" and ev.get("jid") in current_jids),
-        default=anchor_day,
-    )
+    t0 = chart_t0(events, jobs, anchor_day)
     return events, jobs, {"segs": segs, "progress": progress, "submit_ts": submit_ts}, t0
 
 
@@ -207,10 +186,7 @@ def emit_tikz(
         return (t - t0).total_seconds() / 60.0
 
     # Sort jobs by first dispatch (rows in chronological order, matches PNG).
-    job_first_ts: dict[str, datetime] = {}
-    for ev in events:
-        if ev["kind"] == "dispatch" and "jid" in ev:
-            job_first_ts.setdefault(ev["jid"], ev["ts"])
+    job_first_ts = first_dispatch_times(events)
     sorted_jobs = sorted(jobs, key=lambda j: job_first_ts.get(j["id"][:8], t0))
 
     # Numerical fallback labels: J1..JN by created_at.
