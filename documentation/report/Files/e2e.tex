@@ -1,41 +1,74 @@
 This section presents the~cost model and~the~two end-to-end scenarios
 used to~validate IJM on~the~two-node cluster.  Scenario~1 stresses the
-single-type profile sweep and~the~deadline-driven URGENT migration;
-Scenario~2 mixes types so the~A40 slots are~held by~tight-deadline
-\texttt{cnn\_big} pins and~the~P600 slots by~slack~\texttt{lstm-small}
-patients.  Both runs expose the~same horizon-myopia behaviour
-in~upstream GPUspb.  Implementation notes accumulated while making
-the~scenarios reproducible are collected in~\S\ref{sec:e2e-impl}.
+single-type profile sweep and~the~deadline-driven URGENT migration on~an
+\emph{under-subscribed} cluster; Scenario~2 mixes types and~fills every
+slot, so the~A40 slots are~held by~tight-deadline \texttt{cnn\_big} pins
+and~the~P600 slots by~slack~\texttt{lstm-small} patients.  Together they
+expose how~upstream GPUspb's \texttt{method=RG} proxy behaves: Scenario~1
+isolates its~\emph{horizon-myopia}~--- an~urgent job is~parked on~a~slow
+but~free bundle because its deadline overrun is~invisible at~the
+next-event horizon.  Scenario~2 fills the~cluster, so~the~same stateless
+cost minimisation must drop the~cheapest slack work to~fit URGENT
+(realised as~a~preemption); but~with~the~true per-epoch costs no
+\emph{preemptible} bundle is~fast enough to~meet URGENT's deadline, so
+the~myopia again parks it~on~the~cheapest slow bundle, and~the~deadline
+is~met only once a~pin finishes and~URGENT migrates onto~fast~A40.
+As~\S\ref{sec:e2e-objective} explains, the~optimiser never reasons about
+preemption or~migration itself: it~just minimises a~stateless plan cost,
+and~the~priority-aware \emph{outcome} in~Scenario~2 is~emergent.
 
 \section{Objective and cost model}
 \label{sec:e2e-objective}
 
-The scheduler minimises
+IJM delegates standard-run placement to~GPUspb run with
+\texttt{method=RG}.  We~report what that~optimiser \emph{actually}
+minimises, since it~is~the~ground truth for~every placement we~observe:
+per~scheduling decision, Random Greedy scores a~candidate plan with the
+proxy \texttt{proxy\_function\_min} (\texttt{optimizer.cpp}):
 \[
-\textsc{TotalCost} \;=\; \sum_{j} \texttt{GPUcost}(j)
-  + \sum_{j} \texttt{TardWeight}(j) \cdot \max\bigl(0,\,\texttt{finish}(j)-\texttt{deadline}(j)\bigr),
+\begin{aligned}
+\textsc{Cost}_\textsc{RG}={}&
+  \sum_{\text{sched }j}\!\Big(r(b_j)\,\Delta t + w(p_j)\,[\,t_0{+}\Delta t-d_j\,]^{+}\Big)
+  + \sum_{n}\texttt{cost}_n\,\Delta t \\
+  &{}+ \lambda\!\!\sum_{\text{unsched }j}\!\! w(p_j)\,[\,t_0{+}T^{\mathrm{full}}_j-d_j\,]^{+},
+\end{aligned}
 \]
-where \texttt{GPUcost} is~wall-clock $\times$~hourly rate
-(Table~\ref{tab:e2e-rates}, left) and~\texttt{TardWeight} scales with
-priority (right).  Slack deadlines favour the~cheapest bundle; deadline
-pressure shifts urgent jobs onto the~fastest available.
+with indices $j$ (over~the~plan's scheduled/unscheduled jobs) and~$n$
+(over~the~cluster's nodes), and~parameters ($[x]^{+}\equiv\max(0,x)$):
+\begin{itemize}[leftmargin=*,itemsep=1pt,topsep=2pt]
+  \item $\Delta t$~--- next-event horizon: the~soonest finish among the~plan's scheduled jobs;
+  \item $t_0$~--- the~current time;
+  \item $b_j,\,p_j,\,d_j$~--- job~$j$'s assigned GPU bundle, priority, and~deadline;
+  \item $r(b)$~--- hourly rate of~GPU bundle~$b$ (Table~\ref{tab:e2e-rates}, left);
+  \item $w(p)$~--- per-priority tardiness weight (Table~\ref{tab:e2e-rates}, centre);
+  \item $\texttt{cost}_n$~--- per-node operating cost from \texttt{nodes\_config.json} (Table~\ref{tab:e2e-rates}, right), passed through in~the~optimiser request.  Note the~sum is~over~\emph{every} configured node: \texttt{compute\_nodeCost} charges $\texttt{cost}_n\Delta t$ whether or~not the~node hosts a~job (no~occupancy filter), so~this term gives no~consolidation incentive;
+  \item $T^{\mathrm{full}}_j$~--- job~$j$'s full remaining run time on~its~\emph{slowest profiled bundle} (the~$\max$ over~the~job's measured configs, \texttt{get\_maxExecTime}), charged in~full and~\emph{not} clipped to~$\Delta t$;
+  \item $\lambda$~--- unscheduled-job penalty multiplier, hard-coded to~$\lambda{=}100$ in~\texttt{proxy\_function\_min}.
+\end{itemize}
+Three features of~this objective drive everything the~scenarios show: the
+GPU, tardiness, and~node terms of~\emph{scheduled} jobs are all charged
+only up~to~the~horizon $\Delta t$, not~to~real completion (so~a~placement
+that~will overrun a~far-off deadline still reads zero tardiness now);
+an~\emph{unscheduled} job pays $\lambda{=}100$ times its~\emph{full}
+worst-case tardiness (so~omitting a~high-priority, tight-deadline job is
+ruinous and~omitting a~low-priority, slack one is~nearly free); and~there
+is~no~migration or~preemption term~--- the~objective scores the~candidate
+plan alone, ignoring what is~running (\S\ref{sec:e2e-proxy}).
 
-\textbf{Cluster (idle) cost.}  Energy cost is~not the~only cost the
-upstream optimiser models.  Its~\texttt{RG} proxy
-(\texttt{proxy\_function\_min} in~\texttt{optimizer.cpp}) charges a
-third, \emph{fixed} term~--- a~per-node \emph{idle cost}
-$\sum_{n\ \mathrm{open}}\texttt{cost}_n\cdot\Delta t$ summed over~every
-node hosting at~least one~job over~the~next-event horizon~$\Delta t$,
-with~\texttt{cost}$_n$ sourced from~\texttt{nodes\_config.json}.  This
-captures the~cluster's fixed cost~--- leasing, baseline power, cooling,
-independent of~GPU draw~--- and~rewards consolidating jobs onto~fewer
-open nodes, unlike the~per-GPU \emph{marginal} energy term above.  IJM
-passes this per-node \texttt{cost} through to~the~optimiser, but~we~omit
-it~from~\textsc{TotalCost} here: both nodes carry jobs throughout both
-scenarios, so the~term is~a~constant offset that does~not change the
-relative ranking of~the~plans we~compare.  We~therefore leave
-\texttt{cost} at~small uniform placeholders and~do~not analyse it
-further.
+$T^{\mathrm{full}}_j$ is~not~a~constant.  A~job's configs are~exactly the
+bundles already profiled for~its~type, so as~the~profile sweep progresses
+and~measures slower bundles, $T^{\mathrm{full}}_j$~--- the~slowest of
+them~--- only grows.  While just~a~fast bundle is~known, even~an
+unscheduled long job clears its~deadline at~$T^{\mathrm{full}}_j$, its
+$\lambda$-penalty is~zero, and~it~is~free to~omit; the~instant a~much
+slower bundle is~profiled (\texttt{QuadroP600} is~$\sim$15$\times$ slower
+than~\texttt{A40} for~\texttt{cnn\_big}, Table~\ref{tab:e2e-bundle-costs}),
+$T^{\mathrm{full}}_j$ jumps, and~a~long, tight-deadline job that~would now
+miss on~that bundle flips from~free-to-omit to~\emph{must-schedule}~---
+with~no~change in~free capacity.  Scenario~1's profile sweep
+(\S\ref{sec:e2e-s1}) does exactly this: a~patient is~left unscheduled
+while only~\texttt{A40} is~measured, then~forced onto a~slot the~moment
+the~\texttt{QuadroP600} profile lands.
 
 \begin{table}[H]\centering\small
 \begin{tabular}{lr}\toprule
@@ -54,8 +87,15 @@ Priority & TardWeight (\$/sec) \\\midrule
 4 & 0.000396 \\
 5 & 0.000444 \\\bottomrule
 \end{tabular}
-\caption{Bundle hourly rates and~per-priority tardiness
-weights.}\label{tab:e2e-rates}
+\quad
+\begin{tabular}{lr}\toprule
+Node & $\texttt{cost}_n$ (\$/h) \\\midrule
+\texttt{matemagician} & 0.10 \\
+\texttt{polimi-gpu}   & 0.30 \\\bottomrule
+\end{tabular}
+\caption{Bundle hourly rates (left), per-priority tardiness weights
+(centre), and~per-node operating cost $\texttt{cost}_n$
+(right).}\label{tab:e2e-rates}
 \end{table}
 
 The cluster used throughout this section is~two profiling-capable
@@ -63,56 +103,25 @@ nodes, four slots total: \texttt{matemagician} with
 2$\times$\texttt{QuadroP600} and~\texttt{polimi-gpu} with
 2$\times$\texttt{A40}.  Hourly rates are as~in
 Table~\ref{tab:e2e-rates}.  For each new job type the~profile sweep
-exercises all four \texttt{(node, GPU-count)} cells
-(\texttt{configs\_per\_job}{=}2, four instances).
+exercises all four \texttt{(node, GPU-count)} cells; with
+\texttt{configs\_per\_job}{=}2 two instances of~the~type suffice to
+cover all~four.
 
-\subsection{Proxy vs.\ true objective}
+\subsection{Judging the~proxy: an~idealised yardstick}
+\label{sec:e2e-proxy}
 
-The cost above is~the~modelled objective.  The~C++ optimiser's
-per-decision proxy
-(\texttt{proxy\_function\_min}\,/\,\texttt{proxy\_function\_max} in
-GPUspb) is~a~cheaper surrogate.
+\textsc{Cost}$_\textsc{RG}$ is~what the~optimiser minimises, but~it~is
+a~\emph{per-decision} surrogate.  To~judge its~choices we~compare against
+an~\emph{idealised} full-run cost~--- the~same terms, but~with tardiness
+(and~GPU/node cost) measured at~each job's \emph{real} completion instead
+of~at~$\Delta t$.  The~gap between the~two is~what the~scenarios expose:
 
-In the~minimisation form used by~\texttt{method=RG}, tardiness is
-evaluated at~the~\emph{next-event horizon}
-$\textsc{sim\_time}{=}\textsc{current\_time}{+}\textsc{first\_finish\_time}$
-rather than at~each job's predicted completion.  A~placement on~slow
-hardware therefore contributes zero in-proxy tardiness as~long as~the
-deadline is~still in~the~future at~that horizon.
-
-The proxy also applies a~$100{\times}$ multiplier to~the worst-case
-tardiness of~jobs left \emph{unscheduled} in~a~candidate plan, but
-that penalty only fires when a~candidate plan exists in~which a~job
-ends up~\texttt{sch.isEmpty()} (i.e.\ has no~configuration left to
-place it~on).  Combined with~Random Greedy's structure --- jobs are
-placed in~priority order onto~\emph{currently-free} capacity only,
-with no~speculative preemption of~incumbents --- three consequences
-shape every URGENT placement we~observed.  First, when~every candidate
-placement for~the arrival has its deadline still in~the~future at~the
-horizon, the~proxy reads zero tardiness for~each of~them and~picks
-the~one with~the~lowest \texttt{vmCost} regardless of~whether that
-placement is~actually fast enough to~finish on~time.  Second, the
-$100{\times}$ unscheduled penalty dominates any plan that leaves
-a~prio-4-or-5 peer with no~configuration, so~when the~cluster is
-oversubscribed at~arrival time the~optimiser will pick the~plan with
-the~fewest unscheduled high-priority peers~--- typically by~routing
-the~arrival to~the~slowest free bundle while keeping incumbents in
-place.  Third, even when the~cluster has spare capacity, RG only ever
-considers configurations whose slots are \emph{already free};
-the~arrival cannot pre-empt an~incumbent peer to~take a~faster slot
-because \texttt{Heuristic::assign} simply asks
-\texttt{system.assign\_to\_node(...)} for~free capacity, gets~none,
-and~falls through to~the~slower bundle.  Scenario~1
-(\S\ref{sec:e2e-s1}) shows the~first and~third hitting together;
-Scenario~2 (\S\ref{sec:e2e-s2}) shows the~second at~work.
-
-The proxy never names ``preemption'': it~just penalises ``unscheduled
-in~this plan''.  The~\texttt{proxy\_function\_max} variant
-(\texttt{method=PR}) uses per-job \texttt{sch.get\_selectedTime()}
-instead and~is~deadline-aware, but~it~is~not the~default.  We~keep
-\texttt{method=RG} throughout to~mirror the~reference deployment.  The
-behaviour described here is~the~one observed on~the~upstream GPUspb
-checkout used for~this report.
+\begin{itemize}[leftmargin=*,itemsep=3pt,topsep=2pt]
+  \item \textbf{Horizon-myopia (free slot $\Rightarrow$ Scenario~1).}  Charged only to~$\Delta t$, tardiness reads zero while a~deadline is~still in~the~future at~the~horizon~--- so~the~proxy parks an~urgent job on~a~cheap, free, far-too-slow bundle rather than~faster hardware it~would have to~clear first.
+  \item \textbf{Drop-the-cheapest (full cluster $\Rightarrow$ Scenario~2).}  When jobs exceed capacity, every plan leaves someone unscheduled, and~the~$\lambda{=}100$ penalty drops whoever is~cheapest to~omit~--- smallest $w(p)\,[\text{lateness}]^{+}$.  On~the~true per-epoch costs the~same myopia also governs \emph{which} preemptible bundle then absorbs the~urgent job (the~cheapest, not~the~least-tardy), so~Scenario~2 exhibits both effects.
+  \item \textbf{Preemption is~a~side effect.}  The~objective is~stateless (\S\ref{sec:e2e-objective}): the~optimiser picks a~target plan, and~IJM realises it~by~stopping whatever the~plan dropped~--- the~optimiser never reasons about preemption.
+  \item \textbf{\texttt{method=PR} would~differ.}  The~deadline-aware variant scores per-job \emph{real} finish times and~would dodge the~horizon-myopia.
+\end{itemize}
 
 % ---------------------------------------------------------------------------
 \section{Available job types}
@@ -136,21 +145,23 @@ regardless of~the~destination's torch version.}\label{tab:e2e-types}
 \begin{table}[H]\centering\small
 \begin{tabular}{l r r r r}\toprule
 Type & A40$\times$1 [s/ep] & A40$\times$2 [s/ep] & QuadroP600$\times$1 [s/ep] & QuadroP600$\times$2 [s/ep] \\\midrule
-\texttt{lstm-small}    & 3.56  & 4.81 & 5.47    & 10.93           \\
-\texttt{cnn\_big}      & 3.118 & \textbf{2.849} & 46.376  & \textbf{27.693} \\\bottomrule
+\texttt{lstm-small}    & 5.88  & 8.61 & 9.17    & 17.71           \\
+\texttt{cnn\_big}      & 5.08  & \textbf{4.55} & 78.36  & \textbf{46.66} \\\bottomrule
 \end{tabular}
-\caption{Steady-state per-epoch wall-clock from
-\texttt{profiling\_results} (mean of post-warmup epochs).  Bold marks
-2-GPU bundles that beat their 1-GPU counterpart on~wall-clock.
-\texttt{cnn\_big}~wins 1.09$\times$ on~A40$\times$2 and~1.68$\times$ on
-P600$\times$2; it~is~the~only type used by~Scenario~1.}\label{tab:e2e-bundle-costs}
+\caption{Steady-state per-epoch compute from
+\texttt{profiling\_results} (mean of post-warmup epochs, 2026-06-25 runs;
+the~runtime's own per-epoch timing, after the~profiler-measurement fix).
+Bold marks 2-GPU bundles that beat their 1-GPU counterpart on~wall-clock.
+\texttt{cnn\_big}~wins 1.12$\times$ on~A40$\times$2 and~1.68$\times$ on
+P600$\times$2; \texttt{lstm-small} has~no~2-GPU win (DataParallel sync
+dominates).  \texttt{cnn\_big} is~the~only type used by~Scenario~1.}\label{tab:e2e-bundle-costs}
 \end{table}
 
 \begin{table}[H]\centering\small
 \begin{tabular}{l r r r r}\toprule
 Type & A40$\times$1 [\$/ep] & A40$\times$2 [\$/ep] & P600$\times$1 [\$/ep] & P600$\times$2 [\$/ep] \\\midrule
-\texttt{lstm-small}    & 0.000297 & 0.000735 & 0.0000456 & 0.000167 \\
-\texttt{cnn\_big}      & 0.000260 & 0.000435 & 0.000386  & 0.000423 \\\bottomrule
+\texttt{lstm-small}    & 0.000490 & 0.001315 & 0.0000764 & 0.000271 \\
+\texttt{cnn\_big}      & 0.000423 & 0.000695 & 0.000653  & 0.000713 \\\bottomrule
 \end{tabular}
 \caption{GPUcost per~epoch, computed as~per-epoch[s]
 $\times$~hourly-rate (Table~\ref{tab:e2e-rates}) $/\,3600$.  Multiply by
@@ -164,17 +175,26 @@ bundle.}\label{tab:e2e-bundle-rates}
 \label{sec:e2e-s1}
 
 We submit five \texttt{cnn\_big} jobs (Table~\ref{tab:e2e-s1-jobs}).
-Patient deadlines ($+30$\,min, $+2$\,h) are deliberately loose: a~plan
-that preempts a~patient to~free A40 for~URGENT carries near-zero true
-cost --- yet, as~we~shall see, the~proxy never proposes one.
+Patient deadlines ($+30$\,min, $+2$\,h) are deliberately loose, and~the
+cluster is~\emph{under-subscribed} when URGENT arrives: the~whole
+\texttt{matemagician} node~--- both P600 slots~--- is~free.  As~we~shall
+see, the~horizon-myopic proxy therefore parks URGENT on~that slow free
+P600$\times$2 rather than immediately rushing it~onto the~faster A40
+hardware (which it~outranks the~patients to~claim) --- and~because no
+bundle can~meet URGENT's tight $+10$-min deadline at~200 epochs,
+that~delay only widens its eventual overrun.  (No~patient is~ever
+displaced: the~under-subscribed cluster lets each job start as~a~slot
+frees, and~URGENT then \emph{migrates} onto~A40~--- first A40$\times$1,
+then~A40$\times$2~--- as~the~two prio-4 patients finish on~their own,
+never by~eviction.)
 
 \begin{table}[H]\centering\small
 \begin{tabular}{l l r l r l}\toprule
 Label & Type & Priority & Deadline & Epochs & Submitted at \\\midrule
 JOB1 & \texttt{cnn\_big} & 4 & $+30$\,min & 75  & $t=0$\,s    \\
-JOB2 & \texttt{cnn\_big} & 4 & $+30$\,min & 75  & $t=7$\,s    \\
-JOB3 & \texttt{cnn\_big} & 2 & $+2$\,h    & 50  & $t=14$\,s   \\
-JOB4 & \texttt{cnn\_big} & 1 & $+2$\,h    & 25  & $t=19$\,s   \\
+JOB2 & \texttt{cnn\_big} & 4 & $+30$\,min & 75  & $t=5$\,s    \\
+JOB3 & \texttt{cnn\_big} & 2 & $+2$\,h    & 50  & $t=10$\,s   \\
+JOB4 & \texttt{cnn\_big} & 1 & $+2$\,h    & 25  & $t=15$\,s   \\
 URGENT$^{\star}$ & \texttt{cnn\_big} & 5 & $+10$\,min & 200 & $t{=}7.5$\,min \\\bottomrule
 \end{tabular}
 \caption{Scenario~1 submissions.}\label{tab:e2e-s1-jobs}
@@ -182,29 +202,46 @@ URGENT$^{\star}$ & \texttt{cnn\_big} & 5 & $+10$\,min & 200 & $t{=}7.5$\,min \\\
 
 \begin{figure}[H]\centering
 \resizebox{\linewidth}{!}{\input{Files/chart_s1.tex}}
-\caption{Scenario~1 timeline (run~2026-05-28, $t{=}0$ at first
-dispatch).  URGENT lands on~the~free P600$\times$2 even though
-A40 would meet its deadline, then migrates to~A40$\times$1
-and~upgrades to~A40$\times$2 as~the~prio-4 patients finish.  The
-proxy mechanic behind this trajectory is~unpacked
+\caption{Scenario~1 timeline (run~2026-06-25, $t{=}0$ at~first
+dispatch).  URGENT lands on~the~free P600$\times$2 (the~whole
+\texttt{matemagician} node is~idle; no~patient is~preempted), then migrates
+onto~A40~--- first A40$\times$1, then~A40$\times$2~--- as~the~two prio-4
+patients finish.  The~proxy mechanic is~unpacked
 in~\S\ref{sec:e2e-s1-urgent-math}.}\label{fig:e2e-s1}
 \end{figure}
 
+\begin{figure}[H]\centering
+\resizebox{\linewidth}{!}{\input{Files/chart_s1_predicted.tex}}
+\caption{Scenario~1, optimiser-predicted finish vs.\ actual (run~2026-06-25,
+after the~profiler-measurement fix).  The~orange $\blacktriangledown$ marks
+where the~optimiser predicted each job's \emph{completing} run would end ---
+its ExecTime estimate \texttt{remaining\_epochs} (from the~\texttt{OPT REQ}
+that placed it) $\times$ the~steady-state per-epoch of~its~final bundle
+(Table~\ref{tab:e2e-bundle-costs}), anchored at~that placement's start ---
+against the~bar's true end; $\Delta=$ actual${-}$predicted.  Every $\Delta$
+is~now within a~few minutes and~slightly positive: the~estimate counts only
+epoch compute, so~it~misses each segment's one-off container start and
+checkpoint load.  The~four patients land at~$+0.5$ to~$+0.8$\,min; URGENT's
+larger $+2.1$\,min is~the~cross-node resume cost of~its~P600$\to$A40
+migration.}\label{fig:e2e-s1-pred}
+\end{figure}
+
 \begin{table}[H]\centering\small
-\begin{tabularx}{\textwidth}{@{}l r r r r X@{}}\toprule
-Bundle & per-epoch [s] & GPUcost/ep [\$] & 50-ep [\$] & 200-ep [\$] & Best for \\\midrule
-A40$\times$1        & 3.118  & 0.000260 & \textbf{0.0130} & 0.0520 & medium-deadline cnn\_big \\
-A40$\times$2        & 2.849  & 0.000435 & 0.0217 & 0.0870 & \textbf{$\leq$10-min URGENT} \\
-QuadroP600$\times$1 & 46.376 & 0.000386 & 0.0193 & 0.0772 & \textbf{slack runs (cheapest)} \\
-QuadroP600$\times$2 & 27.693 & 0.000423 & 0.0211 & 0.0846 & --- (dominated) \\\bottomrule
+\begin{tabularx}{\textwidth}{@{}l r r rX@{}}\toprule
+Bundle & per-epoch [s] & GPUcost/ep [\$] & 50-ep [\$] & 200-ep [\$]\\\midrule
+A40$\times$1        & 5.08   & 0.000423 & 0.0212 & \textbf{0.0847} \\
+A40$\times$2        & 4.55   & 0.000695 & 0.0348 & 0.1390  \\
+QuadroP600$\times$1 & 78.36  & 0.000653 & 0.0327 & 0.1306 \\
+QuadroP600$\times$2 & 46.66  & 0.000713 & 0.0356 & 0.1426 \\\bottomrule
 \end{tabularx}
-\caption{Per-bundle data the~optimiser sees for~\texttt{cnn\_big} after
-Scenario~1's profile sweep.  Per-epoch is~the~steady-state mean from
-\texttt{profiling\_results} (warmup epoch excluded).  Full 200-epoch
-walls: A40$\times$1~$=$~10.4\,min, A40$\times$2~$=$~9.5\,min,
-P600$\times$1~$=$~154.6\,min, P600$\times$2~$=$~92.3\,min.  Both A40
-bundles fit URGENT's 10-minute deadline (with~A40$\times$1 just~$24$\,s
-over); P600 overruns by~more than~an~hour.}\label{tab:e2e-s1-opt}
+\caption{Per-bundle data the~optimiser sees for~\texttt{cnn\_big} in
+Scenario~1.  Note the~full-run (200-ep) energy is~now \emph{cheapest}
+on~A40$\times$1 (bold), not~on~P600: the~P600 is~$\sim$15$\times$ slower,
+so~its $\sim$10$\times$ cheaper hourly rate no~longer wins over a~full run.
+The~proxy nonetheless parks URGENT on~P600 (\S\ref{sec:e2e-s1-urgent-math})
+because it~bills scheduled jobs only to~the~horizon $\Delta t$ at~the~hourly
+rate~--- where cheap-per-hour P600 still wins~--- not~to~real
+completion.}\label{tab:e2e-s1-opt}
 \end{table}
 
 \subsection{Decision timeline}
@@ -214,143 +251,166 @@ over); P600 overruns by~more than~an~hour.}\label{tab:e2e-s1-opt}
 \renewcommand{\arraystretch}{1.15}%
 \begin{tabular}{@{}l l p{8.4cm}@{}}\toprule
 $t$ [min] & Job(s) & Decision (why) \\\midrule
-0.0   & J1, J2     & J1 begins P600 sweep; J2 begins A40 sweep.  ``Profile-always'' gate: neither~is~yet a~standard candidate. \\
-1.4   & J3, J4     & First OPT pass with~enough profile coverage; J3 (prio~2) and~J4 (prio~1) placed on~A40$\times$1 each (both A40 slots).  J1, J2 still profile-owing $\Rightarrow$ invisible to~OPT. \\
-3.0   & J4         & J4 ends naturally (25/25).  A40 slot frees. \\
-4.1   & J2         & J2 sweep finishes; OPT places J2 standard on~the~freed A40 slot. \\
-6.2   & J3         & J3 ends naturally (50/50).  A40 slot frees. \\
-6.7   & J1         & J1 sweep finishes; OPT places J1 on~the~freed A40 slot.  Cluster: J1, J2 on~A40$\times$1; P600 idle. \\
-\textbf{7.9} & \textbf{URGENT} & \textbf{Submitted (prio~5, deadline~$+10$\,min).  OPT picks P600$\times$2 mate.}  Both A40 held by~prio-4 patients; RG only places on~currently-free capacity (\S\ref{sec:e2e-s1-urgent-math}), so~A40 plans are~not generated; among free P600 configs the~``cheapest if~deadline reachable, else fastest'' rule picks P600$\times$2. \\
-\textbf{11.0} & \textbf{URGENT} & \textbf{J2 ends naturally (75/75).  OPT migrates URGENT $\to$ A40$\times$1.}  With~URGENT now in~currentSched, its proxy completion collapses from~$92.3$\,min (P600$\times$2) to~$10.4$\,min (A40$\times$1); migrate dominates kept-same. \\
-\textbf{13.6} & \textbf{URGENT} & \textbf{J1 ends naturally (75/75).  OPT upgrades URGENT $\to$ A40$\times$2}~(both A40 slots free; faster bundle is~cheaper at~horizon). \\
-17.9  & URGENT     & Deadline (purple tick on~Fig.\ref{fig:e2e-s1}); URGENT still has~$\sim$9\,min remaining. \\
-27.3  & URGENT     & URGENT ends (200/200) $\sim$10\,min past~deadline.  $w_5{\times}600\,\textrm{s}={\approx}\$0.27$ tardiness incurred. \\\bottomrule
+0.0   & J1, J2     & J1 begins the~P600 profile sweep; J2 the~A40 sweep.  ``Profile-always'' gate: neither~is~yet a~standard candidate. \\
+1.3   & J3, J4     & Once the~type's A40 cells are~measured, prio-2 J3 (50\,ep) and~prio-1 J4 (25\,ep) are~placed standard on~A40$\times$1 each. \\
+3.9   & J4, J2     & J4 ends naturally (25/25); J2's sweep finishes, so~OPT places prio-4 J2 on~the~freed A40$\times$1 --- no~eviction. \\
+6.2   & J3         & J3 ends naturally (50/50). \\
+6.6   & J1         & J1's sweep finishes; OPT places prio-4 J1 on~the~freed A40$\times$1.  Cluster: J1, J2 on~A40$\times$1; \textbf{both P600 slots free}. \\
+\textbf{7.7} & \textbf{URGENT} & \textbf{Submitted (prio~5, +10\,min, 200\,ep).  OPT places it~on~the~free P600$\times$2.}  The~node is~idle, so~no~preemption; the~horizon-myopic proxy reads URGENT's tardiness as~zero (logged \texttt{expected\_tardiness}{=}0) and~prefers the~cheap free P600 over~displacing a~patient for~A40 (\S\ref{sec:e2e-s1-urgent-math}).  Chosen-plan cost~\$0.030. \\
+\textbf{10.9} & \textbf{URGENT} & \textbf{J2 ends (75/75); OPT migrates URGENT P600$\times$2 $\to$ A40$\times$1} onto the~freed slot (\texttt{drop-preempt} empty --- a~migration, not~an~eviction). \\
+\textbf{13.5} & \textbf{URGENT} & \textbf{J1 ends (75/75); OPT migrates URGENT A40$\times$1 $\to$ A40$\times$2}, both A40 GPUs now~free.  Again no~patient is~displaced --- both finished on~their own. \\
+17.7  & URGENT     & Deadline (violet tick on~Fig.\ref{fig:e2e-s1}); URGENT is~$\sim$40\% through, already on~A40$\times$2. \\
+28.8  & URGENT     & URGENT ends (200/200), $\sim$11\,min past~deadline.  $w_5{\times}678\,\textrm{s}\approx\$0.30$ tardiness incurred. \\\bottomrule
 \end{tabular}
-\caption{Scenario~1 events.  Migrations are
-triggered by~patients finishing naturally, not by~a~policy decision
-to~clear A40 for~URGENT --- the~bug
-\S\ref{sec:e2e-s1-urgent-math} dissects.}\label{tab:e2e-s1-decisions}
+\caption{Scenario~1 decision log
+(2026-06-25).}\label{tab:e2e-s1-decisions}
 \end{table}
 
-\subsection{URGENT plan comparison --- true objective}
+\subsection{URGENT plan comparison}
 \label{sec:e2e-s1-urgent}
 
-At URGENT's submission ($t{=}7.9$\,min), the~true objective would order
-the~plans by~full-job ExecTime~$+$~TardCost against URGENT's $+10$-min
-deadline; priority-5 tardiness is~weighted at~$w_5{=}0.000444$~\$/s.
+We report what the~optimiser actually scored.  At~URGENT's submission
+($t{\approx}7.7$\,min) the~whole P600 node is~free, and~\texttt{proxy\_function\_min}
+ranks the~plan that~drops URGENT onto~that~free P600$\times$2 as
+\emph{cost-minimal} --- the~run's \texttt{OPT RESP} logs its~cost
+at~\$0.030 --- even though that~bundle overruns the~$+10$-min deadline by
+$\sim$2.4\,h.  Table~\ref{tab:e2e-s1-proxy} shows why: the~proxy charges
+every job only up~to~the~horizon $\Delta t={}$\texttt{first\_finish\_time}
+(the~soonest finish in~the~plan), and~in~every cheap plan a~prio-4 patient
+finishes first a~few minutes out~--- so~URGENT's tardiness, read at~that
+horizon, is~exactly~zero on~every bundle except the~one that~makes URGENT
+itself finish first.
 
-\begin{table}[H]\centering\scriptsize
-\begin{tabularx}{\textwidth}{@{}X r r r r r X@{}}\toprule
-Plan for URGENT             & ExecTime [s] & Tardy [s] & GPUcost [\$] & TardCost [\$] & \textbf{TotalCost [\$]} & True-cost rank \\\midrule
-A40$\times$1 (preempt 1)    & 624    & 24     & 0.0520 & 0.011 & \textbf{0.063}  & \textbf{1 (best)} \\
-A40$\times$2 (preempt 2)    & 570    & 0      & 0.0870 & 0.000 & 0.087           & 2 \\
-P600$\times$2 (preempt 2)   & 5\,539 & 4\,939 & 0.0846 & 2.193 & 2.278           & 3 \\
-P600$\times$1 (preempt 1)   & 9\,275 & 8\,675 & 0.0772 & 3.852 & 3.929           & 4 \\\bottomrule
+\begin{table}[H]\centering\scriptsize\setlength{\tabcolsep}{3pt}
+\begin{tabularx}{\textwidth}{@{}l r c r X@{}}\toprule
+Plan for URGENT & ExecTime [s] & meets $+10$\,min? & in-proxy Tardy [s] & Proxy verdict \\\midrule
+A40$\times$2          & 910 (15\,min)   & no & 310 & \texttt{get\_best\_setup}'s own pick (fastest, since no~bundle is~deadline-reachable), but~RG rejects it: URGENT becomes the~earliest finish (patients displaced to~slow P600), stretching~$\Delta t$ and~finally exposing its~own tardiness $\Rightarrow$ dearest plan \\
+A40$\times$1          & 1\,016 (17\,min) & no & 0   & tardiness ties the~chosen plan, but~the~A40 hourly rate is~$10\times$ P600's, so~over the~horizon it~scores dearer --- never preferred \emph{for~URGENT} \\
+P600$\times$1 (free)  & 15\,672 (261\,min) & no & 0   & near-ties the~chosen plan (also free, cheapest rate, tardiness masked); RG took the~2-GPU bundle of~the~same idle node \\
+\textbf{P600$\times$2 (free node)} & \textbf{9\,332 (155\,min)} & \textbf{no} & \textbf{0} & \textbf{\checkmark\ chosen (cost-minimal): the~whole P600 node is~idle, a~prio-4 patient sets the~$\sim$3\,min horizon, so~URGENT's 2.4-h overrun stays invisible and~its~GPU is~billed for~only~$\sim$3\,min of~cheap P600} \\\bottomrule
 \end{tabularx}
-\caption{True-objective ranking of~URGENT plans at~submission.
-ExecTime $=$ 200$\times$per-epoch from~Table~\ref{tab:e2e-s1-opt};
-Tardy $=$ $\max(\text{ExecTime}-600,\,0)$ against the~10-min deadline;
-TardCost $=$ Tardy~$\times$~$w_5$.  Both A40 plans land within seconds
-of~deadline (A40$\times$1 is~cheaper because it~preempts only~one
-patient); both P600 plans overshoot by~more than~an~hour.  This is
-\emph{not} the~cost the~proxy used to~decide;
-see~\S\ref{sec:e2e-s1-urgent-math}.}\label{tab:e2e-s1-urgent}
+\caption{URGENT plan comparison, Scenario~1 --- the~values
+\texttt{proxy\_function\_min} actually scores at~submission.  ExecTime $=$
+$200\times$ per-epoch (Table~\ref{tab:e2e-bundle-costs}); no~bundle reaches
+the~$+10$-min deadline, so~\texttt{get\_best\_setup} would~take the~fastest
+(A40$\times$2), but~the~full-plan proxy overrides it.  in-proxy
+Tardy~$=[\,t_0{+}\Delta t-d\,]^{+}$ with $\Delta t={}$\texttt{first\_finish\_time}:
+zero whenever a~quick patient (not~URGENT) sets~$\Delta t$, positive only
+in~the~A40$\times$2 plan where URGENT itself finishes first.  The~chosen
+plan's logged proxy cost is~\$0.030.}\label{tab:e2e-s1-proxy}
 \end{table}
 
-\subsection{Why URGENT lands on the slowest 2-GPU bundle}
+Under a~\emph{deadline-aware} objective --- one that~scored each job's
+\emph{real} finish time, as~\texttt{method=PR}'s
+\texttt{proxy\_function\_max} does --- this ranking inverts: A40$\times$2
+becomes best while the~slow free-P600 bundles fall to~the~bottom.
+Table~\ref{tab:e2e-s1-urgent} gives that~counterfactual full-run
+yardstick; it~is~\emph{not} what the~reference \texttt{method=RG}
+deployment minimises --- by~it, the~run's P600$\times$2 choice costs
+$\sim$13$\times$ the~ideal A40$\times$2.
+
+\begin{table}[H]\centering\scriptsize
+\begin{tabularx}{\textwidth}{@{}X r r r r r r X@{}}\toprule
+Plan for URGENT             & ExecTime [s] & Tardy [s] & GPUcost [\$] & NodeCost [\$] & TardCost [\$] & \textbf{Total [\$]} & rank \\\midrule
+A40$\times$2  & 911 & 311    & 0.139 & 0.101 & 0.138 & \textbf{0.378}  & \textbf{1 (best)} \\
+A40$\times$1  & 1\,016 & 416    & 0.085 & 0.113 & 0.185 & 0.383           & 2 \\
+P600$\times$2 (run's choice) & 9\,332 & 8\,732 & 0.143 & 1.037 & 3.877 & 5.057 & 3 \\
+P600$\times$1 & 15\,672 & 15\,072 & 0.131 & 1.741 & 6.692 & 8.564 & 4 (worst) \\\bottomrule
+\end{tabularx}
+\caption{\emph{Counterfactual} idealised full-run cost --- \emph{not} the
+deployed objective.  Same terms as~\texttt{proxy\_function\_min} but~with
+tardiness, GPU, and~node cost measured at~each job's \emph{real}
+completion instead of~at~$\Delta t$.  Tardy $=$ $\max(\text{ExecTime}-600,
+\,0)$; TardCost $=$ Tardy~$\times w_5$ ($w_5{=}0.000444$~\$/s); NodeCost
+$\approx(\texttt{cost}_{\text{mate}}{+}\texttt{cost}_{\text{polimi}})\times
+\text{ExecTime}/3600$.  This is~how a~deadline-aware proxy \emph{would}
+rank the~plans --- A40$\times$2 best; the~run took P600$\times$2 (3rd
+of~4, $\sim$13$\times$ the~ideal), because that~minimised the~horizon-myopic
+proxy actually deployed (Table~\ref{tab:e2e-s1-proxy}), not~this
+yardstick.}\label{tab:e2e-s1-urgent}
+\end{table}
+
+\subsection{Why URGENT lands on the slow free bundle}
 \label{sec:e2e-s1-urgent-math}
 
-Table~\ref{tab:e2e-s1-urgent} ranks A40 plans first; the~run picks
-P600$\times$2.  Three proxy mechanics combine to~force this choice.
+The optimiser's own cost-minimal plan (Table~\ref{tab:e2e-s1-proxy})
+parks URGENT on~the~slow free P600$\times$2.  Two features of~the~proxy
+it~minimises combine to~produce this.
 
 \begin{enumerate}\itemsep0pt
 \item \textbf{Horizon-myopic tardiness.}
-\texttt{proxy\_function\_min} evaluates each job's tardiness at
+\texttt{proxy\_function\_min} evaluates every job's tardiness at
 $\textsc{sim\_time}{=}\textsc{current\_time}{+}\textsc{first\_finish\_time}$,
-where \texttt{first\_finish\_time} is~the~soonest currently-scheduled
-finish.  At~URGENT's arrival, the~A40 patients have $\sim$30~ep
-remaining on~A40$\times$1 ($\approx 125$\,s); URGENT is~200\,ep ahead
-on~any bundle, so it~cannot finish in~this horizon.  Its deadline
-($+10$\,min$=600$\,s) is~still in~the~future at~\textsc{sim\_time}, so
-\emph{every} URGENT placement gets in-proxy tardiness~$=0$.  Tardiness
-drops out of~the~URGENT-on-X vs.~URGENT-on-Y comparison.
+where \texttt{first\_finish\_time} is~the~soonest finish in~the~plan.
+URGENT is~200\,ep ahead on~any bundle, so~in~every plan that~keeps a~quick
+prio-4 patient running it~is~a~patient that~finishes first (a~few minutes
+out), \textsc{sim\_time} lands before URGENT's $+10$-min deadline, and~URGENT's
+tardiness reads exactly~zero.  Tardiness thus drops out of~the~comparison
+for~all the~cheap plans, even though in~truth the~P600$\times$2 placement
+overruns by~$\sim$2.4\,h while A40$\times$2 would overrun by~only~$\sim$5\,min.
+(The~one exception is~the~A40$\times$2 plan itself, where URGENT becomes
+the~earliest finish and~the~horizon stretches far~enough to~register its
+$\sim$310\,s of~tardiness --- which only makes that~plan look~\emph{worse}.)
 
-\item \textbf{Random Greedy never proposes a~plan that preempts an
-incumbent.}
-\texttt{Heuristic::assign} (the workhorse called by every greedy /
-random-greedy iteration) calls
-\texttt{system.assign\_to\_node(GPU\_type, n\_GPUs)} which only
-returns a~node if a~currently-free slot exists; it~has no path that
-displaces a~job already in~\texttt{currentScheduling}.  RG processes jobs in
-priority order: URGENT first.  When URGENT asks for~A40, both A40
-slots are already taken by~the~prio-4 patients in~currentSched, so
-\texttt{assign\_to\_node} returns empty and~RG falls through to
-\texttt{assign\_to\_suboptimal}, which iterates configurations in
-cost-then-speed order using \emph{only} currently-free capacity.
-The only configurations with free slots are P600$\times$1 and
-P600$\times$2.  The~``preempt the~patient, place it~on~P600''
-counter-plan that would let URGENT have A40 is~never even generated.
-
-\item \textbf{P600$\times$2 vs.\ P600$\times$1: the~deadline-missing
-fallback.}
-Between the~two P600 configurations RG \emph{does} actually consider,
-\texttt{Optimal\_configurations::get\_best\_setup} applies the~rule
-``if a~configuration can meet the~deadline, pick the~cheapest;
-otherwise, pick the~fastest''.
-URGENT's 10-minute deadline cannot be met on either P600 bundle
-(P600$\times$1$\,=\,$154.6\,min wall, P600$\times$2$\,=\,$92.3\,min),
-so the~rule's fallback branch fires and~RG picks
-\emph{fastest}~$=$~P600$\times$2.  P600$\times$1 would have been
-cheaper per epoch, but~the~``cheapest'' branch only runs when the
-deadline is~reachable; here it~is~not, so cost is~ignored.
+\item \textbf{The~proxy bills over~that~same short horizon, and~re-plans
+from~scratch.}
+Each construction calls \texttt{close\_nodes()} first, wiping all
+occupancy, so~the~score never contains an~``eviction cost'': it~rates
+a~full plan in~isolation, with~no~notion of~which job was~already running
+(\S\ref{sec:e2e-objective}).  With~URGENT's tardiness masked, the~cheapest
+plan is~simply the~one with~the~smallest $\Delta t$ and~the~cheapest rates:
+keep the~quick patients on~fast A40 (so~a~patient sets~$\Delta t\approx3$\,min)
+and~drop the~200-epoch URGENT onto~the~free, cheapest-per-hour P600, where
+its~GPU is~billed for~only those~$\sim$3\,minutes.  Every faster placement
+scores worse: A40$\times$2 makes URGENT itself the~earliest finish,
+stretching~$\Delta t$ to~$\sim$15\,min --- which inflates \emph{every} job's
+GPU and~node charge and~exposes URGENT's own tardiness --- while putting
+URGENT on~an~A40$\times$1 slot would charge the~$10\times$-dearer A40 rate
+over the~horizon for~no~proxy gain (URGENT's~speed is~invisible).  With~the
+whole P600 node idle, its~two free bundles tie at~the~bottom (cheapest
+hourly rate, tardiness masked) and~RG takes the~2-GPU one.  No preemption
+is~involved at~all here --- the~idle node absorbs URGENT without displacing
+anyone.
 \end{enumerate}
 
-\begin{table}[H]\centering\scriptsize\setlength{\tabcolsep}{4pt}
-\begin{tabularx}{\textwidth}{@{}l l l X@{}}\toprule
-Configuration considered by~RG & Free at~submit? & RG outcome & Why \\\midrule
-A40$\times$1 (single slot) & \emph{no} (both A40s held by patients) & not considered & \texttt{assign\_to\_node} returns empty for occupied node \\
-A40$\times$2 (both slots) & \emph{no} (both A40s held by patients) & not considered & \texttt{assign\_to\_node} returns empty for occupied node \\
-P600$\times$1 & yes (both P600s free) & considered, rejected & deadline unreachable; ``pick fastest'' branch chooses P600$\times$2 instead \\
-\textbf{P600$\times$2} & yes (both P600s free) & \textbf{chosen} & deadline unreachable; this is~the fastest free configuration \\\bottomrule
-\end{tabularx}
-\caption{What Random Greedy actually evaluates at~URGENT submission.
-A40 configurations never enter the~comparison because
-\texttt{Heuristic::assign} has no~path that preempts an~incumbent in
-\texttt{currentScheduling}; the~prio-4 patients hold both A40 slots
-and~RG just~sees ``A40 unavailable''.  Among the~P600 configurations
-that are~free, the~``cheapest if~deadline reachable, else fastest''
-rule picks P600$\times$2 (92.3\,min wall vs. P600$\times$1's
-154.6\,min, both far over URGENT's 10-min
-deadline).}\label{tab:e2e-s1-proxy}
-\end{table}
+As~the~patients finish on~their own (JOB2 at~$t{\approx}10.9$, JOB1
+at~$t{\approx}13.5$), the~optimiser migrates URGENT onto~A40~--- first
+A40$\times$1, then~A40$\times$2~--- without displacing anyone; but~the
+slow-P600 start and~staged migration leave it~$\sim$11\,min late.  (URGENT
+cannot meet its~$+10$-min deadline on~\emph{any} bundle: even A40$\times$2
+needs $\sim$15\,min for~200 epochs.)
 
-Once URGENT is~actually running on~P600$\times$2 it~becomes part of
-\texttt{currentSched}.  The~next opt round at~$t{\approx}11.0$ sees
-JOB2 succeeded (its A40$\times$1 slot freed) and
-\texttt{first\_finish\_time} now anchored on~JOB1.  Re-running the
-same proxy with~URGENT already running on~P600$\times$2, migrating
-it~to~the~now-free A40$\times$1 is~cheaper because URGENT's projected
-completion collapses from~92.3\,min to~10.4\,min; in-proxy URGENT
-tardiness drops accordingly and~the~GPU-rate increase is~two orders
-of~magnitude smaller in~dollars.  Two rounds later, when JOB1 also
-completes at~$t{\approx}13.6$, the~second A40 frees and~URGENT
-upgrades to~A40$\times$2.
-
-\texttt{method=PR} (with \texttt{proxy\_function\_max}, deadline-aware
-per~job) would pick A40$\times$2 from~the~first round, but~we~keep
-\texttt{method=RG} as~the~reference deployment.
+\texttt{method=PR} (with~\texttt{proxy\_function\_max}, deadline-aware
+per~job) would have~seen URGENT's true finish time from~the~first round
+and~rushed it~onto A40$\times$2 immediately --- preempting both patients
+up~front and~finishing $\sim$5\,min late instead of~$\sim$11 --- but~we
+keep \texttt{method=RG} as~the~reference deployment.
 
 % ---------------------------------------------------------------------------
 \section{Scenario 2 --- two types, forced 2-GPU placement}
 \label{sec:e2e-s2}
 
-Scenario~2 introduces a~second job type and~constructs a~workload
-where every available bundle has~consequences.  Two priority-5
-\texttt{cnn\_big} pins occupy the~A40 slots; an~urgent
-\texttt{cnn\_big} arrives with~a~deadline that admits P600$\times$2
-(18.5\,min) but~not P600$\times$1 (31\,min); the~A40 slots are blocked
-by~the~pins.  The~proxy~--- as~we shall see --- still picks
-P600$\times$1.
+Scenario~2 introduces a~second job type and~\emph{fills} the~cluster.
+Two priority-5 \texttt{cnn\_big} pins occupy the~A40 slots; two
+priority-1 \texttt{lstm-small} patients occupy the~P600 slots.  An~urgent
+\texttt{cnn\_big} (prio~5) then arrives with~a~$+22$-min deadline that, on
+the~true per-epoch costs, \emph{no~preemptible} bundle can~meet: only A40
+reaches it (3--4\,min for~40 epochs), but~the~A40 slots are~held by
+equal-priority pins URGENT cannot evict, and~both P600 bundles overrun
+(P600$\times$2 $\sim$31\,min, P600$\times$1 $\sim$52\,min).  With~no~free
+slot anywhere, every plan leaves some job unscheduled, and~--- exactly
+as~in~Scenario~1 --- the~horizon-myopic proxy reads URGENT's tardiness
+as~zero, so~the~cheapest plan simply takes the~cheapest \emph{preemptible}
+bundle, \emph{not} the~one that~minimises the~overrun: it~picks
+P600$\times$1 and~drops the~single slack prio-1 \texttt{lstm-small} it~must
+evict to~free that~slot (the~$+8$-h deadlines make the~patients almost
+free to~omit).  URGENT therefore lands on~hardware that~misses its
+deadline outright, and~only \emph{meets} it because, once a~pin finishes,
+the~optimiser migrates it~onto the~freed A40, where it~completes with~time
+to~spare.  The~contrast with~Scenario~1 is~thus narrower than it~first
+appears: both scenarios show the~same myopia; here the~full cluster's
+churn~--- preempting slack, then~migrating onto~freed fast hardware~---
+happens to~recover the~deadline.
 
 \begin{table}[H]\centering\small
 \begin{tabular}{l l r l r}\toprule
@@ -361,41 +421,60 @@ P-LSTM-1 & S (\texttt{lstm-small}) & 1 & $+8$\,h   & 200 \\
 P-LSTM-2 & S (\texttt{lstm-small}) & 1 & $+8$\,h   & 200 \\
 URGENT$^{\star}$ & B (\texttt{cnn\_big}) & 5 & $+22$\,min & 40 \\\bottomrule
 \end{tabular}
-\caption{Scenario~2 submissions.  URGENT's $+22$-min deadline admits
-P600$\times$2 ($18.5$\,min) but~not P600$\times$1 ($31$\,min); A40 is
-blocked by~the~priority-5 pins.}\label{tab:e2e-s2-jobs}
+\caption{Scenario~2 submissions (2026-06-25).  On~the~true per-epoch costs,
+URGENT's $+22$-min deadline is~met only by~A40 (3--4\,min), held by~the
+equal-priority (prio-5) pins URGENT cannot preempt; no~P600 bundle reaches
+it (P600$\times$2 $\sim$31\,min, P600$\times$1 $\sim$52\,min).}\label{tab:e2e-s2-jobs}
 \end{table}
 
 \begin{figure}[H]\centering
 \resizebox{\linewidth}{!}{\input{Files/chart_s2.tex}}
-\caption{Scenario~2 timeline (run~2026-05-28, $t{=}0$ at~first
-dispatch).  URGENT lands on~P600$\times$1 (not~P600$\times$2) by
-preempting one lstm-small, then migrates to~A40$\times$1 when PIN-B
-ends.}\label{fig:e2e-s2}
+\caption{Scenario~2 timeline (run~2026-06-25, $t{=}0$ at~first
+dispatch).  The~cluster is~full and~no~P600 bundle meets URGENT's
+$+22$-min deadline, so~the~horizon-myopic plan takes the~cheapest one~---
+P600$\times$1, preempting a~\emph{single} prio-1 lstm-small~--- and~leaves
+the~equal-priority A40 pins alone.  URGENT then migrates to~A40$\times$1
+the~moment PIN-B ends, where it~meets the~deadline with~time to~spare;
+the~evicted patient resumes on~P600.}\label{fig:e2e-s2}
+\end{figure}
+
+\begin{figure}[H]\centering
+\resizebox{\linewidth}{!}{\input{Files/chart_s2_predicted.tex}}
+\caption{Scenario~2, optimiser-predicted finish ($\blacktriangledown$)
+vs.\ actual (run~2026-06-25), with~the~convention of~Fig.~\ref{fig:e2e-s1-pred}.
+After the~profiler fix the~predictions are~tight~--- most jobs land
+within~$\sim$1\,min (the~startup-and-checkpoint floor).  The~outlier is
+P-LSTM-2 at~$+4.3$\,min: it~was preempted for~URGENT and~resumed sharing
+\texttt{matemagician}, so~its~final run hit co-location contention
+($\sim$10.6\,s/epoch vs.\ the~solo profile's $\sim$9.2\,s) that~a~solo
+profile cannot foresee.}\label{fig:e2e-s2-pred}
 \end{figure}
 
 \subsection{URGENT plan comparison}
 
 \begin{table}[H]\centering\scriptsize\setlength{\tabcolsep}{3pt}
-\begin{tabularx}{\textwidth}{@{}X r r r r r X@{}}\toprule
-Plan & ExecTime [s] & GPUcost [\$] & Tardiness [s] & TardCost [\$] & Total [\$] & Decision \\\midrule
-A40$\times$1 (preempt 1 pin)            & 125    & 0.0104 & 0              & 0.0              & $\approx$1.56$^{\dagger}$ & rejected (unsched pin) \\
-A40$\times$2 (preempt both pins)        & 114    & 0.0174 & 0              & 0.0              & $\approx$3.11$^{\dagger}$ & rejected (2 unsched pins) \\
-P600$\times$2 (preempt both lstm-small) & 1\,108 & 0.0169 & 0              & 0.0              & $\approx$0.017            & not chosen (myopia $+$ slack) \\
-\textbf{P600$\times$1 (preempt 1 lstm-small)} & \textbf{1\,855} & \textbf{0.0154} & 0$^{\ddagger}$ & 0.0$^{\ddagger}$ & \textbf{$\approx$0.015} & \checkmark\ chosen \\\bottomrule
+\begin{tabularx}{\textwidth}{@{}l r c r X@{}}\toprule
+Plan & ExecTime & meets $+22$\,min? & GPUcost [\$] & Decision \\\midrule
+A40$\times$1 (evict 1 prio-5 pin)   & 3.4\,min  & yes & 0.0171 & off-limits: would evict an~equal-priority pin, which URGENT cannot preempt \\
+A40$\times$2 (evict 2 prio-5 pins)  & 3.3\,min  & yes & 0.0298 & off-limits: same, for~\emph{both} equal-priority pins \\
+P600$\times$2 (evict 2 prio-1 lstm) & 31\,min   & no  & 0.0285 & rejected: dearer 2-GPU rate than~P600$\times$1 over the~horizon, and~evicts a~second patient, for~no~proxy gain (tardiness masked either way) \\
+\textbf{P600$\times$1 (evict 1 prio-1 lstm)} & \textbf{52\,min} & \textbf{no} & \textbf{0.0261} & \textbf{\checkmark\ chosen}: the~only deadline-meeting bundles (A40) are~off-limits, so~RG takes the~cheapest \emph{preemptible} one; horizon-myopia reads URGENT's tardiness as~zero, so~the~52-min overrun is~invisible \\\bottomrule
 \end{tabularx}
-\caption{URGENT plan comparison.  ExecTime~$=$~40~$\times$~per-epoch
-from~Table~\ref{tab:e2e-bundle-costs}; TardCost uses the~priority-5
-weight.  $^{\dagger}$\,A40 plans look free of~URGENT's tardiness,
-but~each evicted prio-5 pin becomes $\sim$58\,min tardy on~its own
-$+10$-min deadline ($\approx\$1.55$ per~victim), so they are dominated.
-$^{\ddagger}$\,In~proxy at~horizon, URGENT's tardiness on~P600$\times$1
-reads zero: the~horizon (next-finish of~a~scheduled job) is~well before
-URGENT's $+22$-min deadline, so the~proxy is~blind to~the~31-min real
-ExecTime.  P600$\times$1 wins on~vmCost-at-horizon over P600$\times$2,
-which is~the~horizon-myopic bug from \S\ref{sec:e2e-s1-urgent-math}
-re-appearing in~the~lstm-small-eviction
-context.}\label{tab:e2e-s2-urgent}
+\caption{URGENT plan comparison, Scenario~2 (2026-06-25).  ExecTime $=$
+$40\times$ per-epoch (Table~\ref{tab:e2e-bundle-costs}); GPUcost is~the
+full-run energy.  Both deadline-meeting bundles are~A40, held by
+equal-priority pins URGENT cannot preempt; among the~\emph{preemptible}
+(P600) bundles neither meets the~$+22$-min deadline, so~there is~no
+deadline-reachable option for~\texttt{get\_best\_setup} and~RG falls back
+to~plain cost minimisation~--- with~tardiness masked by~horizon-myopia,
+that~is~simply the~cheapest P600 bundle, P600$\times$1.  URGENT nonetheless
+\emph{meets} its~deadline: when PIN-B finishes it~migrates onto the~freed
+A40$\times$1 (decision log below).  The~node term is~omitted: the
+200-epoch lstm-small patients set the~$\sim$38-min makespan, so~per-node
+cost
+($\approx(\texttt{cost}_{\text{mate}}{+}\texttt{cost}_{\text{polimi}})
+\times38\,\text{min}\approx\$0.25$) is~near-identical across URGENT
+placements and~cannot change the~choice.}\label{tab:e2e-s2-urgent}
 \end{table}
 
 \subsection{Decision timeline}
@@ -404,67 +483,37 @@ context.}\label{tab:e2e-s2-urgent}
 \renewcommand{\arraystretch}{1.15}%
 \begin{tabular}{@{}l l p{8.4cm}@{}}\toprule
 $t$ [min] & Job(s) & Decision (why) \\\midrule
-0.0--6.6 & PINs, P-LSTMs & Profile sweep over all eight (type, GPU-bundle) cells.  PIN-A carries the~P600 sweep; PIN-B + P-LSTM-2 carry the~A40 sweep; P-LSTM-1 atomic-claims the~remaining cells. \\
-2.2  & PIN-B, P-LSTM-2 & Both finish their profile budgets; OPT places PIN-B on~A40$\times$1 polimi and~P-LSTM-2 on~A40$\times$1 polimi (only profiled bundles available). \\
-6.6  & PIN-A, P-LSTM-2 & PIN-A sweep finishes; OPT prefers prio-5 PIN-A over prio-1 P-LSTM-2 on~A40 $\Rightarrow$ drop-preempt P-LSTM-2; new placement: PIN-A on~A40$\times$1 polimi. \\
-7.6  & P-LSTM-1, P-LSTM-2 & OPT places P-LSTM-1 and~the~just-evicted P-LSTM-2 on~matemagician P600$\times$1 each (cheapest bundle for~lstm-small). \\
-\textbf{7.7} & \textbf{URGENT} & \textbf{Submitted (prio~5, deadline~$+22$\,min).  OPT places URGENT on~P600$\times$1 mate, drop-preempting P-LSTM-2.}  A40 is~held by~PIN-A, PIN-B (both prio~5, tight deadlines) --- RG refuses to~displace them.  Among free P600 configs the~``cheapest if~deadline reachable, else fastest'' rule picks P600$\times$1 because the~horizon-myopic proxy reads URGENT's tardiness as~zero (deadline still future at~\textsc{sim\_time}) and~P600$\times$1 has~the~lower vmCost --- the~horizon-myopia bug from \S\ref{sec:e2e-s1-urgent-math} resurfacing. \\
-\textbf{9.6} & \textbf{URGENT} & \textbf{PIN-B ends naturally (80/80).  OPT migrates URGENT $\to$ A40$\times$1 polimi}~(proxy now sees URGENT's real P600 finish time and~prefers A40); P-LSTM-2 is~replaced on~P600$\times$1 in~the~same round. \\
-13.4 & URGENT, PIN-A & URGENT ends (40/40) well~inside its $+22$-min deadline; A40 slot frees.  OPT upgrades PIN-A from~A40$\times$1 to~A40$\times$2~(faster bundle, both slots free). \\
-13.8 & PIN-A      & Applied pending migrate PIN-A $\to$ A40$\times$2; PIN-A ends~$\sim$0.8\,min later (already at~78/80). \\
-$\sim$36--38 & P-LSTMs & Both lstm-small patients finish naturally on~P600$\times$1 each (their $+8$-h deadlines are~far in~the~future). \\\bottomrule
+0.0--6.6 & all four & Profile sweep over both types' eight (type, GPU-bundle) cells.  PIN-A carries the~P600 sweep; PIN-B + P-LSTM-2 carry the~A40 sweep; P-LSTM-1 atomic-claims the~remaining cells. \\
+2.0  & PIN-B, P-LSTM-2 & Both finish their profile budgets; OPT places PIN-B (prio~5) and~P-LSTM-2 (prio~1) on~A40$\times$1 each (only profiled bundles available). \\
+6.9  & PIN-A, P-LSTM-2 & PIN-A's sweep finishes; OPT prefers prio-5 PIN-A over~prio-1 P-LSTM-2 on~A40 $\Rightarrow$ \emph{drop-preempts} P-LSTM-2; PIN-A on~A40$\times$1. \\
+7.6  & P-LSTM-1, P-LSTM-2 & OPT places P-LSTM-1 and~the~just-evicted P-LSTM-2 on~matemagician P600$\times$1 each.  Cluster now~\textbf{full}: A40 $=$ two prio-5 pins, P600 $=$ two prio-1 lstm. \\
+\textbf{7.7} & \textbf{URGENT} & \textbf{Submitted (prio~5, $+22$\,min, 40\,ep).  No~P600 bundle meets the~deadline, so~the~horizon-myopic plan takes the~cheapest one --- P600$\times$1 --- drop-preempting a~\emph{single} prio-1 lstm (P-LSTM-2).}  A40 is~held by~the~equal-priority pins; chosen-plan cost~\$0.016, URGENT's tardiness read as~zero. \\
+\textbf{9.5} & \textbf{URGENT, P-LSTM-2} & \textbf{PIN-B ends (80/80); OPT migrates URGENT P600$\times$1 $\to$ A40$\times$1} (faster, now free); the~evicted P-LSTM-2 resumes on~P600$\times$1. \\
+13.3 & URGENT     & URGENT ends (40/40) on~A40$\times$1, $\sim$16\,min \emph{inside} its~$+22$-min deadline. \\
+14.7 & PIN-A      & PIN-A ends (80/80); the~second A40 frees. \\
+$\sim$38 & P-LSTMs & Both lstm-small patients finish on~P600$\times$1 (their $+8$-h deadlines are~far off). \\\bottomrule
 \end{tabular}
-\caption{Scenario~2 events.  URGENT's placement is~the~same
-horizon-myopia mechanism as~Scenario~1, here biting on~the~choice
-between P600$\times$1 and~P600$\times$2 rather than between P600 and~A40
-(the latter is~blocked by~the~prio-5 pins).}\label{tab:e2e-s2-decisions}
+\caption{Scenario~2 decision log
+(2026-06-25).}\label{tab:e2e-s2-decisions}
 \end{table}
-
-% ---------------------------------------------------------------------------
-\section{Implementation notes}
-\label{sec:e2e-impl}
-
-Five issues surfaced while bringing the~scenarios to~reproducible
-state; each is~summarised below and~detailed in~the~repo's
-\texttt{CLAUDE.md} / commit messages.
-
-\begin{itemize}\itemsep1pt
-\item \textbf{Stop/run reorder race.}  A~migration's \texttt{/stop} and
-\texttt{/run} could hit a~worker out~of~order under
-\texttt{method=PR}, so the~new container started before the~previous
-CUDA context drained; \texttt{dispatch\_with\_slot} now awaits any
-in-flight \texttt{/stop} on~the~same node first.
-\item \textbf{Per-epoch progress lag.}  Reader opened a~fresh
-SSH-tunnelled PG connection per~epoch ($\sim$5\,s each) and~the
-backlog could overrun the~60\,s drain timeout; reader now coalesces
-into a~once-per-second background writer.
-\item \textbf{Profile-claim thrash.}  A~hot-path sweep deleted live
-claims during a~transient \texttt{is\_profiling\_run=FALSE} window;
-replaced with lifecycle-event-driven cleanup plus a~15-min orphan GC
-in~the~60-minute \texttt{\_queue\_watcher}.
-\item \textbf{Self-inflicted optimiser wakes.}  Every slot-freed
-\texttt{NOTIFY} woke the~optimiser, including notifies caused by~the
-plan's own auto-preempts, so~RG re-ran on~partial state and~thrashed.
-The~payload now carries a~reason; \texttt{auto\_preempt} is~swallowed
-(the~plan's own dispatch picks~up~the~freed slot).  Migrate
-plans are~staged in~\texttt{state.pending\_migrates} and~committed
-by~the~slot listener once the~source \texttt{/stop} drains, so the
-swallow doesn't strand them.
-\item \textbf{Cross-version checkpoints.}  Pre-1.6
-\texttt{torch.save}~$+$~\texttt{strict=False} load lets a~job migrate
-between \texttt{matemagician} (torch~1.5.1) and~\texttt{polimi-gpu}
-(torch~2.6) without losing progress; Scenario~1 exercises both
-directions.
-\end{itemize}
 
 % ---------------------------------------------------------------------------
 \section{Reproducibility}
 
-Per-bundle costs are taken from
-\texttt{profiling\_results.duration\_seconds} (steady-state per-epoch
-mean, warmup excluded) and~the~hourly rates in
-Table~\ref{tab:e2e-rates}.  Timelines mirror per-instance state
-transitions from a~0.5~s API poller.  Scenarios are driven by
+All figures and~tables in~this chapter are derived from the~2026-06-25
+run snapshots committed under
+\texttt{documentation/report/e2e\_runs/2026-06-25/\{s1,s2\}/}
+(\texttt{api.log}, \texttt{jobs.json}, \texttt{profiles\_*.json},
+\texttt{chart\_s\{1,2\}\{,\_predicted\}.tex}).  These runs use~the
+corrected per-epoch profiler --- the~worker records the~runtime's own
+per-epoch compute time (warmup excluded), not~the~arrival interval of~its
+log lines (\texttt{worker/profiling.py}, \texttt{execution.py}) --- so~the
+per-bundle costs reflect true GPU throughput.  Per-bundle costs are taken
+from \texttt{profiling\_results.duration\_seconds} and~the~hourly rates in
+Table~\ref{tab:e2e-rates}; the~timeline charts are auto-generated from
+the~run's API log by~\texttt{infra/generate\_chart\_tex.py} (and~the
+predicted-finish overlay by~\texttt{generate\_chart\_tex\_predicted.py}),
+so~every bar position comes from a~real log event.  Scenarios are driven by
 \texttt{infra/e2e\_scenario.sh} and
 \texttt{infra/e2e\_scenario\_2types.sh}; slot metrics are exposed at
 \texttt{GET /admin/slots}, and~API logs land in~the~\texttt{ijm-api}

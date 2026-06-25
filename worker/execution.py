@@ -6,7 +6,6 @@ import logging
 import os
 import re
 import subprocess
-import time
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -30,6 +29,17 @@ from profiling import handle_complete
 logger = logging.getLogger(__name__)
 
 PROGRESS_RE = re.compile(r"Epoch\s+(\d+)/(\d+)")
+# Matches ONLY the epoch-*completion* line and captures (epoch_num, compute_s)
+# from the runtime's own log: ``Epoch 13/50 - Loss: .. - Acc: ..% - 77.42s``.
+# The trailing ``77.42s`` is the per-epoch time the trainer measured (train +
+# eval, see runtime/base.py); profiling records THAT, one sample per epoch.
+# We deliberately do NOT time when these lines arrive at the worker: arrival
+# intervals fold in checkpoint-save I/O and log/network jitter, which are far
+# heavier during the concurrent profile sweep than during the steady standard
+# run and bias the estimate high (observed 2026-06-25: A40x1 measured 8.0s by
+# arrival vs ~5.2s real compute).  The ``starting`` line has no trailing
+# duration, so it never matches.
+EPOCH_DONE_RE = re.compile(r"Epoch\s+(\d+)/\d+\s+-\s+Loss:.*-\s+([0-9.]+)s\s*$")
 JOB_TIMEOUT_SECONDS = int(os.getenv("JOB_TIMEOUT_SECONDS", str(24 * 3600)))
 
 HOST_ROOT: str = os.getenv("HOST_ROOT", "/host")
@@ -167,7 +177,7 @@ async def _stream_output(
     job_id: str,
     container_name: str,
     log_path: Path,
-    epoch_timestamps: list[tuple[int, float]],
+    epoch_durations: list[tuple[int, float]],
     *,
     is_profiling: bool,
 ) -> None:
@@ -252,11 +262,15 @@ async def _stream_output(
                     epoch_num = int(match.group(1))
                     pending["progress"] = f"{epoch_num}/{match.group(2)}"
                     wakeup.set()
+                    # One profiling sample per epoch end: the runtime's own
+                    # measured compute time, not a worker-side arrival clock.
                     if is_profiling:
-                        epoch_timestamps.append((epoch_num, time.monotonic()))
+                        done = EPOCH_DONE_RE.search(stripped)
+                        if done:
+                            epoch_durations.append((int(done.group(1)), float(done.group(2))))
     except Exception:
         # An error here means we lose the rest of the container output and any
-        # further epoch timestamps — surface it instead of swallowing.
+        # further epoch samples — surface it instead of swallowing.
         logger.warning("Output streaming for job %s ended unexpectedly", job_id[:JOB_ID_DISPLAY_LENGTH], exc_info=True)
     finally:
         # Final flush: signal writer to drain the latest progress, then await.
@@ -394,7 +408,7 @@ async def _run_job(job_id: str) -> None:
         # Per-run header in the output log so a viewer can see which node and
         # GPU config served each run, even before the container produces any
         # output (and even while the row is back in QUEUED).
-        epoch_timestamps: list[tuple[int, float]] = []
+        epoch_durations: list[tuple[int, float]] = []
         log_path = runs_local / OUTPUT_LOG_FILENAME
         run_kind = "PROFILING" if job["is_profiling_run"] else "RUNNING"
         header = (
@@ -411,7 +425,7 @@ async def _run_job(job_id: str) -> None:
 
         # Phase 3: stream output + wait (connections acquired per progress update)
         stream_task = asyncio.create_task(
-            _stream_output(process, job_id, name, log_path, epoch_timestamps, is_profiling=job["is_profiling_run"])
+            _stream_output(process, job_id, name, log_path, epoch_durations, is_profiling=job["is_profiling_run"])
         )
 
         loop = asyncio.get_running_loop()
@@ -507,7 +521,7 @@ async def _run_job(job_id: str) -> None:
                 await _notify_slot_freed()
                 return
 
-            is_profiling = await handle_complete(c, job_id, run_start_time, epoch_timestamps)
+            is_profiling = await handle_complete(c, job_id, run_start_time, epoch_durations)
             if not is_profiling:
                 logger.info("Job %s completed successfully", job_id[:JOB_ID_DISPLAY_LENGTH])
                 await update_job(c, job_id, status=JobStatus.SUCCEEDED, exit_code=exit_code)

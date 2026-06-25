@@ -1,0 +1,540 @@
+INFO:     127.0.0.1:58776 - "GET /health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:58782 - "DELETE /jobs HTTP/1.1" 204 No Content
+INFO:     127.0.0.1:58786 - "POST /admin/reconcile-slots HTTP/1.1" 200 OK
+17:00:31.783 INFO src.profiling: Instance fa2f78b3 atomic-claimed 2 cell(s) for type=cnn_big: [{'QuadroP600': 1}, {'QuadroP600': 2}]
+17:00:31.798 INFO src.profiling: Scheduling job fa2f78b3 (type=cnn_big): 4 total configs, 2 profiled/claimed, 2 remaining, 2 this instance (limit 2)
+17:00:31.803 INFO src.profiling: Scheduled job fa2f78b3: mode=profiling, config={'QuadroP600': 1}, node=matemagician
+17:00:31.884 INFO httpx: HTTP Request: POST http://localhost:8001/jobs/fa2f78b3-bea9-46a0-bd84-f5b73e18833d/run "HTTP/1.1 202 Accepted"
+17:00:31.885 INFO src.job_dispatcher: Remote run for job fa2f78b3 on http://localhost:8001
+INFO:     127.0.0.1:58790 - "POST /jobs HTTP/1.1" 201 Created
+17:00:36.943 INFO src.profiling: Instance fe8f9043 atomic-claimed 2 cell(s) for type=cnn_big: [{'A40': 1}, {'A40': 2}]
+17:00:36.959 INFO src.profiling: Scheduling job fe8f9043 (type=cnn_big): 4 total configs, 4 profiled/claimed, 0 remaining, 2 this instance (limit 2)
+17:00:36.964 INFO src.profiling: Scheduled job fe8f9043: mode=profiling, config={'A40': 1}, node=polimi-gpu
+17:00:37.057 INFO httpx: HTTP Request: POST http://localhost:8002/jobs/fe8f9043-1fc4-4a2d-9403-859ff64ec2ca/run "HTTP/1.1 202 Accepted"
+17:00:37.057 INFO src.job_dispatcher: Remote run for job fe8f9043 on http://localhost:8002
+INFO:     127.0.0.1:39506 - "POST /jobs HTTP/1.1" 201 Created
+17:00:42.125 INFO src.profiling: Scheduling job 63cf0155 (type=cnn_big): 4 total configs, 4 profiled/claimed, 0 remaining, 0 this instance (limit 2)
+17:00:42.130 INFO src.profiling: Scheduled job 63cf0155: mode=standard, config=None, node=None
+17:00:42.148 INFO src.routers.jobs: No node available for new job 63cf0155 — notified scheduler for optimizer pass
+INFO:     127.0.0.1:39512 - "POST /jobs HTTP/1.1" 201 Created
+17:00:42.283 INFO src.profiling: Scheduling job 63cf0155 (type=cnn_big): 4 total configs, 4 profiled/claimed, 0 remaining, 0 this instance (limit 2)
+17:00:42.292 INFO src.profiling: Scheduled job 63cf0155: mode=standard, config=None, node=None
+INFO:     127.0.0.1:60618 - "GET /jobs HTTP/1.1" 200 OK
+17:00:47.202 INFO src.profiling: Scheduling job 15afd4f3 (type=cnn_big): 4 total configs, 4 profiled/claimed, 0 remaining, 0 this instance (limit 2)
+17:00:47.206 INFO src.profiling: Scheduled job 15afd4f3: mode=standard, config=None, node=None
+17:00:47.226 INFO src.routers.jobs: No node available for new job 15afd4f3 — notified scheduler for optimizer pass
+INFO:     127.0.0.1:60634 - "POST /jobs HTTP/1.1" 201 Created
+INFO:     127.0.0.1:60646 - "GET /jobs HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60654 - "GET /profiling-results/cnn_big HTTP/1.1" 200 OK
+17:00:47.404 INFO src.profiling: Scheduling job 63cf0155 (type=cnn_big): 4 total configs, 4 profiled/claimed, 0 remaining, 0 this instance (limit 2)
+17:00:47.409 INFO src.profiling: Scheduled job 63cf0155: mode=standard, config=None, node=None
+17:00:47.439 INFO src.profiling: Scheduling job 15afd4f3 (type=cnn_big): 4 total configs, 4 profiled/claimed, 0 remaining, 0 this instance (limit 2)
+17:00:47.444 INFO src.profiling: Scheduled job 15afd4f3: mode=standard, config=None, node=None
+INFO:     127.0.0.1:60660 - "GET /jobs HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60662 - "GET /profiling-results/cnn_big HTTP/1.1" 200 OK
+INFO:     127.0.0.1:43438 - "GET /jobs HTTP/1.1" 200 OK
+INFO:     127.0.0.1:43450 - "GET /profiling-results/cnn_big HTTP/1.1" 200 OK
+INFO:     127.0.0.1:43452 - "GET /jobs HTTP/1.1" 200 OK
+INFO:     127.0.0.1:43456 - "GET /profiling-results/cnn_big HTTP/1.1" 200 OK
+INFO:     127.0.0.1:41978 - "GET /jobs HTTP/1.1" 200 OK
+INFO:     127.0.0.1:41994 - "GET /profiling-results/cnn_big HTTP/1.1" 200 OK
+INFO:     127.0.0.1:42010 - "GET /jobs HTTP/1.1" 200 OK
+INFO:     127.0.0.1:42022 - "GET /profiling-results/cnn_big HTTP/1.1" 200 OK
+INFO:     127.0.0.1:42724 - "GET /jobs HTTP/1.1" 200 OK
+INFO:     127.0.0.1:42738 - "GET /profiling-results/cnn_big HTTP/1.1" 200 OK
+17:01:19.479 INFO src.optimizer: OPT REQ nodes={'matemagician': {'GPUtype': 'QuadroP600', 'total_nGPUs': 2}, 'polimi-gpu': {'GPUtype': 'A40', 'total_nGPUs': 2}} | currentSched=[] | jobs=[('63cf0155', 2, '50', ['A40']), ('15afd4f3', 1, '25', ['A40'])]
+17:01:19.497 INFO httpx: HTTP Request: POST http://localhost:8080/optimizer/v5 "HTTP/1.1 201 CREATED"
+17:01:19.498 INFO src.optimizer: OPT RESP cost=0.0000 jobs={}
+17:01:19.498 INFO src.optimizer: OPT CLASSIFY new=[] migrate=[] kept-same=[] drop-preempt=[]
+17:01:19.498 INFO src.optimizer: Optimizer: 0 assignment(s), 0 preemption(s), cost=0.00
+17:01:19.544 INFO src.profiling: Scheduling job fe8f9043 (type=cnn_big): 4 total configs, 4 profiled/claimed, 0 remaining, 2 this instance (limit 2)
+17:01:19.571 INFO src.profiling: Scheduled job fe8f9043: mode=profiling, config={'A40': 2}, node=polimi-gpu
+17:01:19.613 INFO src.profiling: Scheduling job 63cf0155 (type=cnn_big): 4 total configs, 4 profiled/claimed, 0 remaining, 0 this instance (limit 2)
+17:01:19.620 INFO src.profiling: Scheduled job 63cf0155: mode=standard, config=None, node=None
+17:01:19.672 INFO src.profiling: Scheduling job 15afd4f3 (type=cnn_big): 4 total configs, 4 profiled/claimed, 0 remaining, 0 this instance (limit 2)
+17:01:19.687 INFO src.profiling: Scheduled job 15afd4f3: mode=standard, config=None, node=None
+17:01:19.782 INFO httpx: HTTP Request: POST http://localhost:8002/jobs/fe8f9043-1fc4-4a2d-9403-859ff64ec2ca/run "HTTP/1.1 202 Accepted"
+17:01:19.782 INFO src.job_dispatcher: Remote run for job fe8f9043 on http://localhost:8002
+17:01:19.782 INFO src.app: Dispatched job fe8f9043 on polimi-gpu {'A40': 2} (waited 0.04s for slot)
+INFO:     127.0.0.1:42752 - "GET /jobs HTTP/1.1" 200 OK
+INFO:     127.0.0.1:42768 - "GET /profiling-results/cnn_big HTTP/1.1" 200 OK
+17:01:24.431 INFO src.optimizer: OPT REQ nodes={'matemagician': {'GPUtype': 'QuadroP600', 'total_nGPUs': 2}, 'polimi-gpu': {'GPUtype': 'A40', 'total_nGPUs': 2}} | currentSched=[] | jobs=[('63cf0155', 2, '50', ['A40']), ('15afd4f3', 1, '25', ['A40'])]
+17:01:24.451 INFO httpx: HTTP Request: POST http://localhost:8080/optimizer/v5 "HTTP/1.1 201 CREATED"
+17:01:24.451 INFO src.optimizer: OPT RESP cost=0.0000 jobs={}
+17:01:24.451 INFO src.optimizer: OPT CLASSIFY new=[] migrate=[] kept-same=[] drop-preempt=[]
+17:01:24.451 INFO src.optimizer: Optimizer: 0 assignment(s), 0 preemption(s), cost=0.00
+17:01:24.504 INFO src.profiling: Scheduling job 63cf0155 (type=cnn_big): 4 total configs, 4 profiled/claimed, 0 remaining, 0 this instance (limit 2)
+17:01:24.509 INFO src.profiling: Scheduled job 63cf0155: mode=standard, config=None, node=None
+17:01:24.545 INFO src.profiling: Scheduling job 15afd4f3 (type=cnn_big): 4 total configs, 4 profiled/claimed, 0 remaining, 0 this instance (limit 2)
+17:01:24.550 INFO src.profiling: Scheduled job 15afd4f3: mode=standard, config=None, node=None
+INFO:     127.0.0.1:52420 - "GET /jobs HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52432 - "GET /profiling-results/cnn_big HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54444 - "GET /jobs HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54454 - "GET /profiling-results/cnn_big HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54462 - "GET /jobs HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54472 - "GET /profiling-results/cnn_big HTTP/1.1" 200 OK
+INFO:     127.0.0.1:55214 - "GET /jobs HTTP/1.1" 200 OK
+INFO:     127.0.0.1:55228 - "GET /profiling-results/cnn_big HTTP/1.1" 200 OK
+INFO:     127.0.0.1:55240 - "GET /jobs HTTP/1.1" 200 OK
+INFO:     127.0.0.1:55250 - "GET /profiling-results/cnn_big HTTP/1.1" 200 OK
+17:01:49.980 INFO src.optimizer: OPT REQ nodes={'matemagician': {'GPUtype': 'QuadroP600', 'total_nGPUs': 2}, 'polimi-gpu': {'GPUtype': 'A40', 'total_nGPUs': 2}} | currentSched=[] | jobs=[('fe8f9043', 4, '72', ['A40']), ('63cf0155', 2, '50', ['A40']), ('15afd4f3', 1, '25', ['A40'])]
+17:01:50.004 INFO httpx: HTTP Request: POST http://localhost:8080/optimizer/v5 "HTTP/1.1 201 CREATED"
+17:01:50.004 INFO src.optimizer: OPT RESP cost=0.0194 jobs={'15afd4f3-a404-4334-84c3-cd90821b7aee': {'expected_tardiness': 0.0, 'nGPUs': 1, 'node': 'polimi-gpu'}, '63cf0155-f90f-4165-a124-ca2ac9be4ff6': {'expected_tardiness': 0.0, 'nGPUs': 1, 'node': 'polimi-gpu'}}
+17:01:50.004 INFO src.optimizer: OPT CLASSIFY new=['15afd4f3', '63cf0155'] migrate=[] kept-same=[] drop-preempt=[]
+17:01:50.004 INFO src.optimizer: Optimizer: 2 assignment(s), 0 preemption(s), cost=0.02
+17:01:50.035 INFO src.app: Optimizer assigned job 15afd4f3 → node polimi-gpu {'A40': 1}
+17:01:50.042 INFO src.app: Optimizer assigned job 63cf0155 → node polimi-gpu {'A40': 1}
+17:01:50.103 INFO src.profiling: Scheduling job fe8f9043 (type=cnn_big): 4 total configs, 4 profiled/claimed, 0 remaining, 2 this instance (limit 2)
+17:01:50.107 INFO src.profiling: Scheduled job fe8f9043: mode=standard, config=None, node=None
+17:01:50.194 INFO httpx: HTTP Request: POST http://localhost:8002/jobs/15afd4f3-a404-4334-84c3-cd90821b7aee/run "HTTP/1.1 202 Accepted"
+17:01:50.195 INFO src.job_dispatcher: Remote run for job 15afd4f3 on http://localhost:8002
+17:01:50.195 INFO src.app: Dispatched job 15afd4f3 on polimi-gpu {'A40': 1} (waited 0.07s for slot)
+17:01:50.199 INFO httpx: HTTP Request: POST http://localhost:8002/jobs/63cf0155-f90f-4165-a124-ca2ac9be4ff6/run "HTTP/1.1 202 Accepted"
+17:01:50.199 INFO src.job_dispatcher: Remote run for job 63cf0155 on http://localhost:8002
+17:01:50.199 INFO src.app: Dispatched job 63cf0155 on polimi-gpu {'A40': 1} (waited 0.07s for slot)
+INFO:     127.0.0.1:48162 - "GET /jobs HTTP/1.1" 200 OK
+INFO:     127.0.0.1:48170 - "GET /profiling-results/cnn_big HTTP/1.1" 200 OK
+17:01:54.948 INFO src.optimizer: OPT REQ nodes={'matemagician': {'GPUtype': 'QuadroP600', 'total_nGPUs': 2}, 'polimi-gpu': {'GPUtype': 'A40', 'total_nGPUs': 2}} | currentSched=[('63cf0155', 'polimi-gpu', 'A40', 1), ('15afd4f3', 'polimi-gpu', 'A40', 1)] | jobs=[('fe8f9043', 4, '72', ['A40']), ('63cf0155', 2, '50', ['A40']), ('15afd4f3', 1, '25', ['A40'])]
+17:01:54.974 INFO httpx: HTTP Request: POST http://localhost:8080/optimizer/v5 "HTTP/1.1 201 CREATED"
+17:01:54.974 INFO src.optimizer: OPT RESP cost=0.0194 jobs={'15afd4f3-a404-4334-84c3-cd90821b7aee': {'expected_tardiness': 0.0, 'nGPUs': 1, 'node': 'polimi-gpu'}, '63cf0155-f90f-4165-a124-ca2ac9be4ff6': {'expected_tardiness': 0.0, 'nGPUs': 1, 'node': 'polimi-gpu'}}
+17:01:54.974 INFO src.optimizer: OPT CLASSIFY new=[] migrate=[] kept-same=['15afd4f3', '63cf0155'] drop-preempt=[]
+17:01:54.974 INFO src.optimizer: Optimizer: 0 assignment(s), 0 preemption(s), cost=0.02
+17:01:55.018 INFO src.profiling: Scheduling job fe8f9043 (type=cnn_big): 4 total configs, 4 profiled/claimed, 0 remaining, 2 this instance (limit 2)
+17:01:55.024 INFO src.profiling: Scheduled job fe8f9043: mode=standard, config=None, node=None
+INFO:     127.0.0.1:48182 - "GET /jobs HTTP/1.1" 200 OK
+INFO:     127.0.0.1:48194 - "GET /profiling-results/cnn_big HTTP/1.1" 200 OK
+INFO:     127.0.0.1:35678 - "GET /jobs HTTP/1.1" 200 OK
+INFO:     127.0.0.1:35680 - "GET /profiling-results/cnn_big HTTP/1.1" 200 OK
+INFO:     127.0.0.1:35684 - "GET /jobs HTTP/1.1" 200 OK
+INFO:     127.0.0.1:35688 - "GET /profiling-results/cnn_big HTTP/1.1" 200 OK
+INFO:     127.0.0.1:38094 - "GET /jobs HTTP/1.1" 200 OK
+INFO:     127.0.0.1:38102 - "GET /profiling-results/cnn_big HTTP/1.1" 200 OK
+INFO:     127.0.0.1:38118 - "GET /jobs HTTP/1.1" 200 OK
+INFO:     127.0.0.1:38124 - "GET /profiling-results/cnn_big HTTP/1.1" 200 OK
+INFO:     127.0.0.1:43082 - "GET /jobs HTTP/1.1" 200 OK
+INFO:     127.0.0.1:43090 - "GET /profiling-results/cnn_big HTTP/1.1" 200 OK
+INFO:     127.0.0.1:43092 - "GET /jobs HTTP/1.1" 200 OK
+INFO:     127.0.0.1:43104 - "GET /profiling-results/cnn_big HTTP/1.1" 200 OK
+INFO:     127.0.0.1:43314 - "GET /jobs HTTP/1.1" 200 OK
+INFO:     127.0.0.1:43326 - "GET /profiling-results/cnn_big HTTP/1.1" 200 OK
+INFO:     127.0.0.1:43336 - "GET /jobs HTTP/1.1" 200 OK
+INFO:     127.0.0.1:43348 - "GET /profiling-results/cnn_big HTTP/1.1" 200 OK
+INFO:     127.0.0.1:58844 - "GET /jobs HTTP/1.1" 200 OK
+INFO:     127.0.0.1:58856 - "GET /profiling-results/cnn_big HTTP/1.1" 200 OK
+INFO:     127.0.0.1:58868 - "GET /jobs HTTP/1.1" 200 OK
+INFO:     127.0.0.1:58872 - "GET /profiling-results/cnn_big HTTP/1.1" 200 OK
+INFO:     127.0.0.1:48834 - "GET /jobs HTTP/1.1" 200 OK
+INFO:     127.0.0.1:48846 - "GET /profiling-results/cnn_big HTTP/1.1" 200 OK
+INFO:     127.0.0.1:48850 - "GET /jobs HTTP/1.1" 200 OK
+INFO:     127.0.0.1:48852 - "GET /profiling-results/cnn_big HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53616 - "GET /jobs HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53620 - "GET /profiling-results/cnn_big HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53626 - "GET /jobs HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53634 - "GET /profiling-results/cnn_big HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56554 - "GET /jobs HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56556 - "GET /profiling-results/cnn_big HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56560 - "GET /jobs HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56564 - "GET /profiling-results/cnn_big HTTP/1.1" 200 OK
+INFO:     127.0.0.1:39442 - "GET /jobs HTTP/1.1" 200 OK
+INFO:     127.0.0.1:39448 - "GET /profiling-results/cnn_big HTTP/1.1" 200 OK
+INFO:     127.0.0.1:39458 - "GET /jobs HTTP/1.1" 200 OK
+INFO:     127.0.0.1:39474 - "GET /profiling-results/cnn_big HTTP/1.1" 200 OK
+INFO:     127.0.0.1:45052 - "GET /jobs HTTP/1.1" 200 OK
+INFO:     127.0.0.1:45064 - "GET /profiling-results/cnn_big HTTP/1.1" 200 OK
+INFO:     127.0.0.1:45072 - "GET /jobs HTTP/1.1" 200 OK
+INFO:     127.0.0.1:45082 - "GET /profiling-results/cnn_big HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51240 - "GET /jobs HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51248 - "GET /profiling-results/cnn_big HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51250 - "GET /jobs HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51266 - "GET /profiling-results/cnn_big HTTP/1.1" 200 OK
+INFO:     127.0.0.1:33348 - "GET /jobs HTTP/1.1" 200 OK
+INFO:     127.0.0.1:33354 - "GET /profiling-results/cnn_big HTTP/1.1" 200 OK
+INFO:     127.0.0.1:33364 - "GET /jobs HTTP/1.1" 200 OK
+INFO:     127.0.0.1:33366 - "GET /profiling-results/cnn_big HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50604 - "GET /jobs HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50614 - "GET /profiling-results/cnn_big HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50624 - "GET /jobs HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50634 - "GET /profiling-results/cnn_big HTTP/1.1" 200 OK
+INFO:     127.0.0.1:59742 - "GET /jobs HTTP/1.1" 200 OK
+INFO:     127.0.0.1:59750 - "GET /profiling-results/cnn_big HTTP/1.1" 200 OK
+INFO:     127.0.0.1:59752 - "GET /jobs HTTP/1.1" 200 OK
+INFO:     127.0.0.1:59754 - "GET /profiling-results/cnn_big HTTP/1.1" 200 OK
+INFO:     127.0.0.1:44994 - "GET /jobs HTTP/1.1" 200 OK
+INFO:     127.0.0.1:45006 - "GET /profiling-results/cnn_big HTTP/1.1" 200 OK
+17:04:27.280 INFO src.optimizer: OPT REQ nodes={'matemagician': {'GPUtype': 'QuadroP600', 'total_nGPUs': 2}, 'polimi-gpu': {'GPUtype': 'A40', 'total_nGPUs': 2}} | currentSched=[('63cf0155', 'polimi-gpu', 'A40', 1)] | jobs=[('fe8f9043', 4, '72', ['A40']), ('63cf0155', 2, '24', ['A40'])]
+17:04:27.303 INFO httpx: HTTP Request: POST http://localhost:8080/optimizer/v5 "HTTP/1.1 201 CREATED"
+17:04:27.304 INFO src.optimizer: OPT RESP cost=0.0186 jobs={'63cf0155-f90f-4165-a124-ca2ac9be4ff6': {'expected_tardiness': 0.0, 'nGPUs': 1, 'node': 'polimi-gpu'}, 'fe8f9043-1fc4-4a2d-9403-859ff64ec2ca': {'expected_tardiness': 0.0, 'nGPUs': 1, 'node': 'polimi-gpu'}}
+17:04:27.304 INFO src.optimizer: OPT CLASSIFY new=['fe8f9043'] migrate=[] kept-same=['63cf0155'] drop-preempt=[]
+17:04:27.304 INFO src.optimizer: Optimizer: 1 assignment(s), 0 preemption(s), cost=0.02
+17:04:27.317 INFO src.app: Optimizer assigned job fe8f9043 → node polimi-gpu {'A40': 1}
+17:04:27.678 INFO httpx: HTTP Request: POST http://localhost:8002/jobs/fe8f9043-1fc4-4a2d-9403-859ff64ec2ca/run "HTTP/1.1 202 Accepted"
+17:04:27.679 INFO src.job_dispatcher: Remote run for job fe8f9043 on http://localhost:8002
+17:04:27.679 INFO src.app: Dispatched job fe8f9043 on polimi-gpu {'A40': 1} (waited 0.05s for slot)
+17:04:29.056 WARNING src.app: Drift watcher: {'polimi-gpu': (2, 1)} — reconciling
+17:04:29.071 WARNING src.node_slots: recover_from_drift: polimi-gpu adjusted by -1 (mem_used 2→1, db_used=1)
+INFO:     127.0.0.1:45012 - "GET /jobs HTTP/1.1" 200 OK
+INFO:     127.0.0.1:45028 - "GET /profiling-results/cnn_big HTTP/1.1" 200 OK
+17:04:32.282 INFO src.optimizer: OPT REQ nodes={'matemagician': {'GPUtype': 'QuadroP600', 'total_nGPUs': 2}, 'polimi-gpu': {'GPUtype': 'A40', 'total_nGPUs': 2}} | currentSched=[('fe8f9043', 'polimi-gpu', 'A40', 1), ('63cf0155', 'polimi-gpu', 'A40', 1)] | jobs=[('fe8f9043', 4, '72', ['A40']), ('63cf0155', 2, '23', ['A40'])]
+17:04:32.306 INFO httpx: HTTP Request: POST http://localhost:8080/optimizer/v5 "HTTP/1.1 201 CREATED"
+17:04:32.307 INFO src.optimizer: OPT RESP cost=0.0179 jobs={'63cf0155-f90f-4165-a124-ca2ac9be4ff6': {'expected_tardiness': 0.0, 'nGPUs': 1, 'node': 'polimi-gpu'}, 'fe8f9043-1fc4-4a2d-9403-859ff64ec2ca': {'expected_tardiness': 0.0, 'nGPUs': 1, 'node': 'polimi-gpu'}}
+17:04:32.307 INFO src.optimizer: OPT CLASSIFY new=[] migrate=[] kept-same=['63cf0155', 'fe8f9043'] drop-preempt=[]
+17:04:32.307 INFO src.optimizer: Optimizer: 0 assignment(s), 0 preemption(s), cost=0.02
+INFO:     127.0.0.1:45200 - "GET /jobs HTTP/1.1" 200 OK
+INFO:     127.0.0.1:45208 - "GET /profiling-results/cnn_big HTTP/1.1" 200 OK
+17:04:37.285 INFO src.optimizer: OPT REQ nodes={'matemagician': {'GPUtype': 'QuadroP600', 'total_nGPUs': 2}, 'polimi-gpu': {'GPUtype': 'A40', 'total_nGPUs': 2}} | currentSched=[('fe8f9043', 'polimi-gpu', 'A40', 1), ('63cf0155', 'polimi-gpu', 'A40', 1)] | jobs=[('fe8f9043', 4, '72', ['A40', 'QuadroP600']), ('63cf0155', 2, '22', ['A40', 'QuadroP600'])]
+17:04:37.318 INFO httpx: HTTP Request: POST http://localhost:8080/optimizer/v5 "HTTP/1.1 201 CREATED"
+17:04:37.319 INFO src.optimizer: OPT RESP cost=0.0171 jobs={'63cf0155-f90f-4165-a124-ca2ac9be4ff6': {'expected_tardiness': 0.0, 'nGPUs': 1, 'node': 'polimi-gpu'}, 'fe8f9043-1fc4-4a2d-9403-859ff64ec2ca': {'expected_tardiness': 0.0, 'nGPUs': 1, 'node': 'polimi-gpu'}}
+17:04:37.319 INFO src.optimizer: OPT CLASSIFY new=[] migrate=[] kept-same=['63cf0155', 'fe8f9043'] drop-preempt=[]
+17:04:37.319 INFO src.optimizer: Optimizer: 0 assignment(s), 0 preemption(s), cost=0.02
+17:04:37.357 INFO src.profiling: Scheduling job fa2f78b3 (type=cnn_big): 4 total configs, 4 profiled/claimed, 0 remaining, 2 this instance (limit 2)
+17:04:37.362 INFO src.profiling: Scheduled job fa2f78b3: mode=profiling, config={'QuadroP600': 2}, node=matemagician
+17:04:37.437 INFO httpx: HTTP Request: POST http://localhost:8001/jobs/fa2f78b3-bea9-46a0-bd84-f5b73e18833d/run "HTTP/1.1 202 Accepted"
+17:04:37.438 INFO src.job_dispatcher: Remote run for job fa2f78b3 on http://localhost:8001
+17:04:37.438 INFO src.app: Dispatched job fa2f78b3 on matemagician {'QuadroP600': 2} (waited 0.05s for slot)
+INFO:     127.0.0.1:45218 - "GET /jobs HTTP/1.1" 200 OK
+INFO:     127.0.0.1:45230 - "GET /profiling-results/cnn_big HTTP/1.1" 200 OK
+17:04:42.301 INFO src.optimizer: OPT REQ nodes={'matemagician': {'GPUtype': 'QuadroP600', 'total_nGPUs': 2}, 'polimi-gpu': {'GPUtype': 'A40', 'total_nGPUs': 2}} | currentSched=[('fe8f9043', 'polimi-gpu', 'A40', 1), ('63cf0155', 'polimi-gpu', 'A40', 1)] | jobs=[('fe8f9043', 4, '74', ['A40', 'QuadroP600']), ('63cf0155', 2, '21', ['A40', 'QuadroP600'])]
+17:04:42.325 INFO httpx: HTTP Request: POST http://localhost:8080/optimizer/v5 "HTTP/1.1 201 CREATED"
+17:04:42.326 INFO src.optimizer: OPT RESP cost=0.0163 jobs={'63cf0155-f90f-4165-a124-ca2ac9be4ff6': {'expected_tardiness': 0.0, 'nGPUs': 1, 'node': 'polimi-gpu'}, 'fe8f9043-1fc4-4a2d-9403-859ff64ec2ca': {'expected_tardiness': 0.0, 'nGPUs': 1, 'node': 'polimi-gpu'}}
+17:04:42.326 INFO src.optimizer: OPT CLASSIFY new=[] migrate=[] kept-same=['63cf0155', 'fe8f9043'] drop-preempt=[]
+17:04:42.326 INFO src.optimizer: Optimizer: 0 assignment(s), 0 preemption(s), cost=0.02
+17:04:44.101 WARNING src.app: Drift watcher: {'polimi-gpu': (1, 2)} — reconciling
+17:04:44.114 WARNING src.node_slots: recover_from_drift: polimi-gpu adjusted by +1 (mem_used 1→2, db_used=2)
+INFO:     127.0.0.1:55670 - "GET /jobs HTTP/1.1" 200 OK
+INFO:     127.0.0.1:55676 - "GET /profiling-results/cnn_big HTTP/1.1" 200 OK
+17:04:47.310 INFO src.optimizer: OPT REQ nodes={'matemagician': {'GPUtype': 'QuadroP600', 'total_nGPUs': 2}, 'polimi-gpu': {'GPUtype': 'A40', 'total_nGPUs': 2}} | currentSched=[('fe8f9043', 'polimi-gpu', 'A40', 1), ('63cf0155', 'polimi-gpu', 'A40', 1)] | jobs=[('fe8f9043', 4, '73', ['A40', 'QuadroP600']), ('63cf0155', 2, '20', ['A40', 'QuadroP600'])]
+17:04:47.335 INFO httpx: HTTP Request: POST http://localhost:8080/optimizer/v5 "HTTP/1.1 201 CREATED"
+17:04:47.335 INFO src.optimizer: OPT RESP cost=0.0155 jobs={'63cf0155-f90f-4165-a124-ca2ac9be4ff6': {'expected_tardiness': 0.0, 'nGPUs': 1, 'node': 'polimi-gpu'}, 'fe8f9043-1fc4-4a2d-9403-859ff64ec2ca': {'expected_tardiness': 0.0, 'nGPUs': 1, 'node': 'polimi-gpu'}}
+17:04:47.335 INFO src.optimizer: OPT CLASSIFY new=[] migrate=[] kept-same=['63cf0155', 'fe8f9043'] drop-preempt=[]
+17:04:47.335 INFO src.optimizer: Optimizer: 0 assignment(s), 0 preemption(s), cost=0.02
+INFO:     127.0.0.1:55686 - "GET /jobs HTTP/1.1" 200 OK
+INFO:     127.0.0.1:55690 - "GET /profiling-results/cnn_big HTTP/1.1" 200 OK
+INFO:     127.0.0.1:45322 - "GET /jobs HTTP/1.1" 200 OK
+INFO:     127.0.0.1:45336 - "GET /profiling-results/cnn_big HTTP/1.1" 200 OK
+INFO:     127.0.0.1:45350 - "GET /jobs HTTP/1.1" 200 OK
+INFO:     127.0.0.1:45358 - "GET /profiling-results/cnn_big HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51282 - "GET /jobs HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51284 - "GET /profiling-results/cnn_big HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51288 - "GET /jobs HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51294 - "GET /profiling-results/cnn_big HTTP/1.1" 200 OK
+INFO:     127.0.0.1:37042 - "GET /jobs HTTP/1.1" 200 OK
+INFO:     127.0.0.1:37056 - "GET /profiling-results/cnn_big HTTP/1.1" 200 OK
+INFO:     127.0.0.1:37062 - "GET /jobs HTTP/1.1" 200 OK
+INFO:     127.0.0.1:37076 - "GET /profiling-results/cnn_big HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53008 - "GET /jobs HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53018 - "GET /profiling-results/cnn_big HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53026 - "GET /jobs HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53036 - "GET /profiling-results/cnn_big HTTP/1.1" 200 OK
+INFO:     127.0.0.1:59724 - "GET /jobs HTTP/1.1" 200 OK
+INFO:     127.0.0.1:59738 - "GET /profiling-results/cnn_big HTTP/1.1" 200 OK
+INFO:     127.0.0.1:59740 - "GET /jobs HTTP/1.1" 200 OK
+INFO:     127.0.0.1:59750 - "GET /profiling-results/cnn_big HTTP/1.1" 200 OK
+INFO:     127.0.0.1:58774 - "GET /jobs HTTP/1.1" 200 OK
+INFO:     127.0.0.1:58782 - "GET /profiling-results/cnn_big HTTP/1.1" 200 OK
+INFO:     127.0.0.1:58792 - "GET /jobs HTTP/1.1" 200 OK
+INFO:     127.0.0.1:58808 - "GET /profiling-results/cnn_big HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53692 - "GET /jobs HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53700 - "GET /profiling-results/cnn_big HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53708 - "GET /jobs HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53716 - "GET /profiling-results/cnn_big HTTP/1.1" 200 OK
+INFO:     127.0.0.1:42642 - "GET /jobs HTTP/1.1" 200 OK
+INFO:     127.0.0.1:42650 - "GET /profiling-results/cnn_big HTTP/1.1" 200 OK
+INFO:     127.0.0.1:42660 - "GET /jobs HTTP/1.1" 200 OK
+INFO:     127.0.0.1:42666 - "GET /profiling-results/cnn_big HTTP/1.1" 200 OK
+INFO:     127.0.0.1:58330 - "GET /jobs HTTP/1.1" 200 OK
+INFO:     127.0.0.1:58334 - "GET /profiling-results/cnn_big HTTP/1.1" 200 OK
+INFO:     127.0.0.1:58348 - "GET /jobs HTTP/1.1" 200 OK
+INFO:     127.0.0.1:58354 - "GET /profiling-results/cnn_big HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51794 - "GET /jobs HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51810 - "GET /profiling-results/cnn_big HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51812 - "GET /jobs HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51814 - "GET /profiling-results/cnn_big HTTP/1.1" 200 OK
+INFO:     127.0.0.1:47356 - "GET /jobs HTTP/1.1" 200 OK
+INFO:     127.0.0.1:47362 - "GET /profiling-results/cnn_big HTTP/1.1" 200 OK
+INFO:     127.0.0.1:47364 - "GET /jobs HTTP/1.1" 200 OK
+INFO:     127.0.0.1:47368 - "GET /profiling-results/cnn_big HTTP/1.1" 200 OK
+17:06:43.126 INFO src.optimizer: OPT REQ nodes={'matemagician': {'GPUtype': 'QuadroP600', 'total_nGPUs': 2}, 'polimi-gpu': {'GPUtype': 'A40', 'total_nGPUs': 2}} | currentSched=[('fe8f9043', 'polimi-gpu', 'A40', 1)] | jobs=[('fe8f9043', 4, '52', ['A40', 'QuadroP600'])]
+17:06:43.145 INFO httpx: HTTP Request: POST http://localhost:8080/optimizer/v5 "HTTP/1.1 201 CREATED"
+17:06:43.146 INFO src.optimizer: OPT RESP cost=0.0220 jobs={'fe8f9043-1fc4-4a2d-9403-859ff64ec2ca': {'expected_tardiness': 0.0, 'nGPUs': 1, 'node': 'polimi-gpu'}}
+17:06:43.146 INFO src.optimizer: OPT CLASSIFY new=[] migrate=[] kept-same=['fe8f9043'] drop-preempt=[]
+17:06:43.146 INFO src.optimizer: Optimizer: 0 assignment(s), 0 preemption(s), cost=0.02
+INFO:     127.0.0.1:42748 - "GET /jobs HTTP/1.1" 200 OK
+INFO:     127.0.0.1:42750 - "GET /profiling-results/cnn_big HTTP/1.1" 200 OK
+INFO:     127.0.0.1:42756 - "GET /jobs HTTP/1.1" 200 OK
+INFO:     127.0.0.1:42770 - "GET /profiling-results/cnn_big HTTP/1.1" 200 OK
+INFO:     127.0.0.1:38110 - "GET /jobs HTTP/1.1" 200 OK
+INFO:     127.0.0.1:38116 - "GET /profiling-results/cnn_big HTTP/1.1" 200 OK
+INFO:     127.0.0.1:38132 - "GET /jobs HTTP/1.1" 200 OK
+INFO:     127.0.0.1:38142 - "GET /profiling-results/cnn_big HTTP/1.1" 200 OK
+INFO:     127.0.0.1:42662 - "GET /jobs HTTP/1.1" 200 OK
+INFO:     127.0.0.1:42668 - "GET /profiling-results/cnn_big HTTP/1.1" 200 OK
+17:07:07.393 INFO src.optimizer: OPT REQ nodes={'matemagician': {'GPUtype': 'QuadroP600', 'total_nGPUs': 2}, 'polimi-gpu': {'GPUtype': 'A40', 'total_nGPUs': 2}} | currentSched=[('fe8f9043', 'polimi-gpu', 'A40', 1)] | jobs=[('fa2f78b3', 4, '72', ['A40', 'QuadroP600']), ('fe8f9043', 4, '48', ['A40', 'QuadroP600'])]
+17:07:07.424 INFO httpx: HTTP Request: POST http://localhost:8080/optimizer/v5 "HTTP/1.1 201 CREATED"
+17:07:07.425 INFO src.optimizer: OPT RESP cost=0.0373 jobs={'fa2f78b3-bea9-46a0-bd84-f5b73e18833d': {'expected_tardiness': 0.0, 'nGPUs': 1, 'node': 'polimi-gpu'}, 'fe8f9043-1fc4-4a2d-9403-859ff64ec2ca': {'expected_tardiness': 0.0, 'nGPUs': 1, 'node': 'polimi-gpu'}}
+17:07:07.425 INFO src.optimizer: OPT CLASSIFY new=['fa2f78b3'] migrate=[] kept-same=['fe8f9043'] drop-preempt=[]
+17:07:07.425 INFO src.optimizer: Optimizer: 1 assignment(s), 0 preemption(s), cost=0.04
+17:07:07.440 INFO src.app: Optimizer assigned job fa2f78b3 → node polimi-gpu {'A40': 1}
+17:07:07.531 INFO httpx: HTTP Request: POST http://localhost:8002/jobs/fa2f78b3-bea9-46a0-bd84-f5b73e18833d/run "HTTP/1.1 202 Accepted"
+17:07:07.532 INFO src.job_dispatcher: Remote run for job fa2f78b3 on http://localhost:8002
+17:07:07.532 INFO src.app: Dispatched job fa2f78b3 on polimi-gpu {'A40': 1} (waited 0.05s for slot)
+INFO:     127.0.0.1:42672 - "GET /jobs HTTP/1.1" 200 OK
+INFO:     127.0.0.1:42688 - "GET /profiling-results/cnn_big HTTP/1.1" 200 OK
+17:07:12.351 INFO src.optimizer: OPT REQ nodes={'matemagician': {'GPUtype': 'QuadroP600', 'total_nGPUs': 2}, 'polimi-gpu': {'GPUtype': 'A40', 'total_nGPUs': 2}} | currentSched=[('fa2f78b3', 'polimi-gpu', 'A40', 1), ('fe8f9043', 'polimi-gpu', 'A40', 1)] | jobs=[('fa2f78b3', 4, '72', ['A40', 'QuadroP600']), ('fe8f9043', 4, '47', ['A40', 'QuadroP600'])]
+17:07:12.375 INFO httpx: HTTP Request: POST http://localhost:8080/optimizer/v5 "HTTP/1.1 201 CREATED"
+17:07:12.376 INFO src.optimizer: OPT RESP cost=0.0365 jobs={'fa2f78b3-bea9-46a0-bd84-f5b73e18833d': {'expected_tardiness': 0.0, 'nGPUs': 1, 'node': 'polimi-gpu'}, 'fe8f9043-1fc4-4a2d-9403-859ff64ec2ca': {'expected_tardiness': 0.0, 'nGPUs': 1, 'node': 'polimi-gpu'}}
+17:07:12.376 INFO src.optimizer: OPT CLASSIFY new=[] migrate=[] kept-same=['fa2f78b3', 'fe8f9043'] drop-preempt=[]
+17:07:12.376 INFO src.optimizer: Optimizer: 0 assignment(s), 0 preemption(s), cost=0.04
+INFO:     127.0.0.1:52532 - "GET /jobs HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52542 - "GET /profiling-results/cnn_big HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52558 - "GET /profiling-results/cnn_big HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52566 - "GET /jobs HTTP/1.1" 200 OK
+17:08:16.471 INFO src.profiling: Scheduling job 2a474f42 (type=cnn_big): 4 total configs, 4 profiled/claimed, 0 remaining, 0 this instance (limit 2)
+17:08:16.476 INFO src.profiling: Scheduled job 2a474f42: mode=standard, config=None, node=None
+17:08:16.503 INFO src.routers.jobs: No node available for new job 2a474f42 — notified scheduler for optimizer pass
+INFO:     127.0.0.1:43156 - "POST /jobs HTTP/1.1" 201 Created
+INFO:     127.0.0.1:43172 - "GET /jobs HTTP/1.1" 200 OK
+17:08:16.627 INFO src.optimizer: OPT REQ nodes={'matemagician': {'GPUtype': 'QuadroP600', 'total_nGPUs': 2}, 'polimi-gpu': {'GPUtype': 'A40', 'total_nGPUs': 2}} | currentSched=[('fa2f78b3', 'polimi-gpu', 'A40', 1), ('fe8f9043', 'polimi-gpu', 'A40', 1)] | jobs=[('fa2f78b3', 4, '64', ['A40', 'QuadroP600']), ('fe8f9043', 4, '35', ['A40', 'QuadroP600']), ('2a474f42', 5, '200', ['A40', 'QuadroP600'])]
+17:08:16.652 INFO httpx: HTTP Request: POST http://localhost:8080/optimizer/v5 "HTTP/1.1 201 CREATED"
+17:08:16.653 INFO src.optimizer: OPT RESP cost=0.0299 jobs={'2a474f42-a8f8-4b8c-870d-3292ffa8e1f9': {'expected_tardiness': 0.0, 'nGPUs': 2, 'node': 'matemagician'}, 'fa2f78b3-bea9-46a0-bd84-f5b73e18833d': {'expected_tardiness': 0.0, 'nGPUs': 1, 'node': 'polimi-gpu'}, 'fe8f9043-1fc4-4a2d-9403-859ff64ec2ca': {'expected_tardiness': 0.0, 'nGPUs': 1, 'node': 'polimi-gpu'}}
+17:08:16.653 INFO src.optimizer: OPT CLASSIFY new=['2a474f42'] migrate=[] kept-same=['fa2f78b3', 'fe8f9043'] drop-preempt=[]
+17:08:16.653 INFO src.optimizer: Optimizer: 1 assignment(s), 0 preemption(s), cost=0.03
+17:08:16.668 INFO src.app: Optimizer assigned job 2a474f42 → node matemagician {'QuadroP600': 2}
+17:08:16.741 INFO httpx: HTTP Request: POST http://localhost:8001/jobs/2a474f42-a8f8-4b8c-870d-3292ffa8e1f9/run "HTTP/1.1 202 Accepted"
+17:08:16.742 INFO src.job_dispatcher: Remote run for job 2a474f42 on http://localhost:8001
+17:08:16.742 INFO src.app: Dispatched job 2a474f42 on matemagician {'QuadroP600': 2} (waited 0.05s for slot)
+INFO:     127.0.0.1:43178 - "GET /jobs HTTP/1.1" 200 OK
+INFO:     127.0.0.1:43190 - "GET /jobs/2a474f42-a8f8-4b8c-870d-3292ffa8e1f9 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:43202 - "GET /jobs/2a474f42-a8f8-4b8c-870d-3292ffa8e1f9 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:43210 - "GET /jobs/fe8f9043-1fc4-4a2d-9403-859ff64ec2ca HTTP/1.1" 200 OK
+INFO:     127.0.0.1:43214 - "GET /jobs/fa2f78b3-bea9-46a0-bd84-f5b73e18833d HTTP/1.1" 200 OK
+INFO:     127.0.0.1:43216 - "GET /jobs/fe8f9043-1fc4-4a2d-9403-859ff64ec2ca HTTP/1.1" 200 OK
+INFO:     127.0.0.1:43230 - "GET /jobs/fa2f78b3-bea9-46a0-bd84-f5b73e18833d HTTP/1.1" 200 OK
+INFO:     127.0.0.1:43242 - "GET /jobs/fe8f9043-1fc4-4a2d-9403-859ff64ec2ca HTTP/1.1" 200 OK
+INFO:     127.0.0.1:43246 - "GET /jobs/fa2f78b3-bea9-46a0-bd84-f5b73e18833d HTTP/1.1" 200 OK
+INFO:     127.0.0.1:33668 - "GET /jobs/fe8f9043-1fc4-4a2d-9403-859ff64ec2ca HTTP/1.1" 200 OK
+INFO:     127.0.0.1:33674 - "GET /jobs/fa2f78b3-bea9-46a0-bd84-f5b73e18833d HTTP/1.1" 200 OK
+INFO:     127.0.0.1:33688 - "GET /jobs/fe8f9043-1fc4-4a2d-9403-859ff64ec2ca HTTP/1.1" 200 OK
+INFO:     127.0.0.1:33696 - "GET /jobs/fa2f78b3-bea9-46a0-bd84-f5b73e18833d HTTP/1.1" 200 OK
+INFO:     127.0.0.1:33710 - "GET /jobs/fe8f9043-1fc4-4a2d-9403-859ff64ec2ca HTTP/1.1" 200 OK
+INFO:     127.0.0.1:33714 - "GET /jobs/fa2f78b3-bea9-46a0-bd84-f5b73e18833d HTTP/1.1" 200 OK
+INFO:     127.0.0.1:33722 - "GET /jobs/fe8f9043-1fc4-4a2d-9403-859ff64ec2ca HTTP/1.1" 200 OK
+INFO:     127.0.0.1:33732 - "GET /jobs/fa2f78b3-bea9-46a0-bd84-f5b73e18833d HTTP/1.1" 200 OK
+INFO:     127.0.0.1:33746 - "GET /jobs/fe8f9043-1fc4-4a2d-9403-859ff64ec2ca HTTP/1.1" 200 OK
+INFO:     127.0.0.1:33754 - "GET /jobs/fa2f78b3-bea9-46a0-bd84-f5b73e18833d HTTP/1.1" 200 OK
+INFO:     127.0.0.1:33756 - "GET /jobs/fe8f9043-1fc4-4a2d-9403-859ff64ec2ca HTTP/1.1" 200 OK
+INFO:     127.0.0.1:33768 - "GET /jobs/fa2f78b3-bea9-46a0-bd84-f5b73e18833d HTTP/1.1" 200 OK
+INFO:     127.0.0.1:33774 - "GET /jobs/fe8f9043-1fc4-4a2d-9403-859ff64ec2ca HTTP/1.1" 200 OK
+INFO:     127.0.0.1:33790 - "GET /jobs/fa2f78b3-bea9-46a0-bd84-f5b73e18833d HTTP/1.1" 200 OK
+INFO:     127.0.0.1:33794 - "GET /jobs/fe8f9043-1fc4-4a2d-9403-859ff64ec2ca HTTP/1.1" 200 OK
+INFO:     127.0.0.1:33806 - "GET /jobs/fa2f78b3-bea9-46a0-bd84-f5b73e18833d HTTP/1.1" 200 OK
+INFO:     127.0.0.1:33820 - "GET /jobs/fe8f9043-1fc4-4a2d-9403-859ff64ec2ca HTTP/1.1" 200 OK
+INFO:     127.0.0.1:33824 - "GET /jobs/fa2f78b3-bea9-46a0-bd84-f5b73e18833d HTTP/1.1" 200 OK
+INFO:     127.0.0.1:33840 - "GET /jobs/fe8f9043-1fc4-4a2d-9403-859ff64ec2ca HTTP/1.1" 200 OK
+INFO:     127.0.0.1:33856 - "GET /jobs/fa2f78b3-bea9-46a0-bd84-f5b73e18833d HTTP/1.1" 200 OK
+INFO:     127.0.0.1:59074 - "GET /jobs/fe8f9043-1fc4-4a2d-9403-859ff64ec2ca HTTP/1.1" 200 OK
+INFO:     127.0.0.1:59076 - "GET /jobs/fa2f78b3-bea9-46a0-bd84-f5b73e18833d HTTP/1.1" 200 OK
+INFO:     127.0.0.1:59092 - "GET /jobs/fe8f9043-1fc4-4a2d-9403-859ff64ec2ca HTTP/1.1" 200 OK
+INFO:     127.0.0.1:59096 - "GET /jobs/fa2f78b3-bea9-46a0-bd84-f5b73e18833d HTTP/1.1" 200 OK
+INFO:     127.0.0.1:59108 - "GET /jobs HTTP/1.1" 200 OK
+INFO:     127.0.0.1:59114 - "GET /jobs HTTP/1.1" 200 OK
+INFO:     127.0.0.1:59124 - "GET /jobs HTTP/1.1" 200 OK
+INFO:     127.0.0.1:45956 - "GET /jobs HTTP/1.1" 200 OK
+INFO:     127.0.0.1:45970 - "GET /jobs HTTP/1.1" 200 OK
+INFO:     127.0.0.1:47664 - "GET /jobs HTTP/1.1" 200 OK
+INFO:     127.0.0.1:47680 - "GET /jobs HTTP/1.1" 200 OK
+INFO:     127.0.0.1:37992 - "GET /jobs HTTP/1.1" 200 OK
+INFO:     127.0.0.1:37994 - "GET /jobs HTTP/1.1" 200 OK
+INFO:     127.0.0.1:34650 - "GET /jobs HTTP/1.1" 200 OK
+INFO:     127.0.0.1:34662 - "GET /jobs HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60788 - "GET /jobs HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60790 - "GET /jobs HTTP/1.1" 200 OK
+INFO:     127.0.0.1:47306 - "GET /jobs HTTP/1.1" 200 OK
+INFO:     127.0.0.1:47318 - "GET /jobs HTTP/1.1" 200 OK
+INFO:     127.0.0.1:55116 - "GET /jobs HTTP/1.1" 200 OK
+INFO:     127.0.0.1:55124 - "GET /jobs HTTP/1.1" 200 OK
+INFO:     127.0.0.1:33722 - "GET /jobs HTTP/1.1" 200 OK
+INFO:     127.0.0.1:33724 - "GET /jobs HTTP/1.1" 200 OK
+INFO:     127.0.0.1:33294 - "GET /jobs HTTP/1.1" 200 OK
+INFO:     127.0.0.1:33300 - "GET /jobs HTTP/1.1" 200 OK
+INFO:     127.0.0.1:34316 - "GET /jobs HTTP/1.1" 200 OK
+INFO:     127.0.0.1:34330 - "GET /jobs HTTP/1.1" 200 OK
+INFO:     127.0.0.1:41466 - "GET /jobs HTTP/1.1" 200 OK
+INFO:     127.0.0.1:41482 - "GET /jobs HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57294 - "GET /jobs HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57310 - "GET /jobs HTTP/1.1" 200 OK
+INFO:     127.0.0.1:40612 - "GET /jobs HTTP/1.1" 200 OK
+INFO:     127.0.0.1:40614 - "GET /jobs HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51914 - "GET /jobs HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51922 - "GET /jobs HTTP/1.1" 200 OK
+INFO:     127.0.0.1:55912 - "GET /jobs HTTP/1.1" 200 OK
+INFO:     127.0.0.1:55918 - "GET /jobs HTTP/1.1" 200 OK
+INFO:     127.0.0.1:37898 - "GET /jobs HTTP/1.1" 200 OK
+INFO:     127.0.0.1:37906 - "GET /jobs HTTP/1.1" 200 OK
+17:11:24.158 INFO src.optimizer: OPT REQ nodes={'matemagician': {'GPUtype': 'QuadroP600', 'total_nGPUs': 2}, 'polimi-gpu': {'GPUtype': 'A40', 'total_nGPUs': 2}} | currentSched=[('fa2f78b3', 'polimi-gpu', 'A40', 1), ('2a474f42', 'matemagician', 'QuadroP600', 2)] | jobs=[('fa2f78b3', 4, '29', ['A40', 'QuadroP600']), ('2a474f42', 5, '196', ['A40', 'QuadroP600'])]
+17:11:24.187 INFO httpx: HTTP Request: POST http://localhost:8080/optimizer/v5 "HTTP/1.1 201 CREATED"
+17:11:24.188 INFO src.optimizer: OPT RESP cost=0.0225 jobs={'2a474f42-a8f8-4b8c-870d-3292ffa8e1f9': {'expected_tardiness': 0.0, 'nGPUs': 1, 'node': 'polimi-gpu'}, 'fa2f78b3-bea9-46a0-bd84-f5b73e18833d': {'expected_tardiness': 0.0, 'nGPUs': 1, 'node': 'polimi-gpu'}}
+17:11:24.188 INFO src.optimizer: OPT CLASSIFY new=[] migrate=['2a474f42'] kept-same=['fa2f78b3'] drop-preempt=[]
+17:11:24.188 INFO src.optimizer: Optimizer: 1 assignment(s), 1 preemption(s), cost=0.02
+17:11:24.188 INFO src.optimizer: Optimizer wants to preempt: ['2a474f42']
+17:11:24.193 INFO src.app: Queued migrate 2a474f42 → node polimi-gpu {'A40': 1} (awaiting source /stop drain)
+17:11:24.207 INFO src.app: Optimizer preempting job 2a474f42
+17:11:24.242 INFO src.app: Issued preempt /stop for job 2a474f42 (slot release awaits NOTIFY)
+17:11:25.839 INFO src.app: slot freed by auto-preempt on matemagician (2 GPU) — skipping wake (in-flight plan's dispatch will pick it up)
+17:11:25.844 INFO httpx: HTTP Request: POST http://localhost:8001/jobs/2a474f42-a8f8-4b8c-870d-3292ffa8e1f9/stop?reason=auto "HTTP/1.1 202 Accepted"
+17:11:25.845 INFO src.job_dispatcher: Remote stop for job 2a474f42 on http://localhost:8001
+17:11:25.858 INFO src.app: Applied pending migrate 2a474f42 → node polimi-gpu {'A40': 1}
+17:11:25.945 INFO httpx: HTTP Request: POST http://localhost:8002/jobs/2a474f42-a8f8-4b8c-870d-3292ffa8e1f9/run "HTTP/1.1 202 Accepted"
+17:11:25.946 INFO src.job_dispatcher: Remote run for job 2a474f42 on http://localhost:8002
+17:11:25.946 INFO src.app: Dispatched job 2a474f42 on polimi-gpu {'A40': 1} (waited 0.05s for slot)
+INFO:     127.0.0.1:43490 - "GET /jobs HTTP/1.1" 200 OK
+17:11:29.575 WARNING src.app: Drift watcher: {'polimi-gpu': (2, 1)} — reconciling
+17:11:29.588 WARNING src.node_slots: recover_from_drift: polimi-gpu adjusted by -1 (mem_used 2→1, db_used=1)
+17:11:29.648 INFO src.optimizer: OPT REQ nodes={'matemagician': {'GPUtype': 'QuadroP600', 'total_nGPUs': 2}, 'polimi-gpu': {'GPUtype': 'A40', 'total_nGPUs': 2}} | currentSched=[('fa2f78b3', 'polimi-gpu', 'A40', 1), ('2a474f42', 'polimi-gpu', 'A40', 1)] | jobs=[('fa2f78b3', 4, '28', ['A40', 'QuadroP600']), ('2a474f42', 5, '196', ['A40', 'QuadroP600'])]
+17:11:29.673 INFO httpx: HTTP Request: POST http://localhost:8080/optimizer/v5 "HTTP/1.1 201 CREATED"
+17:11:29.674 INFO src.optimizer: OPT RESP cost=0.0217 jobs={'2a474f42-a8f8-4b8c-870d-3292ffa8e1f9': {'expected_tardiness': 0.0, 'nGPUs': 1, 'node': 'polimi-gpu'}, 'fa2f78b3-bea9-46a0-bd84-f5b73e18833d': {'expected_tardiness': 0.0, 'nGPUs': 1, 'node': 'polimi-gpu'}}
+17:11:29.674 INFO src.optimizer: OPT CLASSIFY new=[] migrate=[] kept-same=['2a474f42', 'fa2f78b3'] drop-preempt=[]
+17:11:29.674 INFO src.optimizer: Optimizer: 0 assignment(s), 0 preemption(s), cost=0.02
+INFO:     127.0.0.1:43496 - "GET /jobs HTTP/1.1" 200 OK
+INFO:     127.0.0.1:43504 - "GET /jobs/2a474f42-a8f8-4b8c-870d-3292ffa8e1f9 HTTP/1.1" 200 OK
+17:11:31.557 INFO httpx: HTTP Request: GET http://localhost:8002/jobs/2a474f42-a8f8-4b8c-870d-3292ffa8e1f9/logs "HTTP/1.1 200 OK"
+INFO:     127.0.0.1:43510 - "GET /jobs/2a474f42-a8f8-4b8c-870d-3292ffa8e1f9/logs HTTP/1.1" 200 OK
+INFO:     127.0.0.1:43526 - "GET /jobs HTTP/1.1" 200 OK
+INFO:     127.0.0.1:38150 - "GET /jobs HTTP/1.1" 200 OK
+17:11:44.603 WARNING src.app: Drift watcher: {'polimi-gpu': (1, 2)} — reconciling
+17:11:44.617 WARNING src.node_slots: recover_from_drift: polimi-gpu adjusted by +1 (mem_used 1→2, db_used=2)
+17:11:44.673 INFO src.optimizer: OPT REQ nodes={'matemagician': {'GPUtype': 'QuadroP600', 'total_nGPUs': 2}, 'polimi-gpu': {'GPUtype': 'A40', 'total_nGPUs': 2}} | currentSched=[('fa2f78b3', 'polimi-gpu', 'A40', 1), ('2a474f42', 'polimi-gpu', 'A40', 1)] | jobs=[('fa2f78b3', 4, '25', ['A40', 'QuadroP600']), ('2a474f42', 5, '196', ['A40', 'QuadroP600'])]
+17:11:44.701 INFO httpx: HTTP Request: POST http://localhost:8080/optimizer/v5 "HTTP/1.1 201 CREATED"
+17:11:44.702 INFO src.optimizer: OPT RESP cost=0.0194 jobs={'2a474f42-a8f8-4b8c-870d-3292ffa8e1f9': {'expected_tardiness': 0.0, 'nGPUs': 1, 'node': 'polimi-gpu'}, 'fa2f78b3-bea9-46a0-bd84-f5b73e18833d': {'expected_tardiness': 0.0, 'nGPUs': 1, 'node': 'polimi-gpu'}}
+17:11:44.702 INFO src.optimizer: OPT CLASSIFY new=[] migrate=[] kept-same=['2a474f42', 'fa2f78b3'] drop-preempt=[]
+17:11:44.702 INFO src.optimizer: Optimizer: 0 assignment(s), 0 preemption(s), cost=0.02
+INFO:     127.0.0.1:50884 - "GET /jobs HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54308 - "GET /jobs HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53924 - "GET /jobs HTTP/1.1" 200 OK
+INFO:     127.0.0.1:43314 - "GET /jobs HTTP/1.1" 200 OK
+INFO:     127.0.0.1:37460 - "GET /jobs HTTP/1.1" 200 OK
+INFO:     127.0.0.1:59714 - "GET /jobs HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50904 - "GET /jobs HTTP/1.1" 200 OK
+INFO:     127.0.0.1:33292 - "GET /jobs HTTP/1.1" 200 OK
+INFO:     127.0.0.1:38802 - "GET /jobs HTTP/1.1" 200 OK
+INFO:     127.0.0.1:59490 - "GET /jobs HTTP/1.1" 200 OK
+INFO:     127.0.0.1:43636 - "GET /jobs HTTP/1.1" 200 OK
+INFO:     127.0.0.1:38344 - "GET /jobs HTTP/1.1" 200 OK
+INFO:     127.0.0.1:33598 - "GET /jobs HTTP/1.1" 200 OK
+INFO:     127.0.0.1:59348 - "GET /jobs HTTP/1.1" 200 OK
+17:14:02.454 INFO src.optimizer: OPT REQ nodes={'matemagician': {'GPUtype': 'QuadroP600', 'total_nGPUs': 2}, 'polimi-gpu': {'GPUtype': 'A40', 'total_nGPUs': 2}} | currentSched=[('2a474f42', 'polimi-gpu', 'A40', 1)] | jobs=[('2a474f42', 5, '170', ['A40', 'QuadroP600'])]
+17:14:02.474 INFO httpx: HTTP Request: POST http://localhost:8080/optimizer/v5 "HTTP/1.1 201 CREATED"
+17:14:02.474 INFO src.optimizer: OPT RESP cost=0.3493 jobs={'2a474f42-a8f8-4b8c-870d-3292ffa8e1f9': {'expected_tardiness': 0.14454166666666668, 'nGPUs': 2, 'node': 'polimi-gpu'}}
+17:14:02.474 WARNING src.optimizer: Job 2a474f42 will miss deadline by 0.1 hours
+17:14:02.474 INFO src.optimizer: OPT CLASSIFY new=[] migrate=['2a474f42'] kept-same=[] drop-preempt=[]
+17:14:02.474 INFO src.optimizer: Optimizer: 1 assignment(s), 1 preemption(s), cost=0.35
+17:14:02.474 INFO src.optimizer: Optimizer wants to preempt: ['2a474f42']
+17:14:02.479 INFO src.app: Queued migrate 2a474f42 → node polimi-gpu {'A40': 2} (awaiting source /stop drain)
+17:14:02.497 INFO src.app: Optimizer preempting job 2a474f42
+17:14:02.526 INFO src.app: Issued preempt /stop for job 2a474f42 (slot release awaits NOTIFY)
+INFO:     127.0.0.1:54012 - "GET /jobs HTTP/1.1" 200 OK
+17:14:19.965 INFO src.app: slot freed by auto-preempt on polimi-gpu (1 GPU) — skipping wake (in-flight plan's dispatch will pick it up)
+17:14:19.969 INFO httpx: HTTP Request: POST http://localhost:8002/jobs/2a474f42-a8f8-4b8c-870d-3292ffa8e1f9/stop?reason=auto "HTTP/1.1 202 Accepted"
+17:14:19.970 INFO src.job_dispatcher: Remote stop for job 2a474f42 on http://localhost:8002
+17:14:19.980 INFO src.app: Applied pending migrate 2a474f42 → node polimi-gpu {'A40': 2}
+17:14:20.031 INFO httpx: HTTP Request: POST http://localhost:8002/jobs/2a474f42-a8f8-4b8c-870d-3292ffa8e1f9/run "HTTP/1.1 202 Accepted"
+17:14:20.032 INFO src.job_dispatcher: Remote run for job 2a474f42 on http://localhost:8002
+17:14:20.032 INFO src.app: Dispatched job 2a474f42 on polimi-gpu {'A40': 2} (waited 0.04s for slot)
+INFO:     127.0.0.1:36172 - "GET /jobs HTTP/1.1" 200 OK
+INFO:     127.0.0.1:38460 - "GET /jobs HTTP/1.1" 200 OK
+INFO:     127.0.0.1:45130 - "GET /jobs HTTP/1.1" 200 OK
+INFO:     127.0.0.1:40246 - "GET /jobs HTTP/1.1" 200 OK
+INFO:     127.0.0.1:39564 - "GET /jobs HTTP/1.1" 200 OK
+INFO:     127.0.0.1:44294 - "GET /jobs HTTP/1.1" 200 OK
+INFO:     127.0.0.1:55016 - "GET /jobs HTTP/1.1" 200 OK
+INFO:     127.0.0.1:38616 - "GET /jobs HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54052 - "GET /jobs HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54612 - "GET /jobs HTTP/1.1" 200 OK
+INFO:     127.0.0.1:47572 - "GET /jobs HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53726 - "GET /jobs HTTP/1.1" 200 OK
+INFO:     127.0.0.1:34240 - "GET /jobs HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56172 - "GET /jobs HTTP/1.1" 200 OK
+INFO:     127.0.0.1:43862 - "GET /jobs HTTP/1.1" 200 OK
+INFO:     127.0.0.1:44996 - "GET /jobs HTTP/1.1" 200 OK
+INFO:     127.0.0.1:49908 - "GET /jobs HTTP/1.1" 200 OK
+INFO:     127.0.0.1:42284 - "GET /jobs HTTP/1.1" 200 OK
+INFO:     127.0.0.1:59788 - "GET /jobs HTTP/1.1" 200 OK
+INFO:     127.0.0.1:59270 - "GET /jobs HTTP/1.1" 200 OK
+INFO:     127.0.0.1:46446 - "GET /jobs HTTP/1.1" 200 OK
+INFO:     127.0.0.1:33350 - "GET /jobs HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60858 - "GET /jobs HTTP/1.1" 200 OK
+INFO:     127.0.0.1:34610 - "GET /jobs HTTP/1.1" 200 OK
+INFO:     127.0.0.1:38782 - "GET /jobs HTTP/1.1" 200 OK
+INFO:     127.0.0.1:43510 - "GET /jobs HTTP/1.1" 200 OK
+INFO:     127.0.0.1:48156 - "GET /jobs HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60816 - "GET /jobs HTTP/1.1" 200 OK
+INFO:     127.0.0.1:55746 - "GET /jobs HTTP/1.1" 200 OK
+INFO:     127.0.0.1:41618 - "GET /jobs HTTP/1.1" 200 OK
+INFO:     127.0.0.1:33094 - "GET /jobs HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51796 - "GET /jobs HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54808 - "GET /jobs HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57426 - "GET /jobs HTTP/1.1" 200 OK
+INFO:     127.0.0.1:38760 - "GET /jobs HTTP/1.1" 200 OK
+INFO:     127.0.0.1:58812 - "GET /jobs HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60840 - "GET /jobs HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52718 - "GET /jobs HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60524 - "GET /jobs HTTP/1.1" 200 OK
+INFO:     127.0.0.1:42830 - "GET /jobs HTTP/1.1" 200 OK
+INFO:     127.0.0.1:37036 - "GET /jobs HTTP/1.1" 200 OK
+INFO:     127.0.0.1:38992 - "GET /jobs HTTP/1.1" 200 OK
+INFO:     127.0.0.1:35724 - "GET /jobs HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60626 - "GET /jobs HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60142 - "GET /jobs HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52620 - "GET /jobs HTTP/1.1" 200 OK
+INFO:     127.0.0.1:49310 - "GET /jobs HTTP/1.1" 200 OK
+INFO:     127.0.0.1:34040 - "GET /jobs HTTP/1.1" 200 OK
+INFO:     127.0.0.1:44536 - "GET /jobs HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56008 - "GET /jobs HTTP/1.1" 200 OK
+INFO:     127.0.0.1:39104 - "GET /jobs HTTP/1.1" 200 OK
+INFO:     127.0.0.1:34862 - "GET /jobs HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53042 - "GET /jobs HTTP/1.1" 200 OK
+INFO:     127.0.0.1:46284 - "GET /jobs HTTP/1.1" 200 OK
+INFO:     127.0.0.1:33012 - "GET /jobs HTTP/1.1" 200 OK
+INFO:     127.0.0.1:45706 - "GET /jobs HTTP/1.1" 200 OK
+INFO:     127.0.0.1:47514 - "GET /jobs HTTP/1.1" 200 OK
+INFO:     127.0.0.1:34030 - "GET /jobs HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54088 - "GET /jobs HTTP/1.1" 200 OK
+INFO:     127.0.0.1:48914 - "GET /jobs HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56840 - "GET /jobs HTTP/1.1" 200 OK
+INFO:     127.0.0.1:59412 - "GET /jobs HTTP/1.1" 200 OK
+INFO:     127.0.0.1:41264 - "GET /jobs HTTP/1.1" 200 OK
+INFO:     127.0.0.1:33786 - "GET /jobs HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56476 - "GET /jobs HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54264 - "GET /jobs HTTP/1.1" 200 OK
+INFO:     127.0.0.1:35084 - "GET /jobs HTTP/1.1" 200 OK
+INFO:     127.0.0.1:42184 - "GET /jobs HTTP/1.1" 200 OK
+INFO:     127.0.0.1:38942 - "GET /jobs HTTP/1.1" 200 OK
+INFO:     127.0.0.1:33542 - "GET /jobs HTTP/1.1" 200 OK
+INFO:     127.0.0.1:55080 - "GET /jobs HTTP/1.1" 200 OK
+INFO:     127.0.0.1:41880 - "GET /jobs HTTP/1.1" 200 OK
+INFO:     127.0.0.1:38642 - "GET /jobs HTTP/1.1" 200 OK
+INFO:     127.0.0.1:55172 - "GET /jobs HTTP/1.1" 200 OK
+INFO:     127.0.0.1:48012 - "GET /jobs HTTP/1.1" 200 OK
+INFO:     127.0.0.1:40414 - "GET /jobs HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53588 - "GET /jobs HTTP/1.1" 200 OK
+INFO:     127.0.0.1:47392 - "GET /jobs HTTP/1.1" 200 OK
+INFO:     127.0.0.1:43042 - "GET /jobs HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57894 - "GET /jobs HTTP/1.1" 200 OK
+INFO:     127.0.0.1:41950 - "GET /jobs HTTP/1.1" 200 OK
+INFO:     127.0.0.1:41876 - "GET /jobs HTTP/1.1" 200 OK
+INFO:     127.0.0.1:41024 - "GET /jobs HTTP/1.1" 200 OK
+INFO:     127.0.0.1:59198 - "GET /jobs HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54536 - "GET /jobs HTTP/1.1" 200 OK
+INFO:     127.0.0.1:43484 - "GET /jobs HTTP/1.1" 200 OK
+INFO:     127.0.0.1:40562 - "GET /jobs HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50050 - "GET /jobs HTTP/1.1" 200 OK
+INFO:     127.0.0.1:32990 - "GET /jobs HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50086 - "GET /jobs HTTP/1.1" 200 OK
+INFO:     127.0.0.1:41594 - "GET /jobs HTTP/1.1" 200 OK
+INFO:     127.0.0.1:41604 - "GET /jobs HTTP/1.1" 200 OK
+INFO:     127.0.0.1:41610 - "GET /jobs HTTP/1.1" 200 OK
+INFO:     127.0.0.1:41616 - "GET /jobs HTTP/1.1" 200 OK
+INFO:     127.0.0.1:41622 - "GET /admin/slots HTTP/1.1" 200 OK
+INFO:     127.0.0.1:33862 - "GET /jobs HTTP/1.1" 200 OK
+INFO:     127.0.0.1:46932 - "GET /jobs HTTP/1.1" 200 OK
+INFO:     127.0.0.1:46946 - "GET /jobs HTTP/1.1" 200 OK
+INFO:     127.0.0.1:46952 - "GET /profiling-results/cnn_big HTTP/1.1" 200 OK

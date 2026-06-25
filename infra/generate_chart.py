@@ -43,6 +43,14 @@ GPU_RE = re.compile(r"['\"]?(\w+)['\"]?:\s*(\d+)")
 WORKER_LINE = re.compile(r"^(\d{4}-\d{2}-\d{2})\s+(\d{2}:\d{2}:\d{2})\s+-\s+\S+\s+-\s+\S+\s+-\s+(.*)$")
 PROF_COMPLETE = re.compile(r"Profile-complete (\w+):")
 PROF_COMPLETE_LEGACY = re.compile(r"Profiling complete for job (\w+)")
+# The worker's GPU allocator logs the moment a job's physical GPUs are freed
+# — the authoritative end of a run segment (profiling or standard).  This is
+# the current-format replacement for the older "Profile-complete" line: a
+# profile cell finishes, the GPUs release, and the job re-dispatches to the
+# next config.  Without it, a profiling segment is only closed at the job's
+# NEXT dispatch, so a 30 s profile cell is drawn as a multi-minute bar that
+# spuriously overlaps other jobs (apparent oversubscription).
+GPU_RELEASE = re.compile(r"GPU allocator: job (\w+) releases indices")
 EPOCH_LINE = re.compile(r"Epoch (\d+)/(\d+)\s+-\s+(?:Loss|starting)")
 
 
@@ -240,6 +248,8 @@ def parse_worker_log(log_path: Path) -> list[dict]:
             out.append({"ts": ts_local, "kind": "profile_done", "jid": d.group(1)})
         elif d := PROF_COMPLETE_LEGACY.search(msg):
             out.append({"ts": ts_local, "kind": "profile_done", "jid": d.group(1)})
+        elif d := GPU_RELEASE.search(msg):
+            out.append({"ts": ts_local, "kind": "release", "jid": d.group(1)})
         elif d := COMPLETED.search(msg):
             out.append({"ts": ts_local, "kind": "completed", "jid": d.group(1)})
     return out
@@ -330,6 +340,13 @@ def derive_segments(events: list[dict], jobs: list[dict]) -> dict[str, list[dict
         elif ev["kind"] == "profile_done":
             # Worker says a profile cell finished — close any open segment
             # for this job so the next dispatch starts a fresh bar.
+            close(jid, ev["ts"])
+            seen_seg_key.pop(jid, None)
+        elif ev["kind"] == "release":
+            # Worker freed this job's physical GPUs — the true end of the
+            # current segment.  Closing here (rather than waiting for the
+            # job's next dispatch) prevents a short profile cell from being
+            # drawn as a long bar overlapping other jobs on the same node.
             close(jid, ev["ts"])
             seen_seg_key.pop(jid, None)
 

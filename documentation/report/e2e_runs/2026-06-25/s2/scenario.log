@@ -1,0 +1,21 @@
+[19:30:27] Stage 0: cluster sanity + clean slate
+  ✓ API + workers healthy; DB cleared
+[19:30:28] Stage 1a: 2 priority-5 tight-deadline cnn_big to pin A40
+[19:30:33]   pinA40 cnn_big: fbf0d995 0e8ac2f9 (deadline=2026-06-25T17:40:28Z, epochs=80)
+[19:30:33] Stage 1b: 2 priority-1 loose-deadline lstm-small to fill P600
+[19:30:42]   patient lstm-small: a27da444 fce852e8
+[19:30:42]   waiting for steady state (4 active, ≥3 progressed; ≤ 12 min)…
+  ✓ steady state — cluster full, profile sweep complete
+[19:38:10]   observed placement:
+    fbf0d995 cnn_big prio=5 → polimi-gpu ({"A40":1})
+    0e8ac2f9 cnn_big prio=5 → polimi-gpu ({"A40":1})
+    a27da444 lstm-small prio=1 → matemagician ({"QuadroP600":1})
+    fce852e8 lstm-small prio=1 → matemagician ({"QuadroP600":1})
+[19:38:10] Stage 2: submit URGENT cnn_big (priority=5, deadline +22 minutes)
+[19:38:10]   URG=8b9367c2 deadline=2026-06-25T18:00:10Z
+[19:38:14]   URGENT placed in 4s on matemagician: {
+  "QuadroP600": 1
+}
+  ✗ expected 1× QuadroP600=2 for P600×2 plan, got {
+  "QuadroP600": 1
+}

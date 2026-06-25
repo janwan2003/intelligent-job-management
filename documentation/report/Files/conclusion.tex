@@ -11,12 +11,22 @@ measurements are atomically shared across instances of~the~same job
 type.  \emph{Cross-version checkpoint resume} between
 PyTorch~1.5.1 (CUDA~10.1, \texttt{matemagician}) and~PyTorch~2.6
 (CUDA~12.4, \texttt{polimi-gpu}), enabling an~in-flight job to~migrate
-between heterogeneous GPU generations without losing progress.  And
-an~empirical characterisation of~the~horizon-myopia in~GPUspb's
-\texttt{method=RG} proxy (Chapter~\ref{ch:e2e}), traced through both
-scenarios to~three combining mechanics: horizon-myopic tardiness,
-\texttt{Heuristic::assign}'s refusal to~displace incumbents, and~the
-``cheapest if~deadline reachable, else fastest'' fallback.
+between heterogeneous GPU generations without losing progress
+(\S\ref{sec:checkpoints}).  And
+an~empirical characterisation of~GPUspb's \texttt{method=RG} proxy
+(Chapter~\ref{ch:e2e}).  Scenario~1 isolates its \emph{horizon-myopia}~---
+tardiness scored at~the~next-event horizon, so~an~urgent job is~parked
+on~a~slow but~\emph{free} bundle whose deadline overrun the~proxy cannot
+see~--- while Scenario~2 shows the~same myopia on~a~\emph{full} cluster: with
+no~preemptible bundle fast enough to~meet the~urgent job's deadline, the
+stateless cost minimisation drops the~cheapest slack work and~parks the
+arrival on~the~cheapest \emph{slow} bundle, and~the~deadline is~recovered
+only when a~pin finishes and~the~job migrates onto~freed fast hardware.
+The priority-aware \emph{outcome}~--- evicting slack prio-1 work but~never
+an~equal-or-higher-priority job, and~still hitting the~deadline~--- is
+emergent from the~unscheduled-job penalty (multiplier $\lambda{=}100$)
+plus IJM's migrate-on-free-slot behaviour, not~a~preemption or~deadline
+policy in~the~optimiser.
 
 \section{Limitations}
 
@@ -25,9 +35,10 @@ is~horizon-myopic; the~deadline-aware \texttt{method=PR} variant
 exists upstream but is~not the~default and~has not been validated end
 to~end against the~IJM control plane.  The~report contains
 no~baseline-algorithm comparison~--- IJM's behaviour is~documented
-against the~true objective, but not yet against FIFO, EDF, or
-priority-only baselines on~the~same workloads.  Worker-side coverage
-is~end-to-end only (\texttt{worker/tests/} is~empty); only two GPU
+against the~idealised full-run yardstick, but not yet against FIFO, EDF,
+or~priority-only baselines on~the~same workloads.  Worker-side coverage
+is~almost entirely end-to-end~--- \texttt{worker/tests/} holds only
+a~regression test for~the~per-epoch profiler measurement; only two GPU
 generations (A40 and~QuadroP600) have been validated; and~the~cluster
 used throughout Chapter~\ref{ch:e2e} is~two nodes with~four GPU slots
 in~total, so the~scaling properties of~the~four-phase pass at~tens
@@ -36,11 +47,12 @@ of~nodes are an~open question.
 \section{Future work}
 
 Two follow-ups have concrete entry points in~the~codebase.  First,
-re-run Scenarios~1 and~2 with
+re-run Scenario~1 with
 \texttt{OPTIMIZER\_METHOD=PR}: \texttt{proxy\_function\_max} is~per-job
 deadline-aware, so the~prediction from~\S\ref{sec:e2e-s1-urgent-math}
-is~that URGENT lands on~A40$\times$2 in~round~1 rather than migrating
-into it~over two patient-completion events.  Second, extend the
+is~that URGENT is~rushed onto the~fastest hardware (preempting the~prio-4
+patients) from~round~1, rather than parking on~the~slow free P600 first
+and~finishing $\sim$11\,min late.  Second, extend the
 two-node evaluation to~a~larger cluster once a~third GPU class is
 available; this is~where the~profile-claim's atomicity and~the
 optimiser-call latency (currently a~30~s timeout) will be~stressed.

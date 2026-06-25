@@ -37,19 +37,23 @@ mid-training.
 
 We validate the~design with~two end-to-end scenarios on~the~two-node
 cluster.  Scenario~1 submits five \texttt{cnn\_big} jobs to~probe the
-profile sweep and~the~deadline-driven URGENT migration sequence.
-Scenario~2 mixes two job types and~constructs a~workload that pits
-URGENT against priority-5 pins on~A40 and~slack lstm-small patients
-on~P600.  Both scenarios expose the~same horizon-myopia behaviour in
-the~upstream GPUspb proxy.
+profile sweep and~the~deadline-driven URGENT migration sequence on~an
+under-subscribed cluster.  Scenario~2 mixes two job types and~fills
+every slot, pitting URGENT against priority-5 pins on~A40 and~slack
+lstm-small patients on~P600.  Together they separate two behaviours of
+the~upstream GPUspb proxy: Scenario~1 exposes its \emph{horizon-myopia}
+(an~urgent job parked on~slow but~free hardware), while Scenario~2 shows
+that on~a~full cluster the~right outcome still emerges from~its~stateless
+cost minimisation: the~cheapest slack work is~omitted from~the~plan
+(realised as~a~preemption) and, once an~equal-priority pin finishes, the
+urgent job migrates onto the~freed fast~A40 and~meets its deadline.
 
 Chapter~\ref{ch:architecture} describes the~deployment topology, the
 scheduling pipeline, the~state machine, the~persistent state, and~the
 invariants that protect the~control plane from concurrency hazards.
 Chapter~\ref{ch:config} documents the~cluster and~job configuration
 files, the~submission API, and~the~runtime knobs.
-Chapter~\ref{ch:e2e} presents the~two scenarios, the~cost model used
-by~the~optimiser, and~the~implementation notes accumulated while bringing
-the~scenarios to~a~reproducible state.
+Chapter~\ref{ch:e2e} presents the~two scenarios and~the~cost model used
+by~the~optimiser.
 Chapter~\ref{ch:conclusion} summarises the~contributions, the~limitations,
 and~the~follow-up work that has concrete entry points in~the~codebase.

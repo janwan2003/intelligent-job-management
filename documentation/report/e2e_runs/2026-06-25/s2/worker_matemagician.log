@@ -1,0 +1,1292 @@
+INFO:     Started server process [1]
+INFO:     Waiting for application startup.
+2026-06-25 16:58:23 - app - INFO - Worker starting up (node_id=matemagician)
+2026-06-25 16:58:23 - reconcile - INFO - Reconciling job states for node matemagician
+INFO:     Application startup complete.
+INFO:     Uvicorn running on http://0.0.0.0:8001 (Press CTRL+C to quit)
+INFO:     172.22.0.1:41988 - "GET /health HTTP/1.1" 200 OK
+INFO:     172.22.0.1:42014 - "GET /health HTTP/1.1" 200 OK
+INFO:     172.22.0.1:42032 - "GET /health HTTP/1.1" 200 OK
+INFO:     172.22.0.1:42038 - "POST /jobs/fa2f78b3-bea9-46a0-bd84-f5b73e18833d/run HTTP/1.1" 202 Accepted
+2026-06-25 17:00:31 - execution - INFO - GPU allocator: job fa2f78b3 claims indices [0]
+2026-06-25 17:00:31 - docker - INFO - docker rootless mode: False
+2026-06-25 17:00:31 - execution - INFO - Starting job fa2f78b3: docker run --rm --name ijm-fa2f78b3 -e NVIDIA_VISIBLE_DEVICES=0 --user 1049:1051 -e USER=ijm -e HOME=/tmp -v /home/wangrat/ijm/data/checkpoints/fa2f78b3-bea9-46a0-bd84-f5b73e18833d/.profiling:/checkpoints -v /home/wangrat/ijm/data/runs/fa2f78b3-bea9-46a0-bd84-f5b73e18833d:/runs -v /home/wangrat/ijm/data/datasets:/runs/data:ro -e OMP_NUM_THREADS=1 -e OPENBLAS_NUM_THREADS=1 -e MKL_NUM_THREADS=1 -e EPOCHS_TOTAL=3 wangrat/ijm-cnn_big:legacy
+2026-06-25 17:00:35 - execution - INFO - [Job fa2f78b3] 2026-06-25 17:00:35 - __main__ - INFO - ============================================================
+2026-06-25 17:00:35 - execution - INFO - [Job fa2f78b3] 2026-06-25 17:00:35 - __main__ - INFO - Starting cnn_big v2 training (synthetic 128x128x3, deep CNN)
+2026-06-25 17:00:35 - execution - INFO - [Job fa2f78b3] 2026-06-25 17:00:35 - __main__ - INFO - ============================================================
+2026-06-25 17:00:35 - execution - INFO - [Job fa2f78b3] 2026-06-25 17:00:35 - base - INFO - Using device: cuda
+2026-06-25 17:00:40 - execution - INFO - [Job fa2f78b3] 2026-06-25 17:00:40 - base - INFO - No checkpoint found, starting from scratch
+2026-06-25 17:00:40 - execution - INFO - [Job fa2f78b3] 2026-06-25 17:00:40 - base - INFO - Config: epochs_total=3, batch_size=32
+2026-06-25 17:00:40 - execution - INFO - [Job fa2f78b3] 2026-06-25 17:00:40 - base - INFO - Starting training from epoch 0 to 3
+2026-06-25 17:00:40 - execution - INFO - [Job fa2f78b3] 2026-06-25 17:00:40 - base - INFO - Epoch 1/3 - starting
+2026-06-25 17:01:56 - execution - INFO - [Job fa2f78b3] 2026-06-25 17:01:56 - base - INFO - Epoch 1/3 - Loss: 2.327574 - Acc: 10.16% - 76.34s
+2026-06-25 17:01:56 - execution - INFO - [Job fa2f78b3] 2026-06-25 17:01:56 - base - INFO - Checkpoint saved at epoch 1
+2026-06-25 17:01:56 - execution - INFO - [Job fa2f78b3] 2026-06-25 17:01:56 - base - INFO - Epoch 2/3 - starting
+2026-06-25 17:03:14 - execution - INFO - [Job fa2f78b3] 2026-06-25 17:03:14 - base - INFO - Epoch 2/3 - Loss: 2.322320 - Acc: 9.77% - 77.79s
+2026-06-25 17:03:14 - execution - INFO - [Job fa2f78b3] 2026-06-25 17:03:14 - base - INFO - Checkpoint saved at epoch 2
+2026-06-25 17:03:14 - execution - INFO - [Job fa2f78b3] 2026-06-25 17:03:14 - base - INFO - Epoch 3/3 - starting
+2026-06-25 17:04:33 - execution - INFO - [Job fa2f78b3] 2026-06-25 17:04:33 - base - INFO - Epoch 3/3 - Loss: 2.319490 - Acc: 8.59% - 78.93s
+2026-06-25 17:04:34 - execution - INFO - [Job fa2f78b3] 2026-06-25 17:04:34 - base - INFO - Checkpoint saved at epoch 3
+2026-06-25 17:04:35 - profiling - INFO - Profiling: warmup epoch excluded, mean=78.3600s/epoch over 2 sample(s)
+2026-06-25 17:04:35 - profiling - INFO - Profile-complete fa2f78b3: still_owes=True → is_profiling_run will be True
+2026-06-25 17:04:35 - profiling - INFO - Profiling complete for job fa2f78b3 (type=cnn_big): {'QuadroP600': 1} = 78.4s — reset to QUEUED
+2026-06-25 17:04:35 - execution - INFO - GPU allocator: job fa2f78b3 releases indices [0]
+INFO:     172.22.0.1:42086 - "POST /jobs/fa2f78b3-bea9-46a0-bd84-f5b73e18833d/run HTTP/1.1" 202 Accepted
+2026-06-25 17:04:37 - execution - INFO - GPU allocator: job fa2f78b3 claims indices [0, 1]
+2026-06-25 17:04:37 - execution - INFO - Starting job fa2f78b3: docker run --rm --name ijm-fa2f78b3 -e NVIDIA_VISIBLE_DEVICES=0,1 --user 1049:1051 -e USER=ijm -e HOME=/tmp -v /home/wangrat/ijm/data/checkpoints/fa2f78b3-bea9-46a0-bd84-f5b73e18833d/.profiling:/checkpoints -v /home/wangrat/ijm/data/runs/fa2f78b3-bea9-46a0-bd84-f5b73e18833d:/runs -v /home/wangrat/ijm/data/datasets:/runs/data:ro -e OMP_NUM_THREADS=1 -e OPENBLAS_NUM_THREADS=1 -e MKL_NUM_THREADS=1 -e EPOCHS_TOTAL=3 wangrat/ijm-cnn_big:legacy
+2026-06-25 17:04:41 - execution - INFO - [Job fa2f78b3] 2026-06-25 17:04:40 - __main__ - INFO - ============================================================
+2026-06-25 17:04:41 - execution - INFO - [Job fa2f78b3] 2026-06-25 17:04:40 - __main__ - INFO - Starting cnn_big v2 training (synthetic 128x128x3, deep CNN)
+2026-06-25 17:04:41 - execution - INFO - [Job fa2f78b3] 2026-06-25 17:04:40 - __main__ - INFO - ============================================================
+2026-06-25 17:04:41 - execution - INFO - [Job fa2f78b3] 2026-06-25 17:04:41 - base - INFO - Using device: cuda
+2026-06-25 17:04:43 - execution - INFO - [Job fa2f78b3] 2026-06-25 17:04:43 - base - INFO - Wrapping model in DataParallel across 2 GPUs
+2026-06-25 17:04:45 - execution - INFO - [Job fa2f78b3] 2026-06-25 17:04:45 - base - INFO - No checkpoint found, starting from scratch
+2026-06-25 17:04:45 - execution - INFO - [Job fa2f78b3] 2026-06-25 17:04:45 - base - INFO - Config: epochs_total=3, batch_size=32
+2026-06-25 17:04:45 - execution - INFO - [Job fa2f78b3] 2026-06-25 17:04:45 - base - INFO - Starting training from epoch 0 to 3
+2026-06-25 17:04:45 - execution - INFO - [Job fa2f78b3] 2026-06-25 17:04:45 - base - INFO - Epoch 1/3 - starting
+2026-06-25 17:05:32 - execution - INFO - [Job fa2f78b3] 2026-06-25 17:05:32 - base - INFO - Epoch 1/3 - Loss: 2.329207 - Acc: 9.96% - 46.15s
+2026-06-25 17:05:32 - execution - INFO - [Job fa2f78b3] 2026-06-25 17:05:32 - base - INFO - Checkpoint saved at epoch 1
+2026-06-25 17:05:32 - execution - INFO - [Job fa2f78b3] 2026-06-25 17:05:32 - base - INFO - Epoch 2/3 - starting
+2026-06-25 17:06:18 - execution - INFO - [Job fa2f78b3] 2026-06-25 17:06:18 - base - INFO - Epoch 2/3 - Loss: 2.315748 - Acc: 9.96% - 45.81s
+2026-06-25 17:06:18 - execution - INFO - [Job fa2f78b3] 2026-06-25 17:06:18 - base - INFO - Checkpoint saved at epoch 2
+2026-06-25 17:06:18 - execution - INFO - [Job fa2f78b3] 2026-06-25 17:06:18 - base - INFO - Epoch 3/3 - starting
+2026-06-25 17:07:05 - execution - INFO - [Job fa2f78b3] 2026-06-25 17:07:05 - base - INFO - Epoch 3/3 - Loss: 2.320462 - Acc: 10.16% - 47.51s
+2026-06-25 17:07:05 - execution - INFO - [Job fa2f78b3] 2026-06-25 17:07:05 - base - INFO - Checkpoint saved at epoch 3
+2026-06-25 17:07:07 - profiling - INFO - Profiling: warmup epoch excluded, mean=46.6600s/epoch over 2 sample(s)
+2026-06-25 17:07:07 - profiling - INFO - Profile-complete fa2f78b3: still_owes=False → is_profiling_run will be False
+2026-06-25 17:07:07 - profiling - INFO - Profiling complete for job fa2f78b3 (type=cnn_big): {'QuadroP600': 2} = 46.7s — reset to QUEUED
+2026-06-25 17:07:07 - execution - INFO - GPU allocator: job fa2f78b3 releases indices [0, 1]
+INFO:     172.22.0.1:42122 - "POST /jobs/2a474f42-a8f8-4b8c-870d-3292ffa8e1f9/run HTTP/1.1" 202 Accepted
+2026-06-25 17:08:16 - execution - INFO - GPU allocator: job 2a474f42 claims indices [0, 1]
+2026-06-25 17:08:16 - execution - INFO - Starting job 2a474f42: docker run --rm --name ijm-2a474f42 -e NVIDIA_VISIBLE_DEVICES=0,1 --user 1049:1051 -e USER=ijm -e HOME=/tmp -v /home/wangrat/ijm/data/checkpoints/2a474f42-a8f8-4b8c-870d-3292ffa8e1f9:/checkpoints -v /home/wangrat/ijm/data/runs/2a474f42-a8f8-4b8c-870d-3292ffa8e1f9:/runs -v /home/wangrat/ijm/data/datasets:/runs/data:ro -e OMP_NUM_THREADS=1 -e OPENBLAS_NUM_THREADS=1 -e MKL_NUM_THREADS=1 -e EPOCHS_TOTAL=200 wangrat/ijm-cnn_big:legacy
+2026-06-25 17:08:21 - execution - INFO - [Job 2a474f42] 2026-06-25 17:08:20 - __main__ - INFO - ============================================================
+2026-06-25 17:08:21 - execution - INFO - [Job 2a474f42] 2026-06-25 17:08:20 - __main__ - INFO - Starting cnn_big v2 training (synthetic 128x128x3, deep CNN)
+2026-06-25 17:08:21 - execution - INFO - [Job 2a474f42] 2026-06-25 17:08:20 - __main__ - INFO - ============================================================
+2026-06-25 17:08:21 - execution - INFO - [Job 2a474f42] 2026-06-25 17:08:21 - base - INFO - Using device: cuda
+2026-06-25 17:08:23 - execution - INFO - [Job 2a474f42] 2026-06-25 17:08:23 - base - INFO - Wrapping model in DataParallel across 2 GPUs
+2026-06-25 17:08:25 - execution - INFO - [Job 2a474f42] 2026-06-25 17:08:25 - base - INFO - No checkpoint found, starting from scratch
+2026-06-25 17:08:25 - execution - INFO - [Job 2a474f42] 2026-06-25 17:08:25 - base - INFO - Config: epochs_total=200, batch_size=32
+2026-06-25 17:08:25 - execution - INFO - [Job 2a474f42] 2026-06-25 17:08:25 - base - INFO - Starting training from epoch 0 to 200
+2026-06-25 17:08:25 - execution - INFO - [Job 2a474f42] 2026-06-25 17:08:25 - base - INFO - Epoch 1/200 - starting
+2026-06-25 17:09:11 - execution - INFO - [Job 2a474f42] 2026-06-25 17:09:11 - base - INFO - Epoch 1/200 - Loss: 2.331083 - Acc: 11.33% - 45.95s
+2026-06-25 17:09:12 - execution - INFO - [Job 2a474f42] 2026-06-25 17:09:12 - base - INFO - Checkpoint saved at epoch 1
+2026-06-25 17:09:12 - execution - INFO - [Job 2a474f42] 2026-06-25 17:09:12 - base - INFO - Epoch 2/200 - starting
+2026-06-25 17:09:58 - execution - INFO - [Job 2a474f42] 2026-06-25 17:09:58 - base - INFO - Epoch 2/200 - Loss: 2.324035 - Acc: 12.30% - 46.54s
+2026-06-25 17:09:59 - execution - INFO - [Job 2a474f42] 2026-06-25 17:09:59 - base - INFO - Checkpoint saved at epoch 2
+2026-06-25 17:09:59 - execution - INFO - [Job 2a474f42] 2026-06-25 17:09:59 - base - INFO - Epoch 3/200 - starting
+2026-06-25 17:10:46 - execution - INFO - [Job 2a474f42] 2026-06-25 17:10:46 - base - INFO - Epoch 3/200 - Loss: 2.318205 - Acc: 8.79% - 47.42s
+2026-06-25 17:10:47 - execution - INFO - [Job 2a474f42] 2026-06-25 17:10:47 - base - INFO - Checkpoint saved at epoch 3
+2026-06-25 17:10:47 - execution - INFO - [Job 2a474f42] 2026-06-25 17:10:47 - base - INFO - Epoch 4/200 - starting
+2026-06-25 17:11:25 - execution - INFO - Job 2a474f42 exited (exit=137) during /stop (reason=auto) — leaving status to /stop
+2026-06-25 17:11:25 - execution - INFO - GPU allocator: job 2a474f42 releases indices [0, 1]
+2026-06-25 17:11:25 - app - INFO - Killed container ijm-2a474f42 (reason=auto)
+INFO:     172.22.0.1:42158 - "POST /jobs/2a474f42-a8f8-4b8c-870d-3292ffa8e1f9/stop?reason=auto HTTP/1.1" 202 Accepted
+INFO:     172.22.0.1:42286 - "GET /health HTTP/1.1" 200 OK
+INFO:     172.22.0.1:42306 - "POST /jobs/fbf0d995-189b-4bcf-bf7c-b11290a5a920/run HTTP/1.1" 202 Accepted
+2026-06-25 17:30:28 - execution - INFO - GPU allocator: job fbf0d995 claims indices [0]
+2026-06-25 17:30:28 - execution - INFO - Starting job fbf0d995: docker run --rm --name ijm-fbf0d995 -e NVIDIA_VISIBLE_DEVICES=0 --user 1049:1051 -e USER=ijm -e HOME=/tmp -v /home/wangrat/ijm/data/checkpoints/fbf0d995-189b-4bcf-bf7c-b11290a5a920/.profiling:/checkpoints -v /home/wangrat/ijm/data/runs/fbf0d995-189b-4bcf-bf7c-b11290a5a920:/runs -v /home/wangrat/ijm/data/datasets:/runs/data:ro -e OMP_NUM_THREADS=1 -e OPENBLAS_NUM_THREADS=1 -e MKL_NUM_THREADS=1 -e EPOCHS_TOTAL=3 wangrat/ijm-cnn_big:legacy
+2026-06-25 17:30:32 - execution - INFO - [Job fbf0d995] 2026-06-25 17:30:31 - __main__ - INFO - ============================================================
+2026-06-25 17:30:32 - execution - INFO - [Job fbf0d995] 2026-06-25 17:30:31 - __main__ - INFO - Starting cnn_big v2 training (synthetic 128x128x3, deep CNN)
+2026-06-25 17:30:32 - execution - INFO - [Job fbf0d995] 2026-06-25 17:30:31 - __main__ - INFO - ============================================================
+2026-06-25 17:30:32 - execution - INFO - [Job fbf0d995] 2026-06-25 17:30:32 - base - INFO - Using device: cuda
+2026-06-25 17:30:36 - execution - INFO - [Job fbf0d995] 2026-06-25 17:30:36 - base - INFO - No checkpoint found, starting from scratch
+2026-06-25 17:30:36 - execution - INFO - [Job fbf0d995] 2026-06-25 17:30:36 - base - INFO - Config: epochs_total=3, batch_size=32
+2026-06-25 17:30:36 - execution - INFO - [Job fbf0d995] 2026-06-25 17:30:36 - base - INFO - Starting training from epoch 0 to 3
+2026-06-25 17:30:36 - execution - INFO - [Job fbf0d995] 2026-06-25 17:30:36 - base - INFO - Epoch 1/3 - starting
+INFO:     172.22.0.1:42316 - "POST /jobs/a27da444-c0d2-47f9-85e1-c69161de9281/run HTTP/1.1" 202 Accepted
+2026-06-25 17:30:37 - execution - INFO - GPU allocator: job a27da444 claims indices [1]
+2026-06-25 17:30:37 - execution - INFO - Starting job a27da444: docker run --rm --name ijm-a27da444 -e NVIDIA_VISIBLE_DEVICES=1 --user 1049:1051 -e USER=ijm -e HOME=/tmp -v /home/wangrat/ijm/data/checkpoints/a27da444-c0d2-47f9-85e1-c69161de9281/.profiling:/checkpoints -v /home/wangrat/ijm/data/runs/a27da444-c0d2-47f9-85e1-c69161de9281:/runs -v /home/wangrat/ijm/data/datasets:/runs/data:ro -e OMP_NUM_THREADS=1 -e OPENBLAS_NUM_THREADS=1 -e MKL_NUM_THREADS=1 -e EPOCHS_TOTAL=3 wangrat/ijm-lstm-small:legacy
+2026-06-25 17:30:40 - execution - INFO - [Job a27da444] 2026-06-25 17:30:40 - __main__ - INFO - ============================================================
+2026-06-25 17:30:40 - execution - INFO - [Job a27da444] 2026-06-25 17:30:40 - __main__ - INFO - Starting LSTM-small training (MNIST sequences)
+2026-06-25 17:30:40 - execution - INFO - [Job a27da444] 2026-06-25 17:30:40 - __main__ - INFO - ============================================================
+2026-06-25 17:30:40 - execution - INFO - [Job a27da444] 2026-06-25 17:30:40 - base - INFO - Using device: cuda
+2026-06-25 17:30:43 - execution - INFO - [Job a27da444] 2026-06-25 17:30:43 - base - INFO - No checkpoint found, starting from scratch
+2026-06-25 17:30:43 - execution - INFO - [Job a27da444] 2026-06-25 17:30:43 - base - INFO - Config: epochs_total=3, batch_size=64
+2026-06-25 17:30:43 - execution - INFO - [Job a27da444] 2026-06-25 17:30:43 - base - INFO - Starting training from epoch 0 to 3
+2026-06-25 17:30:43 - execution - INFO - [Job a27da444] 2026-06-25 17:30:43 - base - INFO - Epoch 1/3 - starting
+2026-06-25 17:30:52 - execution - INFO - [Job a27da444] 2026-06-25 17:30:52 - base - INFO - Epoch 1/3 - Loss: 0.479901 - Acc: 94.09% - 9.24s
+2026-06-25 17:30:52 - execution - INFO - [Job a27da444] 2026-06-25 17:30:52 - base - INFO - Checkpoint saved at epoch 1
+2026-06-25 17:30:52 - execution - INFO - [Job a27da444] 2026-06-25 17:30:52 - base - INFO - Epoch 2/3 - starting
+2026-06-25 17:31:01 - execution - INFO - [Job a27da444] 2026-06-25 17:31:01 - base - INFO - Epoch 2/3 - Loss: 0.142066 - Acc: 96.37% - 9.17s
+2026-06-25 17:31:01 - execution - INFO - [Job a27da444] 2026-06-25 17:31:01 - base - INFO - Checkpoint saved at epoch 2
+2026-06-25 17:31:01 - execution - INFO - [Job a27da444] 2026-06-25 17:31:01 - base - INFO - Epoch 3/3 - starting
+2026-06-25 17:31:10 - execution - INFO - [Job a27da444] 2026-06-25 17:31:10 - base - INFO - Epoch 3/3 - Loss: 0.096357 - Acc: 96.70% - 9.17s
+2026-06-25 17:31:11 - profiling - INFO - Profiling: warmup epoch excluded, mean=9.1700s/epoch over 2 sample(s)
+2026-06-25 17:31:11 - profiling - INFO - Profile-complete a27da444: still_owes=True → is_profiling_run will be True
+2026-06-25 17:31:11 - profiling - INFO - Profiling complete for job a27da444 (type=lstm-small): {'QuadroP600': 1} = 9.2s — reset to QUEUED
+2026-06-25 17:31:11 - execution - INFO - GPU allocator: job a27da444 releases indices [1]
+2026-06-25 17:31:52 - execution - INFO - [Job fbf0d995] 2026-06-25 17:31:52 - base - INFO - Epoch 1/3 - Loss: 2.329241 - Acc: 12.70% - 76.28s
+2026-06-25 17:31:52 - execution - INFO - [Job fbf0d995] 2026-06-25 17:31:52 - base - INFO - Checkpoint saved at epoch 1
+2026-06-25 17:31:52 - execution - INFO - [Job fbf0d995] 2026-06-25 17:31:52 - base - INFO - Epoch 2/3 - starting
+2026-06-25 17:33:10 - execution - INFO - [Job fbf0d995] 2026-06-25 17:33:10 - base - INFO - Epoch 2/3 - Loss: 2.319824 - Acc: 10.16% - 77.60s
+2026-06-25 17:33:10 - execution - INFO - [Job fbf0d995] 2026-06-25 17:33:10 - base - INFO - Checkpoint saved at epoch 2
+2026-06-25 17:33:10 - execution - INFO - [Job fbf0d995] 2026-06-25 17:33:10 - base - INFO - Epoch 3/3 - starting
+2026-06-25 17:34:29 - execution - INFO - [Job fbf0d995] 2026-06-25 17:34:29 - base - INFO - Epoch 3/3 - Loss: 2.312951 - Acc: 9.18% - 78.90s
+2026-06-25 17:34:29 - execution - INFO - [Job fbf0d995] 2026-06-25 17:34:29 - base - INFO - Checkpoint saved at epoch 3
+2026-06-25 17:34:30 - profiling - INFO - Profiling: warmup epoch excluded, mean=78.2500s/epoch over 2 sample(s)
+2026-06-25 17:34:30 - profiling - INFO - Profile-complete fbf0d995: still_owes=True → is_profiling_run will be True
+2026-06-25 17:34:30 - profiling - INFO - Profiling complete for job fbf0d995 (type=cnn_big): {'QuadroP600': 1} = 78.2s — reset to QUEUED
+2026-06-25 17:34:30 - execution - INFO - GPU allocator: job fbf0d995 releases indices [0]
+INFO:     172.22.0.1:42356 - "POST /jobs/fbf0d995-189b-4bcf-bf7c-b11290a5a920/run HTTP/1.1" 202 Accepted
+2026-06-25 17:34:31 - execution - INFO - GPU allocator: job fbf0d995 claims indices [0, 1]
+2026-06-25 17:34:31 - execution - INFO - Starting job fbf0d995: docker run --rm --name ijm-fbf0d995 -e NVIDIA_VISIBLE_DEVICES=0,1 --user 1049:1051 -e USER=ijm -e HOME=/tmp -v /home/wangrat/ijm/data/checkpoints/fbf0d995-189b-4bcf-bf7c-b11290a5a920/.profiling:/checkpoints -v /home/wangrat/ijm/data/runs/fbf0d995-189b-4bcf-bf7c-b11290a5a920:/runs -v /home/wangrat/ijm/data/datasets:/runs/data:ro -e OMP_NUM_THREADS=1 -e OPENBLAS_NUM_THREADS=1 -e MKL_NUM_THREADS=1 -e EPOCHS_TOTAL=3 wangrat/ijm-cnn_big:legacy
+2026-06-25 17:34:35 - execution - INFO - [Job fbf0d995] 2026-06-25 17:34:34 - __main__ - INFO - ============================================================
+2026-06-25 17:34:35 - execution - INFO - [Job fbf0d995] 2026-06-25 17:34:34 - __main__ - INFO - Starting cnn_big v2 training (synthetic 128x128x3, deep CNN)
+2026-06-25 17:34:35 - execution - INFO - [Job fbf0d995] 2026-06-25 17:34:34 - __main__ - INFO - ============================================================
+2026-06-25 17:34:35 - execution - INFO - [Job fbf0d995] 2026-06-25 17:34:35 - base - INFO - Using device: cuda
+2026-06-25 17:34:37 - execution - INFO - [Job fbf0d995] 2026-06-25 17:34:37 - base - INFO - Wrapping model in DataParallel across 2 GPUs
+2026-06-25 17:34:39 - execution - INFO - [Job fbf0d995] 2026-06-25 17:34:39 - base - INFO - No checkpoint found, starting from scratch
+2026-06-25 17:34:39 - execution - INFO - [Job fbf0d995] 2026-06-25 17:34:39 - base - INFO - Config: epochs_total=3, batch_size=32
+2026-06-25 17:34:39 - execution - INFO - [Job fbf0d995] 2026-06-25 17:34:39 - base - INFO - Starting training from epoch 0 to 3
+2026-06-25 17:34:39 - execution - INFO - [Job fbf0d995] 2026-06-25 17:34:39 - base - INFO - Epoch 1/3 - starting
+2026-06-25 17:35:26 - execution - INFO - [Job fbf0d995] 2026-06-25 17:35:26 - base - INFO - Epoch 1/3 - Loss: 2.330801 - Acc: 9.96% - 46.24s
+2026-06-25 17:35:26 - execution - INFO - [Job fbf0d995] 2026-06-25 17:35:26 - base - INFO - Checkpoint saved at epoch 1
+2026-06-25 17:35:26 - execution - INFO - [Job fbf0d995] 2026-06-25 17:35:26 - base - INFO - Epoch 2/3 - starting
+2026-06-25 17:36:12 - execution - INFO - [Job fbf0d995] 2026-06-25 17:36:12 - base - INFO - Epoch 2/3 - Loss: 2.329183 - Acc: 10.16% - 45.85s
+2026-06-25 17:36:12 - execution - INFO - [Job fbf0d995] 2026-06-25 17:36:12 - base - INFO - Checkpoint saved at epoch 2
+2026-06-25 17:36:12 - execution - INFO - [Job fbf0d995] 2026-06-25 17:36:12 - base - INFO - Epoch 3/3 - starting
+2026-06-25 17:37:00 - execution - INFO - [Job fbf0d995] 2026-06-25 17:37:00 - base - INFO - Epoch 3/3 - Loss: 2.317807 - Acc: 9.57% - 47.45s
+2026-06-25 17:37:00 - execution - INFO - [Job fbf0d995] 2026-06-25 17:37:00 - base - INFO - Checkpoint saved at epoch 3
+2026-06-25 17:37:02 - profiling - INFO - Profiling: warmup epoch excluded, mean=46.6500s/epoch over 2 sample(s)
+2026-06-25 17:37:02 - profiling - INFO - Profile-complete fbf0d995: still_owes=False → is_profiling_run will be False
+2026-06-25 17:37:02 - profiling - INFO - Profiling complete for job fbf0d995 (type=cnn_big): {'QuadroP600': 2} = 46.7s — reset to QUEUED
+2026-06-25 17:37:02 - execution - INFO - GPU allocator: job fbf0d995 releases indices [0, 1]
+INFO:     172.22.0.1:42378 - "POST /jobs/a27da444-c0d2-47f9-85e1-c69161de9281/run HTTP/1.1" 202 Accepted
+2026-06-25 17:37:02 - execution - INFO - GPU allocator: job a27da444 claims indices [0, 1]
+2026-06-25 17:37:02 - execution - INFO - Starting job a27da444: docker run --rm --name ijm-a27da444 -e NVIDIA_VISIBLE_DEVICES=0,1 --user 1049:1051 -e USER=ijm -e HOME=/tmp -v /home/wangrat/ijm/data/checkpoints/a27da444-c0d2-47f9-85e1-c69161de9281/.profiling:/checkpoints -v /home/wangrat/ijm/data/runs/a27da444-c0d2-47f9-85e1-c69161de9281:/runs -v /home/wangrat/ijm/data/datasets:/runs/data:ro -e OMP_NUM_THREADS=1 -e OPENBLAS_NUM_THREADS=1 -e MKL_NUM_THREADS=1 -e EPOCHS_TOTAL=3 wangrat/ijm-lstm-small:legacy
+2026-06-25 17:37:06 - execution - INFO - [Job a27da444] 2026-06-25 17:37:06 - __main__ - INFO - ============================================================
+2026-06-25 17:37:06 - execution - INFO - [Job a27da444] 2026-06-25 17:37:06 - __main__ - INFO - Starting LSTM-small training (MNIST sequences)
+2026-06-25 17:37:06 - execution - INFO - [Job a27da444] 2026-06-25 17:37:06 - __main__ - INFO - ============================================================
+2026-06-25 17:37:06 - execution - INFO - [Job a27da444] 2026-06-25 17:37:06 - base - INFO - Using device: cuda
+2026-06-25 17:37:09 - execution - INFO - [Job a27da444] 2026-06-25 17:37:09 - base - INFO - Wrapping model in DataParallel across 2 GPUs
+2026-06-25 17:37:09 - execution - INFO - [Job a27da444] 2026-06-25 17:37:09 - base - INFO - No checkpoint found, starting from scratch
+2026-06-25 17:37:09 - execution - INFO - [Job a27da444] 2026-06-25 17:37:09 - base - INFO - Config: epochs_total=3, batch_size=64
+2026-06-25 17:37:09 - execution - INFO - [Job a27da444] 2026-06-25 17:37:09 - base - INFO - Starting training from epoch 0 to 3
+2026-06-25 17:37:09 - execution - INFO - [Job a27da444] 2026-06-25 17:37:09 - base - INFO - Epoch 1/3 - starting
+2026-06-25 17:37:29 - execution - INFO - [Job a27da444] 2026-06-25 17:37:29 - base - INFO - Epoch 1/3 - Loss: 0.491585 - Acc: 94.77% - 19.93s
+2026-06-25 17:37:29 - execution - INFO - [Job a27da444] 2026-06-25 17:37:29 - base - INFO - Checkpoint saved at epoch 1
+2026-06-25 17:37:29 - execution - INFO - [Job a27da444] 2026-06-25 17:37:29 - base - INFO - Epoch 2/3 - starting
+2026-06-25 17:37:47 - execution - INFO - [Job a27da444] 2026-06-25 17:37:47 - base - INFO - Epoch 2/3 - Loss: 0.143542 - Acc: 96.75% - 17.80s
+2026-06-25 17:37:47 - execution - INFO - [Job a27da444] 2026-06-25 17:37:47 - base - INFO - Checkpoint saved at epoch 2
+2026-06-25 17:37:47 - execution - INFO - [Job a27da444] 2026-06-25 17:37:47 - base - INFO - Epoch 3/3 - starting
+2026-06-25 17:38:04 - execution - INFO - [Job a27da444] 2026-06-25 17:38:04 - base - INFO - Epoch 3/3 - Loss: 0.094553 - Acc: 97.69% - 17.63s
+2026-06-25 17:38:06 - profiling - INFO - Profiling: warmup epoch excluded, mean=17.7150s/epoch over 2 sample(s)
+2026-06-25 17:38:06 - profiling - INFO - Profile-complete a27da444: still_owes=False → is_profiling_run will be False
+2026-06-25 17:38:06 - profiling - INFO - Profiling complete for job a27da444 (type=lstm-small): {'QuadroP600': 2} = 17.7s — reset to QUEUED
+2026-06-25 17:38:06 - execution - INFO - GPU allocator: job a27da444 releases indices [0, 1]
+INFO:     172.22.0.1:42398 - "POST /jobs/fce852e8-9b96-4047-be18-47b6477dbba3/run HTTP/1.1" 202 Accepted
+INFO:     172.22.0.1:42402 - "POST /jobs/a27da444-c0d2-47f9-85e1-c69161de9281/run HTTP/1.1" 202 Accepted
+2026-06-25 17:38:06 - execution - INFO - GPU allocator: job fce852e8 claims indices [0]
+2026-06-25 17:38:06 - execution - INFO - Starting job fce852e8: docker run --rm --name ijm-fce852e8 -e NVIDIA_VISIBLE_DEVICES=0 --user 1049:1051 -e USER=ijm -e HOME=/tmp -v /home/wangrat/ijm/data/checkpoints/fce852e8-9b96-4047-be18-47b6477dbba3:/checkpoints -v /home/wangrat/ijm/data/runs/fce852e8-9b96-4047-be18-47b6477dbba3:/runs -v /home/wangrat/ijm/data/datasets:/runs/data:ro -e OMP_NUM_THREADS=1 -e OPENBLAS_NUM_THREADS=1 -e MKL_NUM_THREADS=1 -e EPOCHS_TOTAL=200 wangrat/ijm-lstm-small:legacy
+2026-06-25 17:38:06 - execution - INFO - GPU allocator: job a27da444 claims indices [1]
+2026-06-25 17:38:06 - execution - INFO - Starting job a27da444: docker run --rm --name ijm-a27da444 -e NVIDIA_VISIBLE_DEVICES=1 --user 1049:1051 -e USER=ijm -e HOME=/tmp -v /home/wangrat/ijm/data/checkpoints/a27da444-c0d2-47f9-85e1-c69161de9281:/checkpoints -v /home/wangrat/ijm/data/runs/a27da444-c0d2-47f9-85e1-c69161de9281:/runs -v /home/wangrat/ijm/data/datasets:/runs/data:ro -e OMP_NUM_THREADS=1 -e OPENBLAS_NUM_THREADS=1 -e MKL_NUM_THREADS=1 -e EPOCHS_TOTAL=200 wangrat/ijm-lstm-small:legacy
+2026-06-25 17:38:11 - execution - INFO - [Job a27da444] 2026-06-25 17:38:10 - __main__ - INFO - ============================================================
+2026-06-25 17:38:11 - execution - INFO - [Job a27da444] 2026-06-25 17:38:10 - __main__ - INFO - Starting LSTM-small training (MNIST sequences)
+2026-06-25 17:38:11 - execution - INFO - [Job a27da444] 2026-06-25 17:38:10 - __main__ - INFO - ============================================================
+2026-06-25 17:38:11 - execution - INFO - [Job a27da444] 2026-06-25 17:38:11 - base - INFO - Using device: cuda
+2026-06-25 17:38:11 - execution - INFO - [Job fce852e8] 2026-06-25 17:38:10 - __main__ - INFO - ============================================================
+2026-06-25 17:38:11 - execution - INFO - [Job fce852e8] 2026-06-25 17:38:10 - __main__ - INFO - Starting LSTM-small training (MNIST sequences)
+2026-06-25 17:38:11 - execution - INFO - [Job fce852e8] 2026-06-25 17:38:10 - __main__ - INFO - ============================================================
+2026-06-25 17:38:11 - execution - INFO - [Job fce852e8] 2026-06-25 17:38:11 - base - INFO - Using device: cuda
+2026-06-25 17:38:12 - execution - INFO - Job fce852e8 exited (exit=137) during /stop (reason=auto) — leaving status to /stop
+2026-06-25 17:38:12 - execution - INFO - GPU allocator: job fce852e8 releases indices [0]
+2026-06-25 17:38:12 - app - INFO - Killed container ijm-fce852e8 (reason=auto)
+INFO:     172.22.0.1:42410 - "POST /jobs/fce852e8-9b96-4047-be18-47b6477dbba3/stop?reason=auto HTTP/1.1" 202 Accepted
+INFO:     172.22.0.1:42420 - "POST /jobs/8b9367c2-49d6-4145-9468-3e313bdb77ee/run HTTP/1.1" 202 Accepted
+2026-06-25 17:38:12 - execution - INFO - GPU allocator: job 8b9367c2 claims indices [0]
+2026-06-25 17:38:12 - execution - INFO - Starting job 8b9367c2: docker run --rm --name ijm-8b9367c2 -e NVIDIA_VISIBLE_DEVICES=0 --user 1049:1051 -e USER=ijm -e HOME=/tmp -v /home/wangrat/ijm/data/checkpoints/8b9367c2-49d6-4145-9468-3e313bdb77ee:/checkpoints -v /home/wangrat/ijm/data/runs/8b9367c2-49d6-4145-9468-3e313bdb77ee:/runs -v /home/wangrat/ijm/data/datasets:/runs/data:ro -e OMP_NUM_THREADS=1 -e OPENBLAS_NUM_THREADS=1 -e MKL_NUM_THREADS=1 -e EPOCHS_TOTAL=40 wangrat/ijm-cnn_big:legacy
+2026-06-25 17:38:14 - execution - INFO - [Job a27da444] 2026-06-25 17:38:14 - base - INFO - No checkpoint found, starting from scratch
+2026-06-25 17:38:14 - execution - INFO - [Job a27da444] 2026-06-25 17:38:14 - base - INFO - Config: epochs_total=200, batch_size=64
+2026-06-25 17:38:14 - execution - INFO - [Job a27da444] 2026-06-25 17:38:14 - base - INFO - Starting training from epoch 0 to 200
+2026-06-25 17:38:14 - execution - INFO - [Job a27da444] 2026-06-25 17:38:14 - base - INFO - Epoch 1/200 - starting
+2026-06-25 17:38:16 - execution - INFO - [Job 8b9367c2] 2026-06-25 17:38:15 - __main__ - INFO - ============================================================
+2026-06-25 17:38:16 - execution - INFO - [Job 8b9367c2] 2026-06-25 17:38:15 - __main__ - INFO - Starting cnn_big v2 training (synthetic 128x128x3, deep CNN)
+2026-06-25 17:38:16 - execution - INFO - [Job 8b9367c2] 2026-06-25 17:38:15 - __main__ - INFO - ============================================================
+2026-06-25 17:38:16 - execution - INFO - [Job 8b9367c2] 2026-06-25 17:38:16 - base - INFO - Using device: cuda
+2026-06-25 17:38:21 - execution - INFO - [Job 8b9367c2] 2026-06-25 17:38:21 - base - INFO - No checkpoint found, starting from scratch
+2026-06-25 17:38:21 - execution - INFO - [Job 8b9367c2] 2026-06-25 17:38:21 - base - INFO - Config: epochs_total=40, batch_size=32
+2026-06-25 17:38:21 - execution - INFO - [Job 8b9367c2] 2026-06-25 17:38:21 - base - INFO - Starting training from epoch 0 to 40
+2026-06-25 17:38:21 - execution - INFO - [Job 8b9367c2] 2026-06-25 17:38:21 - base - INFO - Epoch 1/40 - starting
+2026-06-25 17:38:24 - execution - INFO - [Job a27da444] 2026-06-25 17:38:24 - base - INFO - Epoch 1/200 - Loss: 0.484354 - Acc: 94.24% - 9.51s
+2026-06-25 17:38:24 - execution - INFO - [Job a27da444] 2026-06-25 17:38:24 - base - INFO - Checkpoint saved at epoch 1
+2026-06-25 17:38:24 - execution - INFO - [Job a27da444] 2026-06-25 17:38:24 - base - INFO - Epoch 2/200 - starting
+2026-06-25 17:38:33 - execution - INFO - [Job a27da444] 2026-06-25 17:38:33 - base - INFO - Epoch 2/200 - Loss: 0.144631 - Acc: 96.12% - 9.34s
+2026-06-25 17:38:33 - execution - INFO - [Job a27da444] 2026-06-25 17:38:33 - base - INFO - Checkpoint saved at epoch 2
+2026-06-25 17:38:33 - execution - INFO - [Job a27da444] 2026-06-25 17:38:33 - base - INFO - Epoch 3/200 - starting
+2026-06-25 17:38:42 - execution - INFO - [Job a27da444] 2026-06-25 17:38:42 - base - INFO - Epoch 3/200 - Loss: 0.096681 - Acc: 97.35% - 9.38s
+2026-06-25 17:38:42 - execution - INFO - [Job a27da444] 2026-06-25 17:38:42 - base - INFO - Checkpoint saved at epoch 3
+2026-06-25 17:38:42 - execution - INFO - [Job a27da444] 2026-06-25 17:38:42 - base - INFO - Epoch 4/200 - starting
+2026-06-25 17:38:52 - execution - INFO - [Job a27da444] 2026-06-25 17:38:52 - base - INFO - Epoch 4/200 - Loss: 0.074777 - Acc: 97.65% - 9.38s
+2026-06-25 17:38:52 - execution - INFO - [Job a27da444] 2026-06-25 17:38:52 - base - INFO - Checkpoint saved at epoch 4
+2026-06-25 17:38:52 - execution - INFO - [Job a27da444] 2026-06-25 17:38:52 - base - INFO - Epoch 5/200 - starting
+2026-06-25 17:39:01 - execution - INFO - [Job a27da444] 2026-06-25 17:39:01 - base - INFO - Epoch 5/200 - Loss: 0.059727 - Acc: 98.32% - 9.38s
+2026-06-25 17:39:01 - execution - INFO - [Job a27da444] 2026-06-25 17:39:01 - base - INFO - Checkpoint saved at epoch 5
+2026-06-25 17:39:01 - execution - INFO - [Job a27da444] 2026-06-25 17:39:01 - base - INFO - Epoch 6/200 - starting
+2026-06-25 17:39:11 - execution - INFO - [Job a27da444] 2026-06-25 17:39:11 - base - INFO - Epoch 6/200 - Loss: 0.052678 - Acc: 98.36% - 9.39s
+2026-06-25 17:39:11 - execution - INFO - [Job a27da444] 2026-06-25 17:39:11 - base - INFO - Checkpoint saved at epoch 6
+2026-06-25 17:39:11 - execution - INFO - [Job a27da444] 2026-06-25 17:39:11 - base - INFO - Epoch 7/200 - starting
+2026-06-25 17:39:20 - execution - INFO - [Job a27da444] 2026-06-25 17:39:20 - base - INFO - Epoch 7/200 - Loss: 0.045820 - Acc: 98.30% - 9.42s
+2026-06-25 17:39:20 - execution - INFO - [Job a27da444] 2026-06-25 17:39:20 - base - INFO - Checkpoint saved at epoch 7
+2026-06-25 17:39:20 - execution - INFO - [Job a27da444] 2026-06-25 17:39:20 - base - INFO - Epoch 8/200 - starting
+2026-06-25 17:39:29 - execution - INFO - [Job a27da444] 2026-06-25 17:39:29 - base - INFO - Epoch 8/200 - Loss: 0.040941 - Acc: 98.60% - 9.44s
+2026-06-25 17:39:29 - execution - INFO - [Job a27da444] 2026-06-25 17:39:29 - base - INFO - Checkpoint saved at epoch 8
+2026-06-25 17:39:29 - execution - INFO - [Job a27da444] 2026-06-25 17:39:29 - base - INFO - Epoch 9/200 - starting
+2026-06-25 17:39:38 - execution - INFO - [Job 8b9367c2] 2026-06-25 17:39:38 - base - INFO - Epoch 1/40 - Loss: 2.332648 - Acc: 10.35% - 77.19s
+2026-06-25 17:39:38 - execution - INFO - [Job 8b9367c2] 2026-06-25 17:39:38 - base - INFO - Checkpoint saved at epoch 1
+2026-06-25 17:39:38 - execution - INFO - [Job 8b9367c2] 2026-06-25 17:39:38 - base - INFO - Epoch 2/40 - starting
+2026-06-25 17:39:39 - execution - INFO - [Job a27da444] 2026-06-25 17:39:39 - base - INFO - Epoch 9/200 - Loss: 0.034500 - Acc: 98.47% - 9.21s
+2026-06-25 17:39:39 - execution - INFO - [Job a27da444] 2026-06-25 17:39:39 - base - INFO - Checkpoint saved at epoch 9
+2026-06-25 17:39:39 - execution - INFO - [Job a27da444] 2026-06-25 17:39:39 - base - INFO - Epoch 10/200 - starting
+2026-06-25 17:39:48 - execution - INFO - [Job a27da444] 2026-06-25 17:39:48 - base - INFO - Epoch 10/200 - Loss: 0.031565 - Acc: 98.10% - 9.32s
+2026-06-25 17:39:48 - execution - INFO - [Job a27da444] 2026-06-25 17:39:48 - base - INFO - Checkpoint saved at epoch 10
+2026-06-25 17:39:48 - execution - INFO - [Job a27da444] 2026-06-25 17:39:48 - base - INFO - Epoch 11/200 - starting
+2026-06-25 17:39:57 - execution - INFO - Job 8b9367c2 exited (exit=137) during /stop (reason=auto) — leaving status to /stop
+2026-06-25 17:39:57 - execution - INFO - GPU allocator: job 8b9367c2 releases indices [0]
+2026-06-25 17:39:57 - app - INFO - Killed container ijm-8b9367c2 (reason=auto)
+INFO:     172.22.0.1:42458 - "POST /jobs/8b9367c2-49d6-4145-9468-3e313bdb77ee/stop?reason=auto HTTP/1.1" 202 Accepted
+2026-06-25 17:39:57 - execution - INFO - [Job a27da444] 2026-06-25 17:39:57 - base - INFO - Epoch 11/200 - Loss: 0.029753 - Acc: 98.54% - 9.50s
+2026-06-25 17:39:57 - execution - INFO - [Job a27da444] 2026-06-25 17:39:57 - base - INFO - Checkpoint saved at epoch 11
+2026-06-25 17:39:57 - execution - INFO - [Job a27da444] 2026-06-25 17:39:57 - base - INFO - Epoch 12/200 - starting
+INFO:     172.22.0.1:42470 - "POST /jobs/fce852e8-9b96-4047-be18-47b6477dbba3/run HTTP/1.1" 202 Accepted
+2026-06-25 17:39:58 - execution - INFO - GPU allocator: job fce852e8 claims indices [0]
+2026-06-25 17:39:58 - execution - INFO - Starting job fce852e8: docker run --rm --name ijm-fce852e8 -e NVIDIA_VISIBLE_DEVICES=0 --user 1049:1051 -e USER=ijm -e HOME=/tmp -v /home/wangrat/ijm/data/checkpoints/fce852e8-9b96-4047-be18-47b6477dbba3:/checkpoints -v /home/wangrat/ijm/data/runs/fce852e8-9b96-4047-be18-47b6477dbba3:/runs -v /home/wangrat/ijm/data/datasets:/runs/data:ro -e OMP_NUM_THREADS=1 -e OPENBLAS_NUM_THREADS=1 -e MKL_NUM_THREADS=1 -e EPOCHS_TOTAL=200 wangrat/ijm-lstm-small:legacy
+2026-06-25 17:40:01 - execution - INFO - [Job fce852e8] 2026-06-25 17:40:00 - __main__ - INFO - ============================================================
+2026-06-25 17:40:01 - execution - INFO - [Job fce852e8] 2026-06-25 17:40:00 - __main__ - INFO - Starting LSTM-small training (MNIST sequences)
+2026-06-25 17:40:01 - execution - INFO - [Job fce852e8] 2026-06-25 17:40:00 - __main__ - INFO - ============================================================
+2026-06-25 17:40:01 - execution - INFO - [Job fce852e8] 2026-06-25 17:40:01 - base - INFO - Using device: cuda
+2026-06-25 17:40:03 - execution - INFO - [Job fce852e8] 2026-06-25 17:40:03 - base - INFO - Loading checkpoint from /checkpoints/latest.pt
+2026-06-25 17:40:03 - execution - INFO - [Job fce852e8] 2026-06-25 17:40:03 - base - INFO - Resumed from epoch 45 (best acc: 99.11%)
+2026-06-25 17:40:03 - execution - INFO - [Job fce852e8] 2026-06-25 17:40:03 - base - INFO - Config: epochs_total=200, batch_size=64
+2026-06-25 17:40:03 - execution - INFO - [Job fce852e8] 2026-06-25 17:40:03 - base - INFO - Starting training from epoch 45 to 200
+2026-06-25 17:40:03 - execution - INFO - [Job fce852e8] 2026-06-25 17:40:03 - base - INFO - Epoch 46/200 - starting
+2026-06-25 17:40:07 - execution - INFO - [Job a27da444] 2026-06-25 17:40:07 - base - INFO - Epoch 12/200 - Loss: 0.024317 - Acc: 98.59% - 9.57s
+2026-06-25 17:40:07 - execution - INFO - [Job a27da444] 2026-06-25 17:40:07 - base - INFO - Checkpoint saved at epoch 12
+2026-06-25 17:40:07 - execution - INFO - [Job a27da444] 2026-06-25 17:40:07 - base - INFO - Epoch 13/200 - starting
+2026-06-25 17:40:14 - execution - INFO - [Job fce852e8] 2026-06-25 17:40:14 - base - INFO - Epoch 46/200 - Loss: 0.002987 - Acc: 98.85% - 11.03s
+2026-06-25 17:40:14 - execution - INFO - [Job fce852e8] 2026-06-25 17:40:14 - base - INFO - Checkpoint saved at epoch 46
+2026-06-25 17:40:14 - execution - INFO - [Job fce852e8] 2026-06-25 17:40:14 - base - INFO - Epoch 47/200 - starting
+2026-06-25 17:40:16 - execution - INFO - [Job a27da444] 2026-06-25 17:40:16 - base - INFO - Epoch 13/200 - Loss: 0.021684 - Acc: 98.78% - 9.46s
+2026-06-25 17:40:16 - execution - INFO - [Job a27da444] 2026-06-25 17:40:16 - base - INFO - Checkpoint saved at epoch 13
+2026-06-25 17:40:16 - execution - INFO - [Job a27da444] 2026-06-25 17:40:16 - base - INFO - Epoch 14/200 - starting
+2026-06-25 17:40:26 - execution - INFO - [Job fce852e8] 2026-06-25 17:40:26 - base - INFO - Epoch 47/200 - Loss: 0.006865 - Acc: 98.99% - 11.06s
+2026-06-25 17:40:26 - execution - INFO - [Job fce852e8] 2026-06-25 17:40:26 - base - INFO - Checkpoint saved at epoch 47
+2026-06-25 17:40:26 - execution - INFO - [Job fce852e8] 2026-06-25 17:40:26 - base - INFO - Epoch 48/200 - starting
+2026-06-25 17:40:26 - execution - INFO - [Job a27da444] 2026-06-25 17:40:26 - base - INFO - Epoch 14/200 - Loss: 0.021357 - Acc: 98.66% - 9.49s
+2026-06-25 17:40:26 - execution - INFO - [Job a27da444] 2026-06-25 17:40:26 - base - INFO - Checkpoint saved at epoch 14
+2026-06-25 17:40:26 - execution - INFO - [Job a27da444] 2026-06-25 17:40:26 - base - INFO - Epoch 15/200 - starting
+2026-06-25 17:40:35 - execution - INFO - [Job a27da444] 2026-06-25 17:40:35 - base - INFO - Epoch 15/200 - Loss: 0.019824 - Acc: 98.80% - 9.51s
+2026-06-25 17:40:35 - execution - INFO - [Job a27da444] 2026-06-25 17:40:35 - base - INFO - Checkpoint saved at epoch 15
+2026-06-25 17:40:35 - execution - INFO - [Job a27da444] 2026-06-25 17:40:35 - base - INFO - Epoch 16/200 - starting
+2026-06-25 17:40:37 - execution - INFO - [Job fce852e8] 2026-06-25 17:40:37 - base - INFO - Epoch 48/200 - Loss: 0.004333 - Acc: 98.90% - 11.03s
+2026-06-25 17:40:37 - execution - INFO - [Job fce852e8] 2026-06-25 17:40:37 - base - INFO - Checkpoint saved at epoch 48
+2026-06-25 17:40:37 - execution - INFO - [Job fce852e8] 2026-06-25 17:40:37 - base - INFO - Epoch 49/200 - starting
+2026-06-25 17:40:45 - execution - INFO - [Job a27da444] 2026-06-25 17:40:45 - base - INFO - Epoch 16/200 - Loss: 0.015932 - Acc: 98.66% - 9.49s
+2026-06-25 17:40:45 - execution - INFO - [Job a27da444] 2026-06-25 17:40:45 - base - INFO - Checkpoint saved at epoch 16
+2026-06-25 17:40:45 - execution - INFO - [Job a27da444] 2026-06-25 17:40:45 - base - INFO - Epoch 17/200 - starting
+2026-06-25 17:40:48 - execution - INFO - [Job fce852e8] 2026-06-25 17:40:48 - base - INFO - Epoch 49/200 - Loss: 0.004787 - Acc: 98.98% - 11.08s
+2026-06-25 17:40:48 - execution - INFO - [Job fce852e8] 2026-06-25 17:40:48 - base - INFO - Checkpoint saved at epoch 49
+2026-06-25 17:40:48 - execution - INFO - [Job fce852e8] 2026-06-25 17:40:48 - base - INFO - Epoch 50/200 - starting
+2026-06-25 17:40:55 - execution - INFO - [Job a27da444] 2026-06-25 17:40:55 - base - INFO - Epoch 17/200 - Loss: 0.016918 - Acc: 98.71% - 9.58s
+2026-06-25 17:40:55 - execution - INFO - [Job a27da444] 2026-06-25 17:40:55 - base - INFO - Checkpoint saved at epoch 17
+2026-06-25 17:40:55 - execution - INFO - [Job a27da444] 2026-06-25 17:40:55 - base - INFO - Epoch 18/200 - starting
+2026-06-25 17:40:59 - execution - INFO - [Job fce852e8] 2026-06-25 17:40:59 - base - INFO - Epoch 50/200 - Loss: 0.004157 - Acc: 98.90% - 11.10s
+2026-06-25 17:40:59 - execution - INFO - [Job fce852e8] 2026-06-25 17:40:59 - base - INFO - Checkpoint saved at epoch 50
+2026-06-25 17:40:59 - execution - INFO - [Job fce852e8] 2026-06-25 17:40:59 - base - INFO - Epoch 51/200 - starting
+2026-06-25 17:41:04 - execution - INFO - [Job a27da444] 2026-06-25 17:41:04 - base - INFO - Epoch 18/200 - Loss: 0.013852 - Acc: 98.86% - 9.57s
+2026-06-25 17:41:04 - execution - INFO - [Job a27da444] 2026-06-25 17:41:04 - base - INFO - Checkpoint saved at epoch 18
+2026-06-25 17:41:04 - execution - INFO - [Job a27da444] 2026-06-25 17:41:04 - base - INFO - Epoch 19/200 - starting
+2026-06-25 17:41:10 - execution - INFO - [Job fce852e8] 2026-06-25 17:41:10 - base - INFO - Epoch 51/200 - Loss: 0.004040 - Acc: 98.97% - 11.20s
+2026-06-25 17:41:10 - execution - INFO - [Job fce852e8] 2026-06-25 17:41:10 - base - INFO - Checkpoint saved at epoch 51
+2026-06-25 17:41:10 - execution - INFO - [Job fce852e8] 2026-06-25 17:41:10 - base - INFO - Epoch 52/200 - starting
+2026-06-25 17:41:14 - execution - INFO - [Job a27da444] 2026-06-25 17:41:14 - base - INFO - Epoch 19/200 - Loss: 0.015390 - Acc: 98.41% - 9.67s
+2026-06-25 17:41:14 - execution - INFO - [Job a27da444] 2026-06-25 17:41:14 - base - INFO - Checkpoint saved at epoch 19
+2026-06-25 17:41:14 - execution - INFO - [Job a27da444] 2026-06-25 17:41:14 - base - INFO - Epoch 20/200 - starting
+2026-06-25 17:41:21 - execution - INFO - [Job fce852e8] 2026-06-25 17:41:21 - base - INFO - Epoch 52/200 - Loss: 0.004116 - Acc: 99.02% - 11.07s
+2026-06-25 17:41:21 - execution - INFO - [Job fce852e8] 2026-06-25 17:41:21 - base - INFO - Checkpoint saved at epoch 52
+2026-06-25 17:41:21 - execution - INFO - [Job fce852e8] 2026-06-25 17:41:21 - base - INFO - Epoch 53/200 - starting
+2026-06-25 17:41:23 - execution - INFO - [Job a27da444] 2026-06-25 17:41:23 - base - INFO - Epoch 20/200 - Loss: 0.013994 - Acc: 98.63% - 9.47s
+2026-06-25 17:41:23 - execution - INFO - [Job a27da444] 2026-06-25 17:41:23 - base - INFO - Checkpoint saved at epoch 20
+2026-06-25 17:41:23 - execution - INFO - [Job a27da444] 2026-06-25 17:41:23 - base - INFO - Epoch 21/200 - starting
+2026-06-25 17:41:32 - execution - INFO - [Job fce852e8] 2026-06-25 17:41:32 - base - INFO - Epoch 53/200 - Loss: 0.003634 - Acc: 99.01% - 11.02s
+2026-06-25 17:41:32 - execution - INFO - [Job fce852e8] 2026-06-25 17:41:32 - base - INFO - Checkpoint saved at epoch 53
+2026-06-25 17:41:32 - execution - INFO - [Job fce852e8] 2026-06-25 17:41:32 - base - INFO - Epoch 54/200 - starting
+2026-06-25 17:41:33 - execution - INFO - [Job a27da444] 2026-06-25 17:41:33 - base - INFO - Epoch 21/200 - Loss: 0.010115 - Acc: 98.83% - 9.48s
+2026-06-25 17:41:33 - execution - INFO - [Job a27da444] 2026-06-25 17:41:33 - base - INFO - Checkpoint saved at epoch 21
+2026-06-25 17:41:33 - execution - INFO - [Job a27da444] 2026-06-25 17:41:33 - base - INFO - Epoch 22/200 - starting
+2026-06-25 17:41:42 - execution - INFO - [Job a27da444] 2026-06-25 17:41:42 - base - INFO - Epoch 22/200 - Loss: 0.014198 - Acc: 98.64% - 9.46s
+2026-06-25 17:41:42 - execution - INFO - [Job a27da444] 2026-06-25 17:41:42 - base - INFO - Checkpoint saved at epoch 22
+2026-06-25 17:41:42 - execution - INFO - [Job a27da444] 2026-06-25 17:41:42 - base - INFO - Epoch 23/200 - starting
+2026-06-25 17:41:43 - execution - INFO - [Job fce852e8] 2026-06-25 17:41:43 - base - INFO - Epoch 54/200 - Loss: 0.003083 - Acc: 98.95% - 11.02s
+2026-06-25 17:41:43 - execution - INFO - [Job fce852e8] 2026-06-25 17:41:43 - base - INFO - Checkpoint saved at epoch 54
+2026-06-25 17:41:43 - execution - INFO - [Job fce852e8] 2026-06-25 17:41:43 - base - INFO - Epoch 55/200 - starting
+2026-06-25 17:41:52 - execution - INFO - [Job a27da444] 2026-06-25 17:41:52 - base - INFO - Epoch 23/200 - Loss: 0.009603 - Acc: 98.85% - 9.46s
+2026-06-25 17:41:52 - execution - INFO - [Job a27da444] 2026-06-25 17:41:52 - base - INFO - Checkpoint saved at epoch 23
+2026-06-25 17:41:52 - execution - INFO - [Job a27da444] 2026-06-25 17:41:52 - base - INFO - Epoch 24/200 - starting
+2026-06-25 17:41:54 - execution - INFO - [Job fce852e8] 2026-06-25 17:41:54 - base - INFO - Epoch 55/200 - Loss: 0.002602 - Acc: 98.73% - 11.05s
+2026-06-25 17:41:54 - execution - INFO - [Job fce852e8] 2026-06-25 17:41:54 - base - INFO - Checkpoint saved at epoch 55
+2026-06-25 17:41:54 - execution - INFO - [Job fce852e8] 2026-06-25 17:41:54 - base - INFO - Epoch 56/200 - starting
+2026-06-25 17:42:01 - execution - INFO - [Job a27da444] 2026-06-25 17:42:01 - base - INFO - Epoch 24/200 - Loss: 0.009631 - Acc: 98.74% - 9.49s
+2026-06-25 17:42:01 - execution - INFO - [Job a27da444] 2026-06-25 17:42:01 - base - INFO - Checkpoint saved at epoch 24
+2026-06-25 17:42:01 - execution - INFO - [Job a27da444] 2026-06-25 17:42:01 - base - INFO - Epoch 25/200 - starting
+2026-06-25 17:42:05 - execution - INFO - [Job fce852e8] 2026-06-25 17:42:05 - base - INFO - Epoch 56/200 - Loss: 0.005444 - Acc: 99.04% - 11.08s
+2026-06-25 17:42:05 - execution - INFO - [Job fce852e8] 2026-06-25 17:42:05 - base - INFO - Checkpoint saved at epoch 56
+2026-06-25 17:42:05 - execution - INFO - [Job fce852e8] 2026-06-25 17:42:05 - base - INFO - Epoch 57/200 - starting
+2026-06-25 17:42:11 - execution - INFO - [Job a27da444] 2026-06-25 17:42:11 - base - INFO - Epoch 25/200 - Loss: 0.009575 - Acc: 98.88% - 9.47s
+2026-06-25 17:42:11 - execution - INFO - [Job a27da444] 2026-06-25 17:42:11 - base - INFO - Checkpoint saved at epoch 25
+2026-06-25 17:42:11 - execution - INFO - [Job a27da444] 2026-06-25 17:42:11 - base - INFO - Epoch 26/200 - starting
+2026-06-25 17:42:16 - execution - INFO - [Job fce852e8] 2026-06-25 17:42:16 - base - INFO - Epoch 57/200 - Loss: 0.003338 - Acc: 98.89% - 11.11s
+2026-06-25 17:42:16 - execution - INFO - [Job fce852e8] 2026-06-25 17:42:16 - base - INFO - Checkpoint saved at epoch 57
+2026-06-25 17:42:16 - execution - INFO - [Job fce852e8] 2026-06-25 17:42:16 - base - INFO - Epoch 58/200 - starting
+2026-06-25 17:42:20 - execution - INFO - [Job a27da444] 2026-06-25 17:42:20 - base - INFO - Epoch 26/200 - Loss: 0.009653 - Acc: 98.76% - 9.55s
+2026-06-25 17:42:20 - execution - INFO - [Job a27da444] 2026-06-25 17:42:20 - base - INFO - Checkpoint saved at epoch 26
+2026-06-25 17:42:20 - execution - INFO - [Job a27da444] 2026-06-25 17:42:20 - base - INFO - Epoch 27/200 - starting
+2026-06-25 17:42:27 - execution - INFO - [Job fce852e8] 2026-06-25 17:42:27 - base - INFO - Epoch 58/200 - Loss: 0.001237 - Acc: 99.04% - 11.09s
+2026-06-25 17:42:27 - execution - INFO - [Job fce852e8] 2026-06-25 17:42:27 - base - INFO - Checkpoint saved at epoch 58
+2026-06-25 17:42:27 - execution - INFO - [Job fce852e8] 2026-06-25 17:42:27 - base - INFO - Epoch 59/200 - starting
+2026-06-25 17:42:30 - execution - INFO - [Job a27da444] 2026-06-25 17:42:30 - base - INFO - Epoch 27/200 - Loss: 0.007865 - Acc: 98.94% - 9.48s
+2026-06-25 17:42:30 - execution - INFO - [Job a27da444] 2026-06-25 17:42:30 - base - INFO - Checkpoint saved at epoch 27
+2026-06-25 17:42:30 - execution - INFO - [Job a27da444] 2026-06-25 17:42:30 - base - INFO - Epoch 28/200 - starting
+2026-06-25 17:42:39 - execution - INFO - [Job fce852e8] 2026-06-25 17:42:39 - base - INFO - Epoch 59/200 - Loss: 0.004413 - Acc: 98.60% - 11.08s
+2026-06-25 17:42:39 - execution - INFO - [Job fce852e8] 2026-06-25 17:42:39 - base - INFO - Checkpoint saved at epoch 59
+2026-06-25 17:42:39 - execution - INFO - [Job fce852e8] 2026-06-25 17:42:39 - base - INFO - Epoch 60/200 - starting
+2026-06-25 17:42:39 - execution - INFO - [Job a27da444] 2026-06-25 17:42:39 - base - INFO - Epoch 28/200 - Loss: 0.007686 - Acc: 98.71% - 9.45s
+2026-06-25 17:42:39 - execution - INFO - [Job a27da444] 2026-06-25 17:42:39 - base - INFO - Checkpoint saved at epoch 28
+2026-06-25 17:42:39 - execution - INFO - [Job a27da444] 2026-06-25 17:42:39 - base - INFO - Epoch 29/200 - starting
+2026-06-25 17:42:49 - execution - INFO - [Job a27da444] 2026-06-25 17:42:49 - base - INFO - Epoch 29/200 - Loss: 0.008667 - Acc: 98.81% - 9.43s
+2026-06-25 17:42:49 - execution - INFO - [Job a27da444] 2026-06-25 17:42:49 - base - INFO - Checkpoint saved at epoch 29
+2026-06-25 17:42:49 - execution - INFO - [Job a27da444] 2026-06-25 17:42:49 - base - INFO - Epoch 30/200 - starting
+2026-06-25 17:42:50 - execution - INFO - [Job fce852e8] 2026-06-25 17:42:50 - base - INFO - Epoch 60/200 - Loss: 0.005548 - Acc: 98.87% - 11.09s
+2026-06-25 17:42:50 - execution - INFO - [Job fce852e8] 2026-06-25 17:42:50 - base - INFO - Checkpoint saved at epoch 60
+2026-06-25 17:42:50 - execution - INFO - [Job fce852e8] 2026-06-25 17:42:50 - base - INFO - Epoch 61/200 - starting
+2026-06-25 17:42:58 - execution - INFO - [Job a27da444] 2026-06-25 17:42:58 - base - INFO - Epoch 30/200 - Loss: 0.007154 - Acc: 98.86% - 9.30s
+2026-06-25 17:42:58 - execution - INFO - [Job a27da444] 2026-06-25 17:42:58 - base - INFO - Checkpoint saved at epoch 30
+2026-06-25 17:42:58 - execution - INFO - [Job a27da444] 2026-06-25 17:42:58 - base - INFO - Epoch 31/200 - starting
+2026-06-25 17:43:00 - execution - INFO - [Job fce852e8] 2026-06-25 17:43:00 - base - INFO - Epoch 61/200 - Loss: 0.002135 - Acc: 99.14% - 10.83s
+2026-06-25 17:43:00 - execution - INFO - [Job fce852e8] 2026-06-25 17:43:00 - base - INFO - Checkpoint saved at epoch 61
+2026-06-25 17:43:00 - execution - INFO - [Job fce852e8] 2026-06-25 17:43:00 - base - INFO - Epoch 62/200 - starting
+2026-06-25 17:43:07 - execution - INFO - [Job a27da444] 2026-06-25 17:43:07 - base - INFO - Epoch 31/200 - Loss: 0.009431 - Acc: 98.78% - 9.25s
+2026-06-25 17:43:07 - execution - INFO - [Job a27da444] 2026-06-25 17:43:07 - base - INFO - Checkpoint saved at epoch 31
+2026-06-25 17:43:07 - execution - INFO - [Job a27da444] 2026-06-25 17:43:07 - base - INFO - Epoch 32/200 - starting
+2026-06-25 17:43:11 - execution - INFO - [Job fce852e8] 2026-06-25 17:43:11 - base - INFO - Epoch 62/200 - Loss: 0.000438 - Acc: 98.96% - 10.79s
+2026-06-25 17:43:11 - execution - INFO - [Job fce852e8] 2026-06-25 17:43:11 - base - INFO - Checkpoint saved at epoch 62
+2026-06-25 17:43:11 - execution - INFO - [Job fce852e8] 2026-06-25 17:43:11 - base - INFO - Epoch 63/200 - starting
+2026-06-25 17:43:16 - execution - INFO - [Job a27da444] 2026-06-25 17:43:16 - base - INFO - Epoch 32/200 - Loss: 0.005524 - Acc: 98.79% - 9.24s
+2026-06-25 17:43:16 - execution - INFO - [Job a27da444] 2026-06-25 17:43:16 - base - INFO - Checkpoint saved at epoch 32
+2026-06-25 17:43:16 - execution - INFO - [Job a27da444] 2026-06-25 17:43:16 - base - INFO - Epoch 33/200 - starting
+2026-06-25 17:43:22 - execution - INFO - [Job fce852e8] 2026-06-25 17:43:22 - base - INFO - Epoch 63/200 - Loss: 0.006915 - Acc: 98.85% - 10.75s
+2026-06-25 17:43:22 - execution - INFO - [Job fce852e8] 2026-06-25 17:43:22 - base - INFO - Checkpoint saved at epoch 63
+2026-06-25 17:43:22 - execution - INFO - [Job fce852e8] 2026-06-25 17:43:22 - base - INFO - Epoch 64/200 - starting
+2026-06-25 17:43:26 - execution - INFO - [Job a27da444] 2026-06-25 17:43:26 - base - INFO - Epoch 33/200 - Loss: 0.007256 - Acc: 98.99% - 9.22s
+2026-06-25 17:43:26 - execution - INFO - [Job a27da444] 2026-06-25 17:43:26 - base - INFO - Checkpoint saved at epoch 33
+2026-06-25 17:43:26 - execution - INFO - [Job a27da444] 2026-06-25 17:43:26 - base - INFO - Epoch 34/200 - starting
+2026-06-25 17:43:33 - execution - INFO - [Job fce852e8] 2026-06-25 17:43:33 - base - INFO - Epoch 64/200 - Loss: 0.002139 - Acc: 99.07% - 10.82s
+2026-06-25 17:43:33 - execution - INFO - [Job fce852e8] 2026-06-25 17:43:33 - base - INFO - Checkpoint saved at epoch 64
+2026-06-25 17:43:33 - execution - INFO - [Job fce852e8] 2026-06-25 17:43:33 - base - INFO - Epoch 65/200 - starting
+2026-06-25 17:43:35 - execution - INFO - [Job a27da444] 2026-06-25 17:43:35 - base - INFO - Epoch 34/200 - Loss: 0.006379 - Acc: 99.00% - 9.47s
+2026-06-25 17:43:35 - execution - INFO - [Job a27da444] 2026-06-25 17:43:35 - base - INFO - Checkpoint saved at epoch 34
+2026-06-25 17:43:35 - execution - INFO - [Job a27da444] 2026-06-25 17:43:35 - base - INFO - Epoch 35/200 - starting
+2026-06-25 17:43:44 - execution - INFO - [Job fce852e8] 2026-06-25 17:43:44 - base - INFO - Epoch 65/200 - Loss: 0.002169 - Acc: 99.01% - 11.13s
+2026-06-25 17:43:44 - execution - INFO - [Job fce852e8] 2026-06-25 17:43:44 - base - INFO - Checkpoint saved at epoch 65
+2026-06-25 17:43:44 - execution - INFO - [Job fce852e8] 2026-06-25 17:43:44 - base - INFO - Epoch 66/200 - starting
+2026-06-25 17:43:45 - execution - INFO - [Job a27da444] 2026-06-25 17:43:45 - base - INFO - Epoch 35/200 - Loss: 0.004939 - Acc: 98.71% - 9.54s
+2026-06-25 17:43:45 - execution - INFO - [Job a27da444] 2026-06-25 17:43:45 - base - INFO - Checkpoint saved at epoch 35
+2026-06-25 17:43:45 - execution - INFO - [Job a27da444] 2026-06-25 17:43:45 - base - INFO - Epoch 36/200 - starting
+2026-06-25 17:43:54 - execution - INFO - [Job a27da444] 2026-06-25 17:43:54 - base - INFO - Epoch 36/200 - Loss: 0.008088 - Acc: 99.00% - 9.48s
+2026-06-25 17:43:54 - execution - INFO - [Job a27da444] 2026-06-25 17:43:54 - base - INFO - Checkpoint saved at epoch 36
+2026-06-25 17:43:54 - execution - INFO - [Job a27da444] 2026-06-25 17:43:54 - base - INFO - Epoch 37/200 - starting
+2026-06-25 17:43:55 - execution - INFO - [Job fce852e8] 2026-06-25 17:43:55 - base - INFO - Epoch 66/200 - Loss: 0.003003 - Acc: 98.70% - 11.10s
+2026-06-25 17:43:55 - execution - INFO - [Job fce852e8] 2026-06-25 17:43:55 - base - INFO - Checkpoint saved at epoch 66
+2026-06-25 17:43:55 - execution - INFO - [Job fce852e8] 2026-06-25 17:43:55 - base - INFO - Epoch 67/200 - starting
+2026-06-25 17:44:04 - execution - INFO - [Job a27da444] 2026-06-25 17:44:04 - base - INFO - Epoch 37/200 - Loss: 0.007117 - Acc: 98.69% - 9.48s
+2026-06-25 17:44:04 - execution - INFO - [Job a27da444] 2026-06-25 17:44:04 - base - INFO - Checkpoint saved at epoch 37
+2026-06-25 17:44:04 - execution - INFO - [Job a27da444] 2026-06-25 17:44:04 - base - INFO - Epoch 38/200 - starting
+2026-06-25 17:44:06 - execution - INFO - [Job fce852e8] 2026-06-25 17:44:06 - base - INFO - Epoch 67/200 - Loss: 0.004210 - Acc: 98.58% - 11.01s
+2026-06-25 17:44:06 - execution - INFO - [Job fce852e8] 2026-06-25 17:44:06 - base - INFO - Checkpoint saved at epoch 67
+2026-06-25 17:44:06 - execution - INFO - [Job fce852e8] 2026-06-25 17:44:06 - base - INFO - Epoch 68/200 - starting
+2026-06-25 17:44:13 - execution - INFO - [Job a27da444] 2026-06-25 17:44:13 - base - INFO - Epoch 38/200 - Loss: 0.005353 - Acc: 98.79% - 9.46s
+2026-06-25 17:44:13 - execution - INFO - [Job a27da444] 2026-06-25 17:44:13 - base - INFO - Checkpoint saved at epoch 38
+2026-06-25 17:44:13 - execution - INFO - [Job a27da444] 2026-06-25 17:44:13 - base - INFO - Epoch 39/200 - starting
+2026-06-25 17:44:17 - execution - INFO - [Job fce852e8] 2026-06-25 17:44:17 - base - INFO - Epoch 68/200 - Loss: 0.004751 - Acc: 98.82% - 11.02s
+2026-06-25 17:44:17 - execution - INFO - [Job fce852e8] 2026-06-25 17:44:17 - base - INFO - Checkpoint saved at epoch 68
+2026-06-25 17:44:17 - execution - INFO - [Job fce852e8] 2026-06-25 17:44:17 - base - INFO - Epoch 69/200 - starting
+2026-06-25 17:44:23 - execution - INFO - [Job a27da444] 2026-06-25 17:44:23 - base - INFO - Epoch 39/200 - Loss: 0.006680 - Acc: 98.73% - 9.47s
+2026-06-25 17:44:23 - execution - INFO - [Job a27da444] 2026-06-25 17:44:23 - base - INFO - Checkpoint saved at epoch 39
+2026-06-25 17:44:23 - execution - INFO - [Job a27da444] 2026-06-25 17:44:23 - base - INFO - Epoch 40/200 - starting
+2026-06-25 17:44:28 - execution - INFO - [Job fce852e8] 2026-06-25 17:44:28 - base - INFO - Epoch 69/200 - Loss: 0.002497 - Acc: 98.99% - 11.04s
+2026-06-25 17:44:28 - execution - INFO - [Job fce852e8] 2026-06-25 17:44:28 - base - INFO - Checkpoint saved at epoch 69
+2026-06-25 17:44:28 - execution - INFO - [Job fce852e8] 2026-06-25 17:44:28 - base - INFO - Epoch 70/200 - starting
+2026-06-25 17:44:32 - execution - INFO - [Job a27da444] 2026-06-25 17:44:32 - base - INFO - Epoch 40/200 - Loss: 0.005580 - Acc: 98.97% - 9.47s
+2026-06-25 17:44:32 - execution - INFO - [Job a27da444] 2026-06-25 17:44:32 - base - INFO - Checkpoint saved at epoch 40
+2026-06-25 17:44:32 - execution - INFO - [Job a27da444] 2026-06-25 17:44:32 - base - INFO - Epoch 41/200 - starting
+2026-06-25 17:44:39 - execution - INFO - [Job fce852e8] 2026-06-25 17:44:39 - base - INFO - Epoch 70/200 - Loss: 0.002128 - Acc: 99.04% - 11.03s
+2026-06-25 17:44:39 - execution - INFO - [Job fce852e8] 2026-06-25 17:44:39 - base - INFO - Checkpoint saved at epoch 70
+2026-06-25 17:44:39 - execution - INFO - [Job fce852e8] 2026-06-25 17:44:39 - base - INFO - Epoch 71/200 - starting
+2026-06-25 17:44:42 - execution - INFO - [Job a27da444] 2026-06-25 17:44:42 - base - INFO - Epoch 41/200 - Loss: 0.004390 - Acc: 98.92% - 9.45s
+2026-06-25 17:44:42 - execution - INFO - [Job a27da444] 2026-06-25 17:44:42 - base - INFO - Checkpoint saved at epoch 41
+2026-06-25 17:44:42 - execution - INFO - [Job a27da444] 2026-06-25 17:44:42 - base - INFO - Epoch 42/200 - starting
+2026-06-25 17:44:50 - execution - INFO - [Job fce852e8] 2026-06-25 17:44:50 - base - INFO - Epoch 71/200 - Loss: 0.002701 - Acc: 98.81% - 11.03s
+2026-06-25 17:44:50 - execution - INFO - [Job fce852e8] 2026-06-25 17:44:50 - base - INFO - Checkpoint saved at epoch 71
+2026-06-25 17:44:50 - execution - INFO - [Job fce852e8] 2026-06-25 17:44:50 - base - INFO - Epoch 72/200 - starting
+2026-06-25 17:44:51 - execution - INFO - [Job a27da444] 2026-06-25 17:44:51 - base - INFO - Epoch 42/200 - Loss: 0.004966 - Acc: 99.00% - 9.44s
+2026-06-25 17:44:51 - execution - INFO - [Job a27da444] 2026-06-25 17:44:51 - base - INFO - Checkpoint saved at epoch 42
+2026-06-25 17:44:51 - execution - INFO - [Job a27da444] 2026-06-25 17:44:51 - base - INFO - Epoch 43/200 - starting
+2026-06-25 17:45:01 - execution - INFO - [Job a27da444] 2026-06-25 17:45:01 - base - INFO - Epoch 43/200 - Loss: 0.005895 - Acc: 98.81% - 9.51s
+2026-06-25 17:45:01 - execution - INFO - [Job a27da444] 2026-06-25 17:45:01 - base - INFO - Checkpoint saved at epoch 43
+2026-06-25 17:45:01 - execution - INFO - [Job a27da444] 2026-06-25 17:45:01 - base - INFO - Epoch 44/200 - starting
+2026-06-25 17:45:01 - execution - INFO - [Job fce852e8] 2026-06-25 17:45:01 - base - INFO - Epoch 72/200 - Loss: 0.004559 - Acc: 98.95% - 11.06s
+2026-06-25 17:45:01 - execution - INFO - [Job fce852e8] 2026-06-25 17:45:01 - base - INFO - Checkpoint saved at epoch 72
+2026-06-25 17:45:01 - execution - INFO - [Job fce852e8] 2026-06-25 17:45:01 - base - INFO - Epoch 73/200 - starting
+2026-06-25 17:45:10 - execution - INFO - [Job a27da444] 2026-06-25 17:45:10 - base - INFO - Epoch 44/200 - Loss: 0.004519 - Acc: 98.88% - 9.48s
+2026-06-25 17:45:10 - execution - INFO - [Job a27da444] 2026-06-25 17:45:10 - base - INFO - Checkpoint saved at epoch 44
+2026-06-25 17:45:10 - execution - INFO - [Job a27da444] 2026-06-25 17:45:10 - base - INFO - Epoch 45/200 - starting
+2026-06-25 17:45:12 - execution - INFO - [Job fce852e8] 2026-06-25 17:45:12 - base - INFO - Epoch 73/200 - Loss: 0.002504 - Acc: 98.96% - 11.02s
+2026-06-25 17:45:12 - execution - INFO - [Job fce852e8] 2026-06-25 17:45:12 - base - INFO - Checkpoint saved at epoch 73
+2026-06-25 17:45:12 - execution - INFO - [Job fce852e8] 2026-06-25 17:45:12 - base - INFO - Epoch 74/200 - starting
+2026-06-25 17:45:20 - execution - INFO - [Job a27da444] 2026-06-25 17:45:20 - base - INFO - Epoch 45/200 - Loss: 0.003058 - Acc: 98.95% - 9.54s
+2026-06-25 17:45:20 - execution - INFO - [Job a27da444] 2026-06-25 17:45:20 - base - INFO - Checkpoint saved at epoch 45
+2026-06-25 17:45:20 - execution - INFO - [Job a27da444] 2026-06-25 17:45:20 - base - INFO - Epoch 46/200 - starting
+2026-06-25 17:45:23 - execution - INFO - [Job fce852e8] 2026-06-25 17:45:23 - base - INFO - Epoch 74/200 - Loss: 0.003418 - Acc: 99.11% - 11.08s
+2026-06-25 17:45:23 - execution - INFO - [Job fce852e8] 2026-06-25 17:45:23 - base - INFO - Checkpoint saved at epoch 74
+2026-06-25 17:45:23 - execution - INFO - [Job fce852e8] 2026-06-25 17:45:23 - base - INFO - Epoch 75/200 - starting
+2026-06-25 17:45:29 - execution - INFO - [Job a27da444] 2026-06-25 17:45:29 - base - INFO - Epoch 46/200 - Loss: 0.004426 - Acc: 98.94% - 9.37s
+2026-06-25 17:45:29 - execution - INFO - [Job a27da444] 2026-06-25 17:45:29 - base - INFO - Checkpoint saved at epoch 46
+2026-06-25 17:45:29 - execution - INFO - [Job a27da444] 2026-06-25 17:45:29 - base - INFO - Epoch 47/200 - starting
+2026-06-25 17:45:34 - execution - INFO - [Job fce852e8] 2026-06-25 17:45:34 - base - INFO - Epoch 75/200 - Loss: 0.001344 - Acc: 99.09% - 11.01s
+2026-06-25 17:45:34 - execution - INFO - [Job fce852e8] 2026-06-25 17:45:34 - base - INFO - Checkpoint saved at epoch 75
+2026-06-25 17:45:34 - execution - INFO - [Job fce852e8] 2026-06-25 17:45:34 - base - INFO - Epoch 76/200 - starting
+2026-06-25 17:45:38 - execution - INFO - [Job a27da444] 2026-06-25 17:45:38 - base - INFO - Epoch 47/200 - Loss: 0.006189 - Acc: 98.90% - 9.43s
+2026-06-25 17:45:38 - execution - INFO - [Job a27da444] 2026-06-25 17:45:38 - base - INFO - Checkpoint saved at epoch 47
+2026-06-25 17:45:38 - execution - INFO - [Job a27da444] 2026-06-25 17:45:38 - base - INFO - Epoch 48/200 - starting
+2026-06-25 17:45:45 - execution - INFO - [Job fce852e8] 2026-06-25 17:45:45 - base - INFO - Epoch 76/200 - Loss: 0.003681 - Acc: 99.03% - 11.02s
+2026-06-25 17:45:45 - execution - INFO - [Job fce852e8] 2026-06-25 17:45:45 - base - INFO - Checkpoint saved at epoch 76
+2026-06-25 17:45:45 - execution - INFO - [Job fce852e8] 2026-06-25 17:45:45 - base - INFO - Epoch 77/200 - starting
+2026-06-25 17:45:48 - execution - INFO - [Job a27da444] 2026-06-25 17:45:48 - base - INFO - Epoch 48/200 - Loss: 0.004369 - Acc: 99.07% - 9.41s
+2026-06-25 17:45:48 - execution - INFO - [Job a27da444] 2026-06-25 17:45:48 - base - INFO - Checkpoint saved at epoch 48
+2026-06-25 17:45:48 - execution - INFO - [Job a27da444] 2026-06-25 17:45:48 - base - INFO - Epoch 49/200 - starting
+2026-06-25 17:45:56 - execution - INFO - [Job fce852e8] 2026-06-25 17:45:56 - base - INFO - Epoch 77/200 - Loss: 0.002530 - Acc: 99.00% - 11.04s
+2026-06-25 17:45:56 - execution - INFO - [Job fce852e8] 2026-06-25 17:45:56 - base - INFO - Checkpoint saved at epoch 77
+2026-06-25 17:45:56 - execution - INFO - [Job fce852e8] 2026-06-25 17:45:56 - base - INFO - Epoch 78/200 - starting
+2026-06-25 17:45:57 - execution - INFO - [Job a27da444] 2026-06-25 17:45:57 - base - INFO - Epoch 49/200 - Loss: 0.005441 - Acc: 99.11% - 9.42s
+2026-06-25 17:45:57 - execution - INFO - [Job a27da444] 2026-06-25 17:45:57 - base - INFO - Checkpoint saved at epoch 49
+2026-06-25 17:45:57 - execution - INFO - [Job a27da444] 2026-06-25 17:45:57 - base - INFO - Epoch 50/200 - starting
+2026-06-25 17:46:07 - execution - INFO - [Job a27da444] 2026-06-25 17:46:07 - base - INFO - Epoch 50/200 - Loss: 0.001624 - Acc: 99.01% - 9.43s
+2026-06-25 17:46:07 - execution - INFO - [Job a27da444] 2026-06-25 17:46:07 - base - INFO - Checkpoint saved at epoch 50
+2026-06-25 17:46:07 - execution - INFO - [Job a27da444] 2026-06-25 17:46:07 - base - INFO - Epoch 51/200 - starting
+2026-06-25 17:46:07 - execution - INFO - [Job fce852e8] 2026-06-25 17:46:07 - base - INFO - Epoch 78/200 - Loss: 0.001929 - Acc: 99.12% - 11.02s
+2026-06-25 17:46:07 - execution - INFO - [Job fce852e8] 2026-06-25 17:46:07 - base - INFO - Checkpoint saved at epoch 78
+2026-06-25 17:46:07 - execution - INFO - [Job fce852e8] 2026-06-25 17:46:07 - base - INFO - Epoch 79/200 - starting
+2026-06-25 17:46:16 - execution - INFO - [Job a27da444] 2026-06-25 17:46:16 - base - INFO - Epoch 51/200 - Loss: 0.002720 - Acc: 98.89% - 9.51s
+2026-06-25 17:46:16 - execution - INFO - [Job a27da444] 2026-06-25 17:46:16 - base - INFO - Checkpoint saved at epoch 51
+2026-06-25 17:46:16 - execution - INFO - [Job a27da444] 2026-06-25 17:46:16 - base - INFO - Epoch 52/200 - starting
+2026-06-25 17:46:18 - execution - INFO - [Job fce852e8] 2026-06-25 17:46:18 - base - INFO - Epoch 79/200 - Loss: 0.002278 - Acc: 99.06% - 11.03s
+2026-06-25 17:46:18 - execution - INFO - [Job fce852e8] 2026-06-25 17:46:18 - base - INFO - Checkpoint saved at epoch 79
+2026-06-25 17:46:18 - execution - INFO - [Job fce852e8] 2026-06-25 17:46:18 - base - INFO - Epoch 80/200 - starting
+2026-06-25 17:46:26 - execution - INFO - [Job a27da444] 2026-06-25 17:46:26 - base - INFO - Epoch 52/200 - Loss: 0.006407 - Acc: 98.89% - 9.45s
+2026-06-25 17:46:26 - execution - INFO - [Job a27da444] 2026-06-25 17:46:26 - base - INFO - Checkpoint saved at epoch 52
+2026-06-25 17:46:26 - execution - INFO - [Job a27da444] 2026-06-25 17:46:26 - base - INFO - Epoch 53/200 - starting
+2026-06-25 17:46:30 - execution - INFO - [Job fce852e8] 2026-06-25 17:46:30 - base - INFO - Epoch 80/200 - Loss: 0.003206 - Acc: 98.99% - 11.02s
+2026-06-25 17:46:30 - execution - INFO - [Job fce852e8] 2026-06-25 17:46:30 - base - INFO - Checkpoint saved at epoch 80
+2026-06-25 17:46:30 - execution - INFO - [Job fce852e8] 2026-06-25 17:46:30 - base - INFO - Epoch 81/200 - starting
+2026-06-25 17:46:35 - execution - INFO - [Job a27da444] 2026-06-25 17:46:35 - base - INFO - Epoch 53/200 - Loss: 0.003329 - Acc: 98.97% - 9.38s
+2026-06-25 17:46:35 - execution - INFO - [Job a27da444] 2026-06-25 17:46:35 - base - INFO - Checkpoint saved at epoch 53
+2026-06-25 17:46:35 - execution - INFO - [Job a27da444] 2026-06-25 17:46:35 - base - INFO - Epoch 54/200 - starting
+2026-06-25 17:46:40 - execution - INFO - [Job fce852e8] 2026-06-25 17:46:40 - base - INFO - Epoch 81/200 - Loss: 0.002271 - Acc: 99.02% - 10.83s
+2026-06-25 17:46:40 - execution - INFO - [Job fce852e8] 2026-06-25 17:46:40 - base - INFO - Checkpoint saved at epoch 81
+2026-06-25 17:46:40 - execution - INFO - [Job fce852e8] 2026-06-25 17:46:40 - base - INFO - Epoch 82/200 - starting
+2026-06-25 17:46:44 - execution - INFO - [Job a27da444] 2026-06-25 17:46:44 - base - INFO - Epoch 54/200 - Loss: 0.002251 - Acc: 98.76% - 9.20s
+2026-06-25 17:46:44 - execution - INFO - [Job a27da444] 2026-06-25 17:46:44 - base - INFO - Checkpoint saved at epoch 54
+2026-06-25 17:46:44 - execution - INFO - [Job a27da444] 2026-06-25 17:46:44 - base - INFO - Epoch 55/200 - starting
+2026-06-25 17:46:51 - execution - INFO - [Job fce852e8] 2026-06-25 17:46:51 - base - INFO - Epoch 82/200 - Loss: 0.003411 - Acc: 99.05% - 10.64s
+2026-06-25 17:46:51 - execution - INFO - [Job fce852e8] 2026-06-25 17:46:51 - base - INFO - Checkpoint saved at epoch 82
+2026-06-25 17:46:51 - execution - INFO - [Job fce852e8] 2026-06-25 17:46:51 - base - INFO - Epoch 83/200 - starting
+2026-06-25 17:46:53 - execution - INFO - [Job a27da444] 2026-06-25 17:46:53 - base - INFO - Epoch 55/200 - Loss: 0.003802 - Acc: 98.79% - 9.14s
+2026-06-25 17:46:53 - execution - INFO - [Job a27da444] 2026-06-25 17:46:53 - base - INFO - Checkpoint saved at epoch 55
+2026-06-25 17:46:53 - execution - INFO - [Job a27da444] 2026-06-25 17:46:53 - base - INFO - Epoch 56/200 - starting
+2026-06-25 17:47:02 - execution - INFO - [Job fce852e8] 2026-06-25 17:47:02 - base - INFO - Epoch 83/200 - Loss: 0.001934 - Acc: 99.02% - 10.65s
+2026-06-25 17:47:02 - execution - INFO - [Job fce852e8] 2026-06-25 17:47:02 - base - INFO - Checkpoint saved at epoch 83
+2026-06-25 17:47:02 - execution - INFO - [Job fce852e8] 2026-06-25 17:47:02 - base - INFO - Epoch 84/200 - starting
+2026-06-25 17:47:03 - execution - INFO - [Job a27da444] 2026-06-25 17:47:03 - base - INFO - Epoch 56/200 - Loss: 0.004213 - Acc: 98.59% - 9.19s
+2026-06-25 17:47:03 - execution - INFO - [Job a27da444] 2026-06-25 17:47:03 - base - INFO - Checkpoint saved at epoch 56
+2026-06-25 17:47:03 - execution - INFO - [Job a27da444] 2026-06-25 17:47:03 - base - INFO - Epoch 57/200 - starting
+2026-06-25 17:47:12 - execution - INFO - [Job a27da444] 2026-06-25 17:47:12 - base - INFO - Epoch 57/200 - Loss: 0.005155 - Acc: 99.02% - 9.18s
+2026-06-25 17:47:12 - execution - INFO - [Job a27da444] 2026-06-25 17:47:12 - base - INFO - Checkpoint saved at epoch 57
+2026-06-25 17:47:12 - execution - INFO - [Job a27da444] 2026-06-25 17:47:12 - base - INFO - Epoch 58/200 - starting
+2026-06-25 17:47:12 - execution - INFO - [Job fce852e8] 2026-06-25 17:47:12 - base - INFO - Epoch 84/200 - Loss: 0.000956 - Acc: 99.07% - 10.71s
+2026-06-25 17:47:12 - execution - INFO - [Job fce852e8] 2026-06-25 17:47:12 - base - INFO - Checkpoint saved at epoch 84
+2026-06-25 17:47:12 - execution - INFO - [Job fce852e8] 2026-06-25 17:47:12 - base - INFO - Epoch 85/200 - starting
+2026-06-25 17:47:21 - execution - INFO - [Job a27da444] 2026-06-25 17:47:21 - base - INFO - Epoch 58/200 - Loss: 0.003086 - Acc: 98.98% - 9.12s
+2026-06-25 17:47:21 - execution - INFO - [Job a27da444] 2026-06-25 17:47:21 - base - INFO - Checkpoint saved at epoch 58
+2026-06-25 17:47:21 - execution - INFO - [Job a27da444] 2026-06-25 17:47:21 - base - INFO - Epoch 59/200 - starting
+2026-06-25 17:47:23 - execution - INFO - [Job fce852e8] 2026-06-25 17:47:23 - base - INFO - Epoch 85/200 - Loss: 0.002632 - Acc: 99.02% - 10.66s
+2026-06-25 17:47:23 - execution - INFO - [Job fce852e8] 2026-06-25 17:47:23 - base - INFO - Checkpoint saved at epoch 85
+2026-06-25 17:47:23 - execution - INFO - [Job fce852e8] 2026-06-25 17:47:23 - base - INFO - Epoch 86/200 - starting
+2026-06-25 17:47:30 - execution - INFO - [Job a27da444] 2026-06-25 17:47:30 - base - INFO - Epoch 59/200 - Loss: 0.002784 - Acc: 99.04% - 9.16s
+2026-06-25 17:47:30 - execution - INFO - [Job a27da444] 2026-06-25 17:47:30 - base - INFO - Checkpoint saved at epoch 59
+2026-06-25 17:47:30 - execution - INFO - [Job a27da444] 2026-06-25 17:47:30 - base - INFO - Epoch 60/200 - starting
+2026-06-25 17:47:34 - execution - INFO - [Job fce852e8] 2026-06-25 17:47:34 - base - INFO - Epoch 86/200 - Loss: 0.003944 - Acc: 99.03% - 10.73s
+2026-06-25 17:47:34 - execution - INFO - [Job fce852e8] 2026-06-25 17:47:34 - base - INFO - Checkpoint saved at epoch 86
+2026-06-25 17:47:34 - execution - INFO - [Job fce852e8] 2026-06-25 17:47:34 - base - INFO - Epoch 87/200 - starting
+2026-06-25 17:47:39 - execution - INFO - [Job a27da444] 2026-06-25 17:47:39 - base - INFO - Epoch 60/200 - Loss: 0.004124 - Acc: 98.68% - 9.16s
+2026-06-25 17:47:39 - execution - INFO - [Job a27da444] 2026-06-25 17:47:39 - base - INFO - Checkpoint saved at epoch 60
+2026-06-25 17:47:39 - execution - INFO - [Job a27da444] 2026-06-25 17:47:39 - base - INFO - Epoch 61/200 - starting
+2026-06-25 17:47:44 - execution - INFO - [Job fce852e8] 2026-06-25 17:47:44 - base - INFO - Epoch 87/200 - Loss: 0.003044 - Acc: 99.09% - 10.67s
+2026-06-25 17:47:44 - execution - INFO - [Job fce852e8] 2026-06-25 17:47:44 - base - INFO - Checkpoint saved at epoch 87
+2026-06-25 17:47:44 - execution - INFO - [Job fce852e8] 2026-06-25 17:47:44 - base - INFO - Epoch 88/200 - starting
+2026-06-25 17:47:48 - execution - INFO - [Job a27da444] 2026-06-25 17:47:48 - base - INFO - Epoch 61/200 - Loss: 0.005582 - Acc: 98.90% - 9.17s
+2026-06-25 17:47:48 - execution - INFO - [Job a27da444] 2026-06-25 17:47:48 - base - INFO - Checkpoint saved at epoch 61
+2026-06-25 17:47:48 - execution - INFO - [Job a27da444] 2026-06-25 17:47:48 - base - INFO - Epoch 62/200 - starting
+2026-06-25 17:47:55 - execution - INFO - [Job fce852e8] 2026-06-25 17:47:55 - base - INFO - Epoch 88/200 - Loss: 0.003238 - Acc: 98.99% - 10.65s
+2026-06-25 17:47:55 - execution - INFO - [Job fce852e8] 2026-06-25 17:47:55 - base - INFO - Checkpoint saved at epoch 88
+2026-06-25 17:47:55 - execution - INFO - [Job fce852e8] 2026-06-25 17:47:55 - base - INFO - Epoch 89/200 - starting
+2026-06-25 17:47:58 - execution - INFO - [Job a27da444] 2026-06-25 17:47:58 - base - INFO - Epoch 62/200 - Loss: 0.001898 - Acc: 98.81% - 9.13s
+2026-06-25 17:47:58 - execution - INFO - [Job a27da444] 2026-06-25 17:47:58 - base - INFO - Checkpoint saved at epoch 62
+2026-06-25 17:47:58 - execution - INFO - [Job a27da444] 2026-06-25 17:47:58 - base - INFO - Epoch 63/200 - starting
+2026-06-25 17:48:06 - execution - INFO - [Job fce852e8] 2026-06-25 17:48:06 - base - INFO - Epoch 89/200 - Loss: 0.001069 - Acc: 99.06% - 10.72s
+2026-06-25 17:48:06 - execution - INFO - [Job fce852e8] 2026-06-25 17:48:06 - base - INFO - Checkpoint saved at epoch 89
+2026-06-25 17:48:06 - execution - INFO - [Job fce852e8] 2026-06-25 17:48:06 - base - INFO - Epoch 90/200 - starting
+2026-06-25 17:48:07 - execution - INFO - [Job a27da444] 2026-06-25 17:48:07 - base - INFO - Epoch 63/200 - Loss: 0.003387 - Acc: 98.89% - 9.11s
+2026-06-25 17:48:07 - execution - INFO - [Job a27da444] 2026-06-25 17:48:07 - base - INFO - Checkpoint saved at epoch 63
+2026-06-25 17:48:07 - execution - INFO - [Job a27da444] 2026-06-25 17:48:07 - base - INFO - Epoch 64/200 - starting
+2026-06-25 17:48:16 - execution - INFO - [Job a27da444] 2026-06-25 17:48:16 - base - INFO - Epoch 64/200 - Loss: 0.002796 - Acc: 99.05% - 9.22s
+2026-06-25 17:48:16 - execution - INFO - [Job a27da444] 2026-06-25 17:48:16 - base - INFO - Checkpoint saved at epoch 64
+2026-06-25 17:48:16 - execution - INFO - [Job a27da444] 2026-06-25 17:48:16 - base - INFO - Epoch 65/200 - starting
+2026-06-25 17:48:16 - execution - INFO - [Job fce852e8] 2026-06-25 17:48:16 - base - INFO - Epoch 90/200 - Loss: 0.000166 - Acc: 99.12% - 10.68s
+2026-06-25 17:48:16 - execution - INFO - [Job fce852e8] 2026-06-25 17:48:16 - base - INFO - Checkpoint saved at epoch 90
+2026-06-25 17:48:16 - execution - INFO - [Job fce852e8] 2026-06-25 17:48:16 - base - INFO - Epoch 91/200 - starting
+2026-06-25 17:48:25 - execution - INFO - [Job a27da444] 2026-06-25 17:48:25 - base - INFO - Epoch 65/200 - Loss: 0.003151 - Acc: 99.02% - 9.25s
+2026-06-25 17:48:25 - execution - INFO - [Job a27da444] 2026-06-25 17:48:25 - base - INFO - Checkpoint saved at epoch 65
+2026-06-25 17:48:25 - execution - INFO - [Job a27da444] 2026-06-25 17:48:25 - base - INFO - Epoch 66/200 - starting
+2026-06-25 17:48:27 - execution - INFO - [Job fce852e8] 2026-06-25 17:48:27 - base - INFO - Epoch 91/200 - Loss: 0.000052 - Acc: 99.18% - 10.74s
+2026-06-25 17:48:27 - execution - INFO - [Job fce852e8] 2026-06-25 17:48:27 - base - INFO - Checkpoint saved at epoch 91
+2026-06-25 17:48:27 - execution - INFO - [Job fce852e8] 2026-06-25 17:48:27 - base - INFO - Epoch 92/200 - starting
+2026-06-25 17:48:34 - execution - INFO - [Job a27da444] 2026-06-25 17:48:34 - base - INFO - Epoch 66/200 - Loss: 0.002520 - Acc: 98.93% - 9.23s
+2026-06-25 17:48:34 - execution - INFO - [Job a27da444] 2026-06-25 17:48:34 - base - INFO - Checkpoint saved at epoch 66
+2026-06-25 17:48:34 - execution - INFO - [Job a27da444] 2026-06-25 17:48:34 - base - INFO - Epoch 67/200 - starting
+2026-06-25 17:48:38 - execution - INFO - [Job fce852e8] 2026-06-25 17:48:38 - base - INFO - Epoch 92/200 - Loss: 0.000026 - Acc: 99.19% - 10.76s
+2026-06-25 17:48:38 - execution - INFO - [Job fce852e8] 2026-06-25 17:48:38 - base - INFO - Checkpoint saved at epoch 92
+2026-06-25 17:48:38 - execution - INFO - [Job fce852e8] 2026-06-25 17:48:38 - base - INFO - Epoch 93/200 - starting
+2026-06-25 17:48:43 - execution - INFO - [Job a27da444] 2026-06-25 17:48:43 - base - INFO - Epoch 67/200 - Loss: 0.003669 - Acc: 98.92% - 9.16s
+2026-06-25 17:48:43 - execution - INFO - [Job a27da444] 2026-06-25 17:48:43 - base - INFO - Checkpoint saved at epoch 67
+2026-06-25 17:48:43 - execution - INFO - [Job a27da444] 2026-06-25 17:48:43 - base - INFO - Epoch 68/200 - starting
+2026-06-25 17:48:49 - execution - INFO - [Job fce852e8] 2026-06-25 17:48:49 - base - INFO - Epoch 93/200 - Loss: 0.000016 - Acc: 99.18% - 10.68s
+2026-06-25 17:48:49 - execution - INFO - [Job fce852e8] 2026-06-25 17:48:49 - base - INFO - Checkpoint saved at epoch 93
+2026-06-25 17:48:49 - execution - INFO - [Job fce852e8] 2026-06-25 17:48:49 - base - INFO - Epoch 94/200 - starting
+2026-06-25 17:48:53 - execution - INFO - [Job a27da444] 2026-06-25 17:48:53 - base - INFO - Epoch 68/200 - Loss: 0.003428 - Acc: 98.98% - 9.14s
+2026-06-25 17:48:53 - execution - INFO - [Job a27da444] 2026-06-25 17:48:53 - base - INFO - Checkpoint saved at epoch 68
+2026-06-25 17:48:53 - execution - INFO - [Job a27da444] 2026-06-25 17:48:53 - base - INFO - Epoch 69/200 - starting
+2026-06-25 17:48:59 - execution - INFO - [Job fce852e8] 2026-06-25 17:48:59 - base - INFO - Epoch 94/200 - Loss: 0.000011 - Acc: 99.18% - 10.67s
+2026-06-25 17:48:59 - execution - INFO - [Job fce852e8] 2026-06-25 17:48:59 - base - INFO - Checkpoint saved at epoch 94
+2026-06-25 17:48:59 - execution - INFO - [Job fce852e8] 2026-06-25 17:48:59 - base - INFO - Epoch 95/200 - starting
+2026-06-25 17:49:02 - execution - INFO - [Job a27da444] 2026-06-25 17:49:02 - base - INFO - Epoch 69/200 - Loss: 0.004172 - Acc: 99.01% - 9.15s
+2026-06-25 17:49:02 - execution - INFO - [Job a27da444] 2026-06-25 17:49:02 - base - INFO - Checkpoint saved at epoch 69
+2026-06-25 17:49:02 - execution - INFO - [Job a27da444] 2026-06-25 17:49:02 - base - INFO - Epoch 70/200 - starting
+2026-06-25 17:49:10 - execution - INFO - [Job fce852e8] 2026-06-25 17:49:10 - base - INFO - Epoch 95/200 - Loss: 0.000007 - Acc: 99.18% - 10.63s
+2026-06-25 17:49:10 - execution - INFO - [Job fce852e8] 2026-06-25 17:49:10 - base - INFO - Checkpoint saved at epoch 95
+2026-06-25 17:49:10 - execution - INFO - [Job fce852e8] 2026-06-25 17:49:10 - base - INFO - Epoch 96/200 - starting
+2026-06-25 17:49:11 - execution - INFO - [Job a27da444] 2026-06-25 17:49:11 - base - INFO - Epoch 70/200 - Loss: 0.001606 - Acc: 98.85% - 9.11s
+2026-06-25 17:49:11 - execution - INFO - [Job a27da444] 2026-06-25 17:49:11 - base - INFO - Checkpoint saved at epoch 70
+2026-06-25 17:49:11 - execution - INFO - [Job a27da444] 2026-06-25 17:49:11 - base - INFO - Epoch 71/200 - starting
+2026-06-25 17:49:20 - execution - INFO - [Job a27da444] 2026-06-25 17:49:20 - base - INFO - Epoch 71/200 - Loss: 0.003613 - Acc: 98.85% - 9.15s
+2026-06-25 17:49:20 - execution - INFO - [Job a27da444] 2026-06-25 17:49:20 - base - INFO - Checkpoint saved at epoch 71
+2026-06-25 17:49:20 - execution - INFO - [Job a27da444] 2026-06-25 17:49:20 - base - INFO - Epoch 72/200 - starting
+2026-06-25 17:49:21 - execution - INFO - [Job fce852e8] 2026-06-25 17:49:21 - base - INFO - Epoch 96/200 - Loss: 0.000005 - Acc: 99.18% - 10.61s
+2026-06-25 17:49:21 - execution - INFO - [Job fce852e8] 2026-06-25 17:49:21 - base - INFO - Checkpoint saved at epoch 96
+2026-06-25 17:49:21 - execution - INFO - [Job fce852e8] 2026-06-25 17:49:21 - base - INFO - Epoch 97/200 - starting
+2026-06-25 17:49:29 - execution - INFO - [Job a27da444] 2026-06-25 17:49:29 - base - INFO - Epoch 72/200 - Loss: 0.002970 - Acc: 99.10% - 9.18s
+2026-06-25 17:49:29 - execution - INFO - [Job a27da444] 2026-06-25 17:49:29 - base - INFO - Checkpoint saved at epoch 72
+2026-06-25 17:49:29 - execution - INFO - [Job a27da444] 2026-06-25 17:49:29 - base - INFO - Epoch 73/200 - starting
+2026-06-25 17:49:31 - execution - INFO - [Job fce852e8] 2026-06-25 17:49:31 - base - INFO - Epoch 97/200 - Loss: 0.000003 - Acc: 99.17% - 10.69s
+2026-06-25 17:49:31 - execution - INFO - [Job fce852e8] 2026-06-25 17:49:31 - base - INFO - Checkpoint saved at epoch 97
+2026-06-25 17:49:31 - execution - INFO - [Job fce852e8] 2026-06-25 17:49:31 - base - INFO - Epoch 98/200 - starting
+2026-06-25 17:49:38 - execution - INFO - [Job a27da444] 2026-06-25 17:49:38 - base - INFO - Epoch 73/200 - Loss: 0.002573 - Acc: 98.98% - 9.15s
+2026-06-25 17:49:38 - execution - INFO - [Job a27da444] 2026-06-25 17:49:38 - base - INFO - Checkpoint saved at epoch 73
+2026-06-25 17:49:38 - execution - INFO - [Job a27da444] 2026-06-25 17:49:38 - base - INFO - Epoch 74/200 - starting
+2026-06-25 17:49:42 - execution - INFO - [Job fce852e8] 2026-06-25 17:49:42 - base - INFO - Epoch 98/200 - Loss: 0.000002 - Acc: 99.18% - 10.67s
+2026-06-25 17:49:42 - execution - INFO - [Job fce852e8] 2026-06-25 17:49:42 - base - INFO - Checkpoint saved at epoch 98
+2026-06-25 17:49:42 - execution - INFO - [Job fce852e8] 2026-06-25 17:49:42 - base - INFO - Epoch 99/200 - starting
+2026-06-25 17:49:48 - execution - INFO - [Job a27da444] 2026-06-25 17:49:48 - base - INFO - Epoch 74/200 - Loss: 0.002532 - Acc: 98.81% - 9.14s
+2026-06-25 17:49:48 - execution - INFO - [Job a27da444] 2026-06-25 17:49:48 - base - INFO - Checkpoint saved at epoch 74
+2026-06-25 17:49:48 - execution - INFO - [Job a27da444] 2026-06-25 17:49:48 - base - INFO - Epoch 75/200 - starting
+2026-06-25 17:49:53 - execution - INFO - [Job fce852e8] 2026-06-25 17:49:53 - base - INFO - Epoch 99/200 - Loss: 0.000001 - Acc: 99.17% - 10.69s
+2026-06-25 17:49:53 - execution - INFO - [Job fce852e8] 2026-06-25 17:49:53 - base - INFO - Checkpoint saved at epoch 99
+2026-06-25 17:49:53 - execution - INFO - [Job fce852e8] 2026-06-25 17:49:53 - base - INFO - Epoch 100/200 - starting
+2026-06-25 17:49:57 - execution - INFO - [Job a27da444] 2026-06-25 17:49:57 - base - INFO - Epoch 75/200 - Loss: 0.003822 - Acc: 99.06% - 9.14s
+2026-06-25 17:49:57 - execution - INFO - [Job a27da444] 2026-06-25 17:49:57 - base - INFO - Checkpoint saved at epoch 75
+2026-06-25 17:49:57 - execution - INFO - [Job a27da444] 2026-06-25 17:49:57 - base - INFO - Epoch 76/200 - starting
+2026-06-25 17:50:03 - execution - INFO - [Job fce852e8] 2026-06-25 17:50:03 - base - INFO - Epoch 100/200 - Loss: 0.000001 - Acc: 99.17% - 10.63s
+2026-06-25 17:50:03 - execution - INFO - [Job fce852e8] 2026-06-25 17:50:03 - base - INFO - Checkpoint saved at epoch 100
+2026-06-25 17:50:03 - execution - INFO - [Job fce852e8] 2026-06-25 17:50:03 - base - INFO - Epoch 101/200 - starting
+2026-06-25 17:50:06 - execution - INFO - [Job a27da444] 2026-06-25 17:50:06 - base - INFO - Epoch 76/200 - Loss: 0.001050 - Acc: 98.95% - 9.13s
+2026-06-25 17:50:06 - execution - INFO - [Job a27da444] 2026-06-25 17:50:06 - base - INFO - Checkpoint saved at epoch 76
+2026-06-25 17:50:06 - execution - INFO - [Job a27da444] 2026-06-25 17:50:06 - base - INFO - Epoch 77/200 - starting
+2026-06-25 17:50:14 - execution - INFO - [Job fce852e8] 2026-06-25 17:50:14 - base - INFO - Epoch 101/200 - Loss: 0.000000 - Acc: 99.17% - 10.61s
+2026-06-25 17:50:14 - execution - INFO - [Job fce852e8] 2026-06-25 17:50:14 - base - INFO - Checkpoint saved at epoch 101
+2026-06-25 17:50:14 - execution - INFO - [Job fce852e8] 2026-06-25 17:50:14 - base - INFO - Epoch 102/200 - starting
+2026-06-25 17:50:15 - execution - INFO - [Job a27da444] 2026-06-25 17:50:15 - base - INFO - Epoch 77/200 - Loss: 0.004495 - Acc: 99.04% - 9.12s
+2026-06-25 17:50:15 - execution - INFO - [Job a27da444] 2026-06-25 17:50:15 - base - INFO - Checkpoint saved at epoch 77
+2026-06-25 17:50:15 - execution - INFO - [Job a27da444] 2026-06-25 17:50:15 - base - INFO - Epoch 78/200 - starting
+2026-06-25 17:50:24 - execution - INFO - [Job a27da444] 2026-06-25 17:50:24 - base - INFO - Epoch 78/200 - Loss: 0.001343 - Acc: 99.06% - 9.15s
+2026-06-25 17:50:24 - execution - INFO - [Job a27da444] 2026-06-25 17:50:24 - base - INFO - Checkpoint saved at epoch 78
+2026-06-25 17:50:24 - execution - INFO - [Job a27da444] 2026-06-25 17:50:24 - base - INFO - Epoch 79/200 - starting
+2026-06-25 17:50:25 - execution - INFO - [Job fce852e8] 2026-06-25 17:50:25 - base - INFO - Epoch 102/200 - Loss: 0.000000 - Acc: 99.18% - 10.65s
+2026-06-25 17:50:25 - execution - INFO - [Job fce852e8] 2026-06-25 17:50:25 - base - INFO - Checkpoint saved at epoch 102
+2026-06-25 17:50:25 - execution - INFO - [Job fce852e8] 2026-06-25 17:50:25 - base - INFO - Epoch 103/200 - starting
+2026-06-25 17:50:33 - execution - INFO - [Job a27da444] 2026-06-25 17:50:33 - base - INFO - Epoch 79/200 - Loss: 0.003128 - Acc: 98.93% - 9.14s
+2026-06-25 17:50:33 - execution - INFO - [Job a27da444] 2026-06-25 17:50:33 - base - INFO - Checkpoint saved at epoch 79
+2026-06-25 17:50:33 - execution - INFO - [Job a27da444] 2026-06-25 17:50:33 - base - INFO - Epoch 80/200 - starting
+2026-06-25 17:50:35 - execution - INFO - [Job fce852e8] 2026-06-25 17:50:35 - base - INFO - Epoch 103/200 - Loss: 0.000000 - Acc: 99.18% - 10.70s
+2026-06-25 17:50:35 - execution - INFO - [Job fce852e8] 2026-06-25 17:50:35 - base - INFO - Checkpoint saved at epoch 103
+2026-06-25 17:50:35 - execution - INFO - [Job fce852e8] 2026-06-25 17:50:35 - base - INFO - Epoch 104/200 - starting
+2026-06-25 17:50:42 - execution - INFO - [Job a27da444] 2026-06-25 17:50:42 - base - INFO - Epoch 80/200 - Loss: 0.002350 - Acc: 98.92% - 9.16s
+2026-06-25 17:50:42 - execution - INFO - [Job a27da444] 2026-06-25 17:50:42 - base - INFO - Checkpoint saved at epoch 80
+2026-06-25 17:50:42 - execution - INFO - [Job a27da444] 2026-06-25 17:50:42 - base - INFO - Epoch 81/200 - starting
+2026-06-25 17:50:46 - execution - INFO - [Job fce852e8] 2026-06-25 17:50:46 - base - INFO - Epoch 104/200 - Loss: 0.000000 - Acc: 99.17% - 10.68s
+2026-06-25 17:50:46 - execution - INFO - [Job fce852e8] 2026-06-25 17:50:46 - base - INFO - Checkpoint saved at epoch 104
+2026-06-25 17:50:46 - execution - INFO - [Job fce852e8] 2026-06-25 17:50:46 - base - INFO - Epoch 105/200 - starting
+2026-06-25 17:50:52 - execution - INFO - [Job a27da444] 2026-06-25 17:50:52 - base - INFO - Epoch 81/200 - Loss: 0.001377 - Acc: 99.02% - 9.13s
+2026-06-25 17:50:52 - execution - INFO - [Job a27da444] 2026-06-25 17:50:52 - base - INFO - Checkpoint saved at epoch 81
+2026-06-25 17:50:52 - execution - INFO - [Job a27da444] 2026-06-25 17:50:52 - base - INFO - Epoch 82/200 - starting
+2026-06-25 17:50:57 - execution - INFO - [Job fce852e8] 2026-06-25 17:50:57 - base - INFO - Epoch 105/200 - Loss: 0.000000 - Acc: 99.19% - 10.64s
+2026-06-25 17:50:57 - execution - INFO - [Job fce852e8] 2026-06-25 17:50:57 - base - INFO - Checkpoint saved at epoch 105
+2026-06-25 17:50:57 - execution - INFO - [Job fce852e8] 2026-06-25 17:50:57 - base - INFO - Epoch 106/200 - starting
+2026-06-25 17:51:01 - execution - INFO - [Job a27da444] 2026-06-25 17:51:01 - base - INFO - Epoch 82/200 - Loss: 0.003671 - Acc: 98.88% - 9.03s
+2026-06-25 17:51:01 - execution - INFO - [Job a27da444] 2026-06-25 17:51:01 - base - INFO - Checkpoint saved at epoch 82
+2026-06-25 17:51:01 - execution - INFO - [Job a27da444] 2026-06-25 17:51:01 - base - INFO - Epoch 83/200 - starting
+2026-06-25 17:51:07 - execution - INFO - [Job fce852e8] 2026-06-25 17:51:07 - base - INFO - Epoch 106/200 - Loss: 0.000000 - Acc: 99.18% - 10.57s
+2026-06-25 17:51:07 - execution - INFO - [Job fce852e8] 2026-06-25 17:51:07 - base - INFO - Checkpoint saved at epoch 106
+2026-06-25 17:51:07 - execution - INFO - [Job fce852e8] 2026-06-25 17:51:07 - base - INFO - Epoch 107/200 - starting
+2026-06-25 17:51:10 - execution - INFO - [Job a27da444] 2026-06-25 17:51:10 - base - INFO - Epoch 83/200 - Loss: 0.003524 - Acc: 98.86% - 8.96s
+2026-06-25 17:51:10 - execution - INFO - [Job a27da444] 2026-06-25 17:51:10 - base - INFO - Checkpoint saved at epoch 83
+2026-06-25 17:51:10 - execution - INFO - [Job a27da444] 2026-06-25 17:51:10 - base - INFO - Epoch 84/200 - starting
+2026-06-25 17:51:18 - execution - INFO - [Job fce852e8] 2026-06-25 17:51:18 - base - INFO - Epoch 107/200 - Loss: 0.000000 - Acc: 99.22% - 10.62s
+2026-06-25 17:51:18 - execution - INFO - [Job fce852e8] 2026-06-25 17:51:18 - base - INFO - Checkpoint saved at epoch 107
+2026-06-25 17:51:18 - execution - INFO - [Job fce852e8] 2026-06-25 17:51:18 - base - INFO - Epoch 108/200 - starting
+2026-06-25 17:51:18 - execution - INFO - [Job a27da444] 2026-06-25 17:51:18 - base - INFO - Epoch 84/200 - Loss: 0.003635 - Acc: 98.75% - 8.92s
+2026-06-25 17:51:18 - execution - INFO - [Job a27da444] 2026-06-25 17:51:18 - base - INFO - Checkpoint saved at epoch 84
+2026-06-25 17:51:18 - execution - INFO - [Job a27da444] 2026-06-25 17:51:18 - base - INFO - Epoch 85/200 - starting
+2026-06-25 17:51:27 - execution - INFO - [Job a27da444] 2026-06-25 17:51:27 - base - INFO - Epoch 85/200 - Loss: 0.003086 - Acc: 98.88% - 8.90s
+2026-06-25 17:51:27 - execution - INFO - [Job a27da444] 2026-06-25 17:51:27 - base - INFO - Checkpoint saved at epoch 85
+2026-06-25 17:51:27 - execution - INFO - [Job a27da444] 2026-06-25 17:51:27 - base - INFO - Epoch 86/200 - starting
+2026-06-25 17:51:28 - execution - INFO - [Job fce852e8] 2026-06-25 17:51:28 - base - INFO - Epoch 108/200 - Loss: 0.000000 - Acc: 99.20% - 10.59s
+2026-06-25 17:51:28 - execution - INFO - [Job fce852e8] 2026-06-25 17:51:28 - base - INFO - Checkpoint saved at epoch 108
+2026-06-25 17:51:28 - execution - INFO - [Job fce852e8] 2026-06-25 17:51:28 - base - INFO - Epoch 109/200 - starting
+2026-06-25 17:51:36 - execution - INFO - [Job a27da444] 2026-06-25 17:51:36 - base - INFO - Epoch 86/200 - Loss: 0.001132 - Acc: 98.95% - 8.89s
+2026-06-25 17:51:36 - execution - INFO - [Job a27da444] 2026-06-25 17:51:36 - base - INFO - Checkpoint saved at epoch 86
+2026-06-25 17:51:36 - execution - INFO - [Job a27da444] 2026-06-25 17:51:36 - base - INFO - Epoch 87/200 - starting
+2026-06-25 17:51:39 - execution - INFO - [Job fce852e8] 2026-06-25 17:51:39 - base - INFO - Epoch 109/200 - Loss: 0.000000 - Acc: 99.18% - 10.53s
+2026-06-25 17:51:39 - execution - INFO - [Job fce852e8] 2026-06-25 17:51:39 - base - INFO - Checkpoint saved at epoch 109
+2026-06-25 17:51:39 - execution - INFO - [Job fce852e8] 2026-06-25 17:51:39 - base - INFO - Epoch 110/200 - starting
+2026-06-25 17:51:45 - execution - INFO - [Job a27da444] 2026-06-25 17:51:45 - base - INFO - Epoch 87/200 - Loss: 0.002336 - Acc: 99.04% - 8.91s
+2026-06-25 17:51:45 - execution - INFO - [Job a27da444] 2026-06-25 17:51:45 - base - INFO - Checkpoint saved at epoch 87
+2026-06-25 17:51:45 - execution - INFO - [Job a27da444] 2026-06-25 17:51:45 - base - INFO - Epoch 88/200 - starting
+2026-06-25 17:51:49 - execution - INFO - [Job fce852e8] 2026-06-25 17:51:49 - base - INFO - Epoch 110/200 - Loss: 0.000000 - Acc: 99.19% - 10.57s
+2026-06-25 17:51:49 - execution - INFO - [Job fce852e8] 2026-06-25 17:51:49 - base - INFO - Checkpoint saved at epoch 110
+2026-06-25 17:51:49 - execution - INFO - [Job fce852e8] 2026-06-25 17:51:49 - base - INFO - Epoch 111/200 - starting
+2026-06-25 17:51:54 - execution - INFO - [Job a27da444] 2026-06-25 17:51:54 - base - INFO - Epoch 88/200 - Loss: 0.000210 - Acc: 99.07% - 8.93s
+2026-06-25 17:51:54 - execution - INFO - [Job a27da444] 2026-06-25 17:51:54 - base - INFO - Checkpoint saved at epoch 88
+2026-06-25 17:51:54 - execution - INFO - [Job a27da444] 2026-06-25 17:51:54 - base - INFO - Epoch 89/200 - starting
+2026-06-25 17:52:00 - execution - INFO - [Job fce852e8] 2026-06-25 17:52:00 - base - INFO - Epoch 111/200 - Loss: 0.000000 - Acc: 99.17% - 10.58s
+2026-06-25 17:52:00 - execution - INFO - [Job fce852e8] 2026-06-25 17:52:00 - base - INFO - Checkpoint saved at epoch 111
+2026-06-25 17:52:00 - execution - INFO - [Job fce852e8] 2026-06-25 17:52:00 - base - INFO - Epoch 112/200 - starting
+2026-06-25 17:52:03 - execution - INFO - [Job a27da444] 2026-06-25 17:52:03 - base - INFO - Epoch 89/200 - Loss: 0.003395 - Acc: 98.77% - 8.91s
+2026-06-25 17:52:03 - execution - INFO - [Job a27da444] 2026-06-25 17:52:03 - base - INFO - Checkpoint saved at epoch 89
+2026-06-25 17:52:03 - execution - INFO - [Job a27da444] 2026-06-25 17:52:03 - base - INFO - Epoch 90/200 - starting
+2026-06-25 17:52:11 - execution - INFO - [Job fce852e8] 2026-06-25 17:52:11 - base - INFO - Epoch 112/200 - Loss: 0.000000 - Acc: 99.18% - 10.56s
+2026-06-25 17:52:11 - execution - INFO - [Job fce852e8] 2026-06-25 17:52:11 - base - INFO - Checkpoint saved at epoch 112
+2026-06-25 17:52:11 - execution - INFO - [Job fce852e8] 2026-06-25 17:52:11 - base - INFO - Epoch 113/200 - starting
+2026-06-25 17:52:12 - execution - INFO - [Job a27da444] 2026-06-25 17:52:12 - base - INFO - Epoch 90/200 - Loss: 0.003038 - Acc: 99.13% - 8.90s
+2026-06-25 17:52:12 - execution - INFO - [Job a27da444] 2026-06-25 17:52:12 - base - INFO - Checkpoint saved at epoch 90
+2026-06-25 17:52:12 - execution - INFO - [Job a27da444] 2026-06-25 17:52:12 - base - INFO - Epoch 91/200 - starting
+2026-06-25 17:52:21 - execution - INFO - [Job a27da444] 2026-06-25 17:52:21 - base - INFO - Epoch 91/200 - Loss: 0.002313 - Acc: 99.00% - 8.91s
+2026-06-25 17:52:21 - execution - INFO - [Job a27da444] 2026-06-25 17:52:21 - base - INFO - Checkpoint saved at epoch 91
+2026-06-25 17:52:21 - execution - INFO - [Job a27da444] 2026-06-25 17:52:21 - base - INFO - Epoch 92/200 - starting
+2026-06-25 17:52:21 - execution - INFO - [Job fce852e8] 2026-06-25 17:52:21 - base - INFO - Epoch 113/200 - Loss: 0.000000 - Acc: 99.18% - 10.52s
+2026-06-25 17:52:21 - execution - INFO - [Job fce852e8] 2026-06-25 17:52:21 - base - INFO - Checkpoint saved at epoch 113
+2026-06-25 17:52:21 - execution - INFO - [Job fce852e8] 2026-06-25 17:52:21 - base - INFO - Epoch 114/200 - starting
+2026-06-25 17:52:30 - execution - INFO - [Job a27da444] 2026-06-25 17:52:30 - base - INFO - Epoch 92/200 - Loss: 0.001683 - Acc: 99.07% - 8.89s
+2026-06-25 17:52:30 - execution - INFO - [Job a27da444] 2026-06-25 17:52:30 - base - INFO - Checkpoint saved at epoch 92
+2026-06-25 17:52:30 - execution - INFO - [Job a27da444] 2026-06-25 17:52:30 - base - INFO - Epoch 93/200 - starting
+2026-06-25 17:52:32 - execution - INFO - [Job fce852e8] 2026-06-25 17:52:32 - base - INFO - Epoch 114/200 - Loss: 0.000000 - Acc: 99.18% - 10.53s
+2026-06-25 17:52:32 - execution - INFO - [Job fce852e8] 2026-06-25 17:52:32 - base - INFO - Checkpoint saved at epoch 114
+2026-06-25 17:52:32 - execution - INFO - [Job fce852e8] 2026-06-25 17:52:32 - base - INFO - Epoch 115/200 - starting
+2026-06-25 17:52:39 - execution - INFO - [Job a27da444] 2026-06-25 17:52:39 - base - INFO - Epoch 93/200 - Loss: 0.001442 - Acc: 99.00% - 8.99s
+2026-06-25 17:52:39 - execution - INFO - [Job a27da444] 2026-06-25 17:52:39 - base - INFO - Checkpoint saved at epoch 93
+2026-06-25 17:52:39 - execution - INFO - [Job a27da444] 2026-06-25 17:52:39 - base - INFO - Epoch 94/200 - starting
+2026-06-25 17:52:42 - execution - INFO - [Job fce852e8] 2026-06-25 17:52:42 - base - INFO - Epoch 115/200 - Loss: 0.000000 - Acc: 99.18% - 10.65s
+2026-06-25 17:52:42 - execution - INFO - [Job fce852e8] 2026-06-25 17:52:42 - base - INFO - Checkpoint saved at epoch 115
+2026-06-25 17:52:42 - execution - INFO - [Job fce852e8] 2026-06-25 17:52:42 - base - INFO - Epoch 116/200 - starting
+2026-06-25 17:52:48 - execution - INFO - [Job a27da444] 2026-06-25 17:52:48 - base - INFO - Epoch 94/200 - Loss: 0.004699 - Acc: 98.88% - 9.22s
+2026-06-25 17:52:48 - execution - INFO - [Job a27da444] 2026-06-25 17:52:48 - base - INFO - Checkpoint saved at epoch 94
+2026-06-25 17:52:48 - execution - INFO - [Job a27da444] 2026-06-25 17:52:48 - base - INFO - Epoch 95/200 - starting
+2026-06-25 17:52:53 - execution - INFO - [Job fce852e8] 2026-06-25 17:52:53 - base - INFO - Epoch 116/200 - Loss: 0.000000 - Acc: 99.17% - 10.65s
+2026-06-25 17:52:53 - execution - INFO - [Job fce852e8] 2026-06-25 17:52:53 - base - INFO - Checkpoint saved at epoch 116
+2026-06-25 17:52:53 - execution - INFO - [Job fce852e8] 2026-06-25 17:52:53 - base - INFO - Epoch 117/200 - starting
+2026-06-25 17:52:57 - execution - INFO - [Job a27da444] 2026-06-25 17:52:57 - base - INFO - Epoch 95/200 - Loss: 0.001870 - Acc: 98.96% - 9.13s
+2026-06-25 17:52:57 - execution - INFO - [Job a27da444] 2026-06-25 17:52:57 - base - INFO - Checkpoint saved at epoch 95
+2026-06-25 17:52:57 - execution - INFO - [Job a27da444] 2026-06-25 17:52:57 - base - INFO - Epoch 96/200 - starting
+2026-06-25 17:53:04 - execution - INFO - [Job fce852e8] 2026-06-25 17:53:04 - base - INFO - Epoch 117/200 - Loss: 0.000000 - Acc: 99.15% - 10.63s
+2026-06-25 17:53:04 - execution - INFO - [Job fce852e8] 2026-06-25 17:53:04 - base - INFO - Checkpoint saved at epoch 117
+2026-06-25 17:53:04 - execution - INFO - [Job fce852e8] 2026-06-25 17:53:04 - base - INFO - Epoch 118/200 - starting
+2026-06-25 17:53:06 - execution - INFO - [Job a27da444] 2026-06-25 17:53:06 - base - INFO - Epoch 96/200 - Loss: 0.001816 - Acc: 99.00% - 9.15s
+2026-06-25 17:53:06 - execution - INFO - [Job a27da444] 2026-06-25 17:53:06 - base - INFO - Checkpoint saved at epoch 96
+2026-06-25 17:53:06 - execution - INFO - [Job a27da444] 2026-06-25 17:53:06 - base - INFO - Epoch 97/200 - starting
+2026-06-25 17:53:14 - execution - INFO - [Job fce852e8] 2026-06-25 17:53:14 - base - INFO - Epoch 118/200 - Loss: 0.000000 - Acc: 99.16% - 10.66s
+2026-06-25 17:53:14 - execution - INFO - [Job fce852e8] 2026-06-25 17:53:14 - base - INFO - Checkpoint saved at epoch 118
+2026-06-25 17:53:14 - execution - INFO - [Job fce852e8] 2026-06-25 17:53:14 - base - INFO - Epoch 119/200 - starting
+2026-06-25 17:53:15 - execution - INFO - [Job a27da444] 2026-06-25 17:53:15 - base - INFO - Epoch 97/200 - Loss: 0.001821 - Acc: 99.10% - 9.11s
+2026-06-25 17:53:15 - execution - INFO - [Job a27da444] 2026-06-25 17:53:15 - base - INFO - Checkpoint saved at epoch 97
+2026-06-25 17:53:15 - execution - INFO - [Job a27da444] 2026-06-25 17:53:15 - base - INFO - Epoch 98/200 - starting
+2026-06-25 17:53:24 - execution - INFO - [Job a27da444] 2026-06-25 17:53:24 - base - INFO - Epoch 98/200 - Loss: 0.002519 - Acc: 99.02% - 9.12s
+2026-06-25 17:53:24 - execution - INFO - [Job a27da444] 2026-06-25 17:53:24 - base - INFO - Checkpoint saved at epoch 98
+2026-06-25 17:53:24 - execution - INFO - [Job a27da444] 2026-06-25 17:53:24 - base - INFO - Epoch 99/200 - starting
+2026-06-25 17:53:25 - execution - INFO - [Job fce852e8] 2026-06-25 17:53:25 - base - INFO - Epoch 119/200 - Loss: 0.000000 - Acc: 99.16% - 10.62s
+2026-06-25 17:53:25 - execution - INFO - [Job fce852e8] 2026-06-25 17:53:25 - base - INFO - Checkpoint saved at epoch 119
+2026-06-25 17:53:25 - execution - INFO - [Job fce852e8] 2026-06-25 17:53:25 - base - INFO - Epoch 120/200 - starting
+2026-06-25 17:53:34 - execution - INFO - [Job a27da444] 2026-06-25 17:53:34 - base - INFO - Epoch 99/200 - Loss: 0.001432 - Acc: 99.13% - 9.15s
+2026-06-25 17:53:34 - execution - INFO - [Job a27da444] 2026-06-25 17:53:34 - base - INFO - Checkpoint saved at epoch 99
+2026-06-25 17:53:34 - execution - INFO - [Job a27da444] 2026-06-25 17:53:34 - base - INFO - Epoch 100/200 - starting
+2026-06-25 17:53:36 - execution - INFO - [Job fce852e8] 2026-06-25 17:53:36 - base - INFO - Epoch 120/200 - Loss: 0.010922 - Acc: 98.48% - 10.63s
+2026-06-25 17:53:36 - execution - INFO - [Job fce852e8] 2026-06-25 17:53:36 - base - INFO - Checkpoint saved at epoch 120
+2026-06-25 17:53:36 - execution - INFO - [Job fce852e8] 2026-06-25 17:53:36 - base - INFO - Epoch 121/200 - starting
+2026-06-25 17:53:43 - execution - INFO - [Job a27da444] 2026-06-25 17:53:43 - base - INFO - Epoch 100/200 - Loss: 0.002627 - Acc: 98.94% - 9.17s
+2026-06-25 17:53:43 - execution - INFO - [Job a27da444] 2026-06-25 17:53:43 - base - INFO - Checkpoint saved at epoch 100
+2026-06-25 17:53:43 - execution - INFO - [Job a27da444] 2026-06-25 17:53:43 - base - INFO - Epoch 101/200 - starting
+2026-06-25 17:53:46 - execution - INFO - [Job fce852e8] 2026-06-25 17:53:46 - base - INFO - Epoch 121/200 - Loss: 0.008806 - Acc: 98.91% - 10.64s
+2026-06-25 17:53:46 - execution - INFO - [Job fce852e8] 2026-06-25 17:53:46 - base - INFO - Checkpoint saved at epoch 121
+2026-06-25 17:53:46 - execution - INFO - [Job fce852e8] 2026-06-25 17:53:46 - base - INFO - Epoch 122/200 - starting
+2026-06-25 17:53:52 - execution - INFO - [Job a27da444] 2026-06-25 17:53:52 - base - INFO - Epoch 101/200 - Loss: 0.001835 - Acc: 98.91% - 9.14s
+2026-06-25 17:53:52 - execution - INFO - [Job a27da444] 2026-06-25 17:53:52 - base - INFO - Checkpoint saved at epoch 101
+2026-06-25 17:53:52 - execution - INFO - [Job a27da444] 2026-06-25 17:53:52 - base - INFO - Epoch 102/200 - starting
+2026-06-25 17:53:57 - execution - INFO - [Job fce852e8] 2026-06-25 17:53:57 - base - INFO - Epoch 122/200 - Loss: 0.002338 - Acc: 98.94% - 10.65s
+2026-06-25 17:53:57 - execution - INFO - [Job fce852e8] 2026-06-25 17:53:57 - base - INFO - Checkpoint saved at epoch 122
+2026-06-25 17:53:57 - execution - INFO - [Job fce852e8] 2026-06-25 17:53:57 - base - INFO - Epoch 123/200 - starting
+2026-06-25 17:54:01 - execution - INFO - [Job a27da444] 2026-06-25 17:54:01 - base - INFO - Epoch 102/200 - Loss: 0.001677 - Acc: 99.04% - 9.14s
+2026-06-25 17:54:01 - execution - INFO - [Job a27da444] 2026-06-25 17:54:01 - base - INFO - Checkpoint saved at epoch 102
+2026-06-25 17:54:01 - execution - INFO - [Job a27da444] 2026-06-25 17:54:01 - base - INFO - Epoch 103/200 - starting
+2026-06-25 17:54:07 - execution - INFO - [Job fce852e8] 2026-06-25 17:54:07 - base - INFO - Epoch 123/200 - Loss: 0.000760 - Acc: 99.01% - 10.66s
+2026-06-25 17:54:08 - execution - INFO - [Job fce852e8] 2026-06-25 17:54:07 - base - INFO - Checkpoint saved at epoch 123
+2026-06-25 17:54:08 - execution - INFO - [Job fce852e8] 2026-06-25 17:54:07 - base - INFO - Epoch 124/200 - starting
+2026-06-25 17:54:10 - execution - INFO - [Job a27da444] 2026-06-25 17:54:10 - base - INFO - Epoch 103/200 - Loss: 0.003929 - Acc: 98.97% - 9.12s
+2026-06-25 17:54:10 - execution - INFO - [Job a27da444] 2026-06-25 17:54:10 - base - INFO - Checkpoint saved at epoch 103
+2026-06-25 17:54:10 - execution - INFO - [Job a27da444] 2026-06-25 17:54:10 - base - INFO - Epoch 104/200 - starting
+2026-06-25 17:54:18 - execution - INFO - [Job fce852e8] 2026-06-25 17:54:18 - base - INFO - Epoch 124/200 - Loss: 0.001294 - Acc: 98.91% - 10.60s
+2026-06-25 17:54:18 - execution - INFO - [Job fce852e8] 2026-06-25 17:54:18 - base - INFO - Checkpoint saved at epoch 124
+2026-06-25 17:54:18 - execution - INFO - [Job fce852e8] 2026-06-25 17:54:18 - base - INFO - Epoch 125/200 - starting
+2026-06-25 17:54:19 - execution - INFO - [Job a27da444] 2026-06-25 17:54:19 - base - INFO - Epoch 104/200 - Loss: 0.001512 - Acc: 99.04% - 8.97s
+2026-06-25 17:54:19 - execution - INFO - [Job a27da444] 2026-06-25 17:54:19 - base - INFO - Checkpoint saved at epoch 104
+2026-06-25 17:54:19 - execution - INFO - [Job a27da444] 2026-06-25 17:54:19 - base - INFO - Epoch 105/200 - starting
+2026-06-25 17:54:28 - execution - INFO - [Job a27da444] 2026-06-25 17:54:28 - base - INFO - Epoch 105/200 - Loss: 0.001564 - Acc: 98.90% - 9.03s
+2026-06-25 17:54:28 - execution - INFO - [Job a27da444] 2026-06-25 17:54:28 - base - INFO - Checkpoint saved at epoch 105
+2026-06-25 17:54:28 - execution - INFO - [Job a27da444] 2026-06-25 17:54:28 - base - INFO - Epoch 106/200 - starting
+2026-06-25 17:54:29 - execution - INFO - [Job fce852e8] 2026-06-25 17:54:29 - base - INFO - Epoch 125/200 - Loss: 0.004898 - Acc: 99.20% - 10.68s
+2026-06-25 17:54:29 - execution - INFO - [Job fce852e8] 2026-06-25 17:54:29 - base - INFO - Checkpoint saved at epoch 125
+2026-06-25 17:54:29 - execution - INFO - [Job fce852e8] 2026-06-25 17:54:29 - base - INFO - Epoch 126/200 - starting
+2026-06-25 17:54:37 - execution - INFO - [Job a27da444] 2026-06-25 17:54:37 - base - INFO - Epoch 106/200 - Loss: 0.000906 - Acc: 98.82% - 9.13s
+2026-06-25 17:54:37 - execution - INFO - [Job a27da444] 2026-06-25 17:54:37 - base - INFO - Checkpoint saved at epoch 106
+2026-06-25 17:54:37 - execution - INFO - [Job a27da444] 2026-06-25 17:54:37 - base - INFO - Epoch 107/200 - starting
+2026-06-25 17:54:40 - execution - INFO - [Job fce852e8] 2026-06-25 17:54:40 - base - INFO - Epoch 126/200 - Loss: 0.001296 - Acc: 99.05% - 10.76s
+2026-06-25 17:54:40 - execution - INFO - [Job fce852e8] 2026-06-25 17:54:40 - base - INFO - Checkpoint saved at epoch 126
+2026-06-25 17:54:40 - execution - INFO - [Job fce852e8] 2026-06-25 17:54:40 - base - INFO - Epoch 127/200 - starting
+2026-06-25 17:54:46 - execution - INFO - [Job a27da444] 2026-06-25 17:54:46 - base - INFO - Epoch 107/200 - Loss: 0.003896 - Acc: 98.89% - 9.10s
+2026-06-25 17:54:46 - execution - INFO - [Job a27da444] 2026-06-25 17:54:46 - base - INFO - Checkpoint saved at epoch 107
+2026-06-25 17:54:46 - execution - INFO - [Job a27da444] 2026-06-25 17:54:46 - base - INFO - Epoch 108/200 - starting
+2026-06-25 17:54:50 - execution - INFO - [Job fce852e8] 2026-06-25 17:54:50 - base - INFO - Epoch 127/200 - Loss: 0.002721 - Acc: 99.04% - 10.64s
+2026-06-25 17:54:50 - execution - INFO - [Job fce852e8] 2026-06-25 17:54:50 - base - INFO - Checkpoint saved at epoch 127
+2026-06-25 17:54:50 - execution - INFO - [Job fce852e8] 2026-06-25 17:54:50 - base - INFO - Epoch 128/200 - starting
+2026-06-25 17:54:56 - execution - INFO - [Job a27da444] 2026-06-25 17:54:56 - base - INFO - Epoch 108/200 - Loss: 0.000653 - Acc: 99.03% - 9.13s
+2026-06-25 17:54:56 - execution - INFO - [Job a27da444] 2026-06-25 17:54:56 - base - INFO - Checkpoint saved at epoch 108
+2026-06-25 17:54:56 - execution - INFO - [Job a27da444] 2026-06-25 17:54:56 - base - INFO - Epoch 109/200 - starting
+2026-06-25 17:55:01 - execution - INFO - [Job fce852e8] 2026-06-25 17:55:01 - base - INFO - Epoch 128/200 - Loss: 0.001957 - Acc: 98.94% - 10.68s
+2026-06-25 17:55:01 - execution - INFO - [Job fce852e8] 2026-06-25 17:55:01 - base - INFO - Checkpoint saved at epoch 128
+2026-06-25 17:55:01 - execution - INFO - [Job fce852e8] 2026-06-25 17:55:01 - base - INFO - Epoch 129/200 - starting
+2026-06-25 17:55:05 - execution - INFO - [Job a27da444] 2026-06-25 17:55:05 - base - INFO - Epoch 109/200 - Loss: 0.000649 - Acc: 98.85% - 9.18s
+2026-06-25 17:55:05 - execution - INFO - [Job a27da444] 2026-06-25 17:55:05 - base - INFO - Checkpoint saved at epoch 109
+2026-06-25 17:55:05 - execution - INFO - [Job a27da444] 2026-06-25 17:55:05 - base - INFO - Epoch 110/200 - starting
+2026-06-25 17:55:12 - execution - INFO - [Job fce852e8] 2026-06-25 17:55:12 - base - INFO - Epoch 129/200 - Loss: 0.004212 - Acc: 99.05% - 10.64s
+2026-06-25 17:55:12 - execution - INFO - [Job fce852e8] 2026-06-25 17:55:12 - base - INFO - Checkpoint saved at epoch 129
+2026-06-25 17:55:12 - execution - INFO - [Job fce852e8] 2026-06-25 17:55:12 - base - INFO - Epoch 130/200 - starting
+2026-06-25 17:55:14 - execution - INFO - [Job a27da444] 2026-06-25 17:55:14 - base - INFO - Epoch 110/200 - Loss: 0.004093 - Acc: 99.10% - 9.11s
+2026-06-25 17:55:14 - execution - INFO - [Job a27da444] 2026-06-25 17:55:14 - base - INFO - Checkpoint saved at epoch 110
+2026-06-25 17:55:14 - execution - INFO - [Job a27da444] 2026-06-25 17:55:14 - base - INFO - Epoch 111/200 - starting
+2026-06-25 17:55:22 - execution - INFO - [Job fce852e8] 2026-06-25 17:55:22 - base - INFO - Epoch 130/200 - Loss: 0.001713 - Acc: 99.04% - 10.57s
+2026-06-25 17:55:22 - execution - INFO - [Job fce852e8] 2026-06-25 17:55:22 - base - INFO - Checkpoint saved at epoch 130
+2026-06-25 17:55:22 - execution - INFO - [Job fce852e8] 2026-06-25 17:55:22 - base - INFO - Epoch 131/200 - starting
+2026-06-25 17:55:23 - execution - INFO - [Job a27da444] 2026-06-25 17:55:23 - base - INFO - Epoch 111/200 - Loss: 0.002991 - Acc: 99.05% - 9.01s
+2026-06-25 17:55:23 - execution - INFO - [Job a27da444] 2026-06-25 17:55:23 - base - INFO - Checkpoint saved at epoch 111
+2026-06-25 17:55:23 - execution - INFO - [Job a27da444] 2026-06-25 17:55:23 - base - INFO - Epoch 112/200 - starting
+2026-06-25 17:55:32 - execution - INFO - [Job a27da444] 2026-06-25 17:55:32 - base - INFO - Epoch 112/200 - Loss: 0.001297 - Acc: 99.21% - 9.10s
+2026-06-25 17:55:32 - execution - INFO - [Job a27da444] 2026-06-25 17:55:32 - base - INFO - Checkpoint saved at epoch 112
+2026-06-25 17:55:32 - execution - INFO - [Job a27da444] 2026-06-25 17:55:32 - base - INFO - Epoch 113/200 - starting
+2026-06-25 17:55:33 - execution - INFO - [Job fce852e8] 2026-06-25 17:55:33 - base - INFO - Epoch 131/200 - Loss: 0.001101 - Acc: 99.03% - 10.57s
+2026-06-25 17:55:33 - execution - INFO - [Job fce852e8] 2026-06-25 17:55:33 - base - INFO - Checkpoint saved at epoch 131
+2026-06-25 17:55:33 - execution - INFO - [Job fce852e8] 2026-06-25 17:55:33 - base - INFO - Epoch 132/200 - starting
+2026-06-25 17:55:41 - execution - INFO - [Job a27da444] 2026-06-25 17:55:41 - base - INFO - Epoch 113/200 - Loss: 0.001514 - Acc: 99.04% - 9.18s
+2026-06-25 17:55:41 - execution - INFO - [Job a27da444] 2026-06-25 17:55:41 - base - INFO - Checkpoint saved at epoch 113
+2026-06-25 17:55:41 - execution - INFO - [Job a27da444] 2026-06-25 17:55:41 - base - INFO - Epoch 114/200 - starting
+2026-06-25 17:55:43 - execution - INFO - [Job fce852e8] 2026-06-25 17:55:43 - base - INFO - Epoch 132/200 - Loss: 0.003791 - Acc: 98.80% - 10.69s
+2026-06-25 17:55:43 - execution - INFO - [Job fce852e8] 2026-06-25 17:55:43 - base - INFO - Checkpoint saved at epoch 132
+2026-06-25 17:55:43 - execution - INFO - [Job fce852e8] 2026-06-25 17:55:43 - base - INFO - Epoch 133/200 - starting
+2026-06-25 17:55:50 - execution - INFO - [Job a27da444] 2026-06-25 17:55:50 - base - INFO - Epoch 114/200 - Loss: 0.001191 - Acc: 99.15% - 9.16s
+2026-06-25 17:55:50 - execution - INFO - [Job a27da444] 2026-06-25 17:55:50 - base - INFO - Checkpoint saved at epoch 114
+2026-06-25 17:55:50 - execution - INFO - [Job a27da444] 2026-06-25 17:55:50 - base - INFO - Epoch 115/200 - starting
+2026-06-25 17:55:54 - execution - INFO - [Job fce852e8] 2026-06-25 17:55:54 - base - INFO - Epoch 133/200 - Loss: 0.002661 - Acc: 98.91% - 10.68s
+2026-06-25 17:55:54 - execution - INFO - [Job fce852e8] 2026-06-25 17:55:54 - base - INFO - Checkpoint saved at epoch 133
+2026-06-25 17:55:54 - execution - INFO - [Job fce852e8] 2026-06-25 17:55:54 - base - INFO - Epoch 134/200 - starting
+2026-06-25 17:55:59 - execution - INFO - [Job a27da444] 2026-06-25 17:55:59 - base - INFO - Epoch 115/200 - Loss: 0.001045 - Acc: 98.88% - 9.14s
+2026-06-25 17:55:59 - execution - INFO - [Job a27da444] 2026-06-25 17:55:59 - base - INFO - Checkpoint saved at epoch 115
+2026-06-25 17:55:59 - execution - INFO - [Job a27da444] 2026-06-25 17:55:59 - base - INFO - Epoch 116/200 - starting
+2026-06-25 17:56:05 - execution - INFO - [Job fce852e8] 2026-06-25 17:56:05 - base - INFO - Epoch 134/200 - Loss: 0.001147 - Acc: 98.86% - 10.64s
+2026-06-25 17:56:05 - execution - INFO - [Job fce852e8] 2026-06-25 17:56:05 - base - INFO - Checkpoint saved at epoch 134
+2026-06-25 17:56:05 - execution - INFO - [Job fce852e8] 2026-06-25 17:56:05 - base - INFO - Epoch 135/200 - starting
+2026-06-25 17:56:09 - execution - INFO - [Job a27da444] 2026-06-25 17:56:09 - base - INFO - Epoch 116/200 - Loss: 0.002112 - Acc: 99.00% - 9.13s
+2026-06-25 17:56:09 - execution - INFO - [Job a27da444] 2026-06-25 17:56:09 - base - INFO - Checkpoint saved at epoch 116
+2026-06-25 17:56:09 - execution - INFO - [Job a27da444] 2026-06-25 17:56:09 - base - INFO - Epoch 117/200 - starting
+2026-06-25 17:56:15 - execution - INFO - [Job fce852e8] 2026-06-25 17:56:15 - base - INFO - Epoch 135/200 - Loss: 0.001898 - Acc: 98.93% - 10.72s
+2026-06-25 17:56:15 - execution - INFO - [Job fce852e8] 2026-06-25 17:56:15 - base - INFO - Checkpoint saved at epoch 135
+2026-06-25 17:56:15 - execution - INFO - [Job fce852e8] 2026-06-25 17:56:15 - base - INFO - Epoch 136/200 - starting
+2026-06-25 17:56:18 - execution - INFO - [Job a27da444] 2026-06-25 17:56:18 - base - INFO - Epoch 117/200 - Loss: 0.001938 - Acc: 99.07% - 9.09s
+2026-06-25 17:56:18 - execution - INFO - [Job a27da444] 2026-06-25 17:56:18 - base - INFO - Checkpoint saved at epoch 117
+2026-06-25 17:56:18 - execution - INFO - [Job a27da444] 2026-06-25 17:56:18 - base - INFO - Epoch 118/200 - starting
+2026-06-25 17:56:26 - execution - INFO - [Job fce852e8] 2026-06-25 17:56:26 - base - INFO - Epoch 136/200 - Loss: 0.003611 - Acc: 98.91% - 10.54s
+2026-06-25 17:56:26 - execution - INFO - [Job fce852e8] 2026-06-25 17:56:26 - base - INFO - Checkpoint saved at epoch 136
+2026-06-25 17:56:26 - execution - INFO - [Job fce852e8] 2026-06-25 17:56:26 - base - INFO - Epoch 137/200 - starting
+2026-06-25 17:56:27 - execution - INFO - [Job a27da444] 2026-06-25 17:56:27 - base - INFO - Epoch 118/200 - Loss: 0.002144 - Acc: 99.00% - 8.96s
+2026-06-25 17:56:27 - execution - INFO - [Job a27da444] 2026-06-25 17:56:27 - base - INFO - Checkpoint saved at epoch 118
+2026-06-25 17:56:27 - execution - INFO - [Job a27da444] 2026-06-25 17:56:27 - base - INFO - Epoch 119/200 - starting
+2026-06-25 17:56:36 - execution - INFO - [Job a27da444] 2026-06-25 17:56:36 - base - INFO - Epoch 119/200 - Loss: 0.002164 - Acc: 99.14% - 9.17s
+2026-06-25 17:56:36 - execution - INFO - [Job a27da444] 2026-06-25 17:56:36 - base - INFO - Checkpoint saved at epoch 119
+2026-06-25 17:56:36 - execution - INFO - [Job a27da444] 2026-06-25 17:56:36 - base - INFO - Epoch 120/200 - starting
+2026-06-25 17:56:37 - execution - INFO - [Job fce852e8] 2026-06-25 17:56:37 - base - INFO - Epoch 137/200 - Loss: 0.002813 - Acc: 98.88% - 10.65s
+2026-06-25 17:56:37 - execution - INFO - [Job fce852e8] 2026-06-25 17:56:37 - base - INFO - Checkpoint saved at epoch 137
+2026-06-25 17:56:37 - execution - INFO - [Job fce852e8] 2026-06-25 17:56:37 - base - INFO - Epoch 138/200 - starting
+2026-06-25 17:56:45 - execution - INFO - [Job a27da444] 2026-06-25 17:56:45 - base - INFO - Epoch 120/200 - Loss: 0.001771 - Acc: 98.73% - 9.17s
+2026-06-25 17:56:45 - execution - INFO - [Job a27da444] 2026-06-25 17:56:45 - base - INFO - Checkpoint saved at epoch 120
+2026-06-25 17:56:45 - execution - INFO - [Job a27da444] 2026-06-25 17:56:45 - base - INFO - Epoch 121/200 - starting
+2026-06-25 17:56:47 - execution - INFO - [Job fce852e8] 2026-06-25 17:56:47 - base - INFO - Epoch 138/200 - Loss: 0.001142 - Acc: 98.92% - 10.64s
+2026-06-25 17:56:47 - execution - INFO - [Job fce852e8] 2026-06-25 17:56:47 - base - INFO - Checkpoint saved at epoch 138
+2026-06-25 17:56:47 - execution - INFO - [Job fce852e8] 2026-06-25 17:56:47 - base - INFO - Epoch 139/200 - starting
+2026-06-25 17:56:54 - execution - INFO - [Job a27da444] 2026-06-25 17:56:54 - base - INFO - Epoch 121/200 - Loss: 0.002976 - Acc: 99.04% - 9.15s
+2026-06-25 17:56:54 - execution - INFO - [Job a27da444] 2026-06-25 17:56:54 - base - INFO - Checkpoint saved at epoch 121
+2026-06-25 17:56:54 - execution - INFO - [Job a27da444] 2026-06-25 17:56:54 - base - INFO - Epoch 122/200 - starting
+2026-06-25 17:56:58 - execution - INFO - [Job fce852e8] 2026-06-25 17:56:58 - base - INFO - Epoch 139/200 - Loss: 0.001969 - Acc: 99.05% - 10.66s
+2026-06-25 17:56:58 - execution - INFO - [Job fce852e8] 2026-06-25 17:56:58 - base - INFO - Checkpoint saved at epoch 139
+2026-06-25 17:56:58 - execution - INFO - [Job fce852e8] 2026-06-25 17:56:58 - base - INFO - Epoch 140/200 - starting
+2026-06-25 17:57:03 - execution - INFO - [Job a27da444] 2026-06-25 17:57:03 - base - INFO - Epoch 122/200 - Loss: 0.000487 - Acc: 99.18% - 9.14s
+2026-06-25 17:57:03 - execution - INFO - [Job a27da444] 2026-06-25 17:57:03 - base - INFO - Checkpoint saved at epoch 122
+2026-06-25 17:57:03 - execution - INFO - [Job a27da444] 2026-06-25 17:57:03 - base - INFO - Epoch 123/200 - starting
+2026-06-25 17:57:09 - execution - INFO - [Job fce852e8] 2026-06-25 17:57:09 - base - INFO - Epoch 140/200 - Loss: 0.002472 - Acc: 99.00% - 10.70s
+2026-06-25 17:57:09 - execution - INFO - [Job fce852e8] 2026-06-25 17:57:09 - base - INFO - Checkpoint saved at epoch 140
+2026-06-25 17:57:09 - execution - INFO - [Job fce852e8] 2026-06-25 17:57:09 - base - INFO - Epoch 141/200 - starting
+2026-06-25 17:57:12 - execution - INFO - [Job a27da444] 2026-06-25 17:57:12 - base - INFO - Epoch 123/200 - Loss: 0.001237 - Acc: 99.00% - 9.13s
+2026-06-25 17:57:12 - execution - INFO - [Job a27da444] 2026-06-25 17:57:12 - base - INFO - Checkpoint saved at epoch 123
+2026-06-25 17:57:12 - execution - INFO - [Job a27da444] 2026-06-25 17:57:12 - base - INFO - Epoch 124/200 - starting
+2026-06-25 17:57:19 - execution - INFO - [Job fce852e8] 2026-06-25 17:57:19 - base - INFO - Epoch 141/200 - Loss: 0.000317 - Acc: 99.02% - 10.64s
+2026-06-25 17:57:19 - execution - INFO - [Job fce852e8] 2026-06-25 17:57:19 - base - INFO - Checkpoint saved at epoch 141
+2026-06-25 17:57:19 - execution - INFO - [Job fce852e8] 2026-06-25 17:57:19 - base - INFO - Epoch 142/200 - starting
+2026-06-25 17:57:22 - execution - INFO - [Job a27da444] 2026-06-25 17:57:22 - base - INFO - Epoch 124/200 - Loss: 0.002833 - Acc: 99.11% - 9.18s
+2026-06-25 17:57:22 - execution - INFO - [Job a27da444] 2026-06-25 17:57:22 - base - INFO - Checkpoint saved at epoch 124
+2026-06-25 17:57:22 - execution - INFO - [Job a27da444] 2026-06-25 17:57:22 - base - INFO - Epoch 125/200 - starting
+2026-06-25 17:57:30 - execution - INFO - [Job fce852e8] 2026-06-25 17:57:30 - base - INFO - Epoch 142/200 - Loss: 0.004222 - Acc: 98.98% - 10.70s
+2026-06-25 17:57:30 - execution - INFO - [Job fce852e8] 2026-06-25 17:57:30 - base - INFO - Checkpoint saved at epoch 142
+2026-06-25 17:57:30 - execution - INFO - [Job fce852e8] 2026-06-25 17:57:30 - base - INFO - Epoch 143/200 - starting
+2026-06-25 17:57:31 - execution - INFO - [Job a27da444] 2026-06-25 17:57:31 - base - INFO - Epoch 125/200 - Loss: 0.000721 - Acc: 99.06% - 9.13s
+2026-06-25 17:57:31 - execution - INFO - [Job a27da444] 2026-06-25 17:57:31 - base - INFO - Checkpoint saved at epoch 125
+2026-06-25 17:57:31 - execution - INFO - [Job a27da444] 2026-06-25 17:57:31 - base - INFO - Epoch 126/200 - starting
+2026-06-25 17:57:40 - execution - INFO - [Job a27da444] 2026-06-25 17:57:40 - base - INFO - Epoch 126/200 - Loss: 0.002053 - Acc: 98.99% - 9.16s
+2026-06-25 17:57:40 - execution - INFO - [Job a27da444] 2026-06-25 17:57:40 - base - INFO - Checkpoint saved at epoch 126
+2026-06-25 17:57:40 - execution - INFO - [Job a27da444] 2026-06-25 17:57:40 - base - INFO - Epoch 127/200 - starting
+2026-06-25 17:57:41 - execution - INFO - [Job fce852e8] 2026-06-25 17:57:41 - base - INFO - Epoch 143/200 - Loss: 0.001415 - Acc: 99.00% - 10.67s
+2026-06-25 17:57:41 - execution - INFO - [Job fce852e8] 2026-06-25 17:57:41 - base - INFO - Checkpoint saved at epoch 143
+2026-06-25 17:57:41 - execution - INFO - [Job fce852e8] 2026-06-25 17:57:41 - base - INFO - Epoch 144/200 - starting
+2026-06-25 17:57:49 - execution - INFO - [Job a27da444] 2026-06-25 17:57:49 - base - INFO - Epoch 127/200 - Loss: 0.001362 - Acc: 98.94% - 9.13s
+2026-06-25 17:57:49 - execution - INFO - [Job a27da444] 2026-06-25 17:57:49 - base - INFO - Checkpoint saved at epoch 127
+2026-06-25 17:57:49 - execution - INFO - [Job a27da444] 2026-06-25 17:57:49 - base - INFO - Epoch 128/200 - starting
+2026-06-25 17:57:51 - execution - INFO - [Job fce852e8] 2026-06-25 17:57:51 - base - INFO - Epoch 144/200 - Loss: 0.002271 - Acc: 99.11% - 10.69s
+2026-06-25 17:57:51 - execution - INFO - [Job fce852e8] 2026-06-25 17:57:51 - base - INFO - Checkpoint saved at epoch 144
+2026-06-25 17:57:51 - execution - INFO - [Job fce852e8] 2026-06-25 17:57:51 - base - INFO - Epoch 145/200 - starting
+2026-06-25 17:57:58 - execution - INFO - [Job a27da444] 2026-06-25 17:57:58 - base - INFO - Epoch 128/200 - Loss: 0.001431 - Acc: 99.00% - 9.20s
+2026-06-25 17:57:58 - execution - INFO - [Job a27da444] 2026-06-25 17:57:58 - base - INFO - Checkpoint saved at epoch 128
+2026-06-25 17:57:58 - execution - INFO - [Job a27da444] 2026-06-25 17:57:58 - base - INFO - Epoch 129/200 - starting
+2026-06-25 17:58:02 - execution - INFO - [Job fce852e8] 2026-06-25 17:58:02 - base - INFO - Epoch 145/200 - Loss: 0.001531 - Acc: 99.02% - 10.69s
+2026-06-25 17:58:02 - execution - INFO - [Job fce852e8] 2026-06-25 17:58:02 - base - INFO - Checkpoint saved at epoch 145
+2026-06-25 17:58:02 - execution - INFO - [Job fce852e8] 2026-06-25 17:58:02 - base - INFO - Epoch 146/200 - starting
+2026-06-25 17:58:07 - execution - INFO - [Job a27da444] 2026-06-25 17:58:07 - base - INFO - Epoch 129/200 - Loss: 0.002093 - Acc: 98.91% - 9.17s
+2026-06-25 17:58:07 - execution - INFO - [Job a27da444] 2026-06-25 17:58:07 - base - INFO - Checkpoint saved at epoch 129
+2026-06-25 17:58:07 - execution - INFO - [Job a27da444] 2026-06-25 17:58:07 - base - INFO - Epoch 130/200 - starting
+2026-06-25 17:58:13 - execution - INFO - [Job fce852e8] 2026-06-25 17:58:13 - base - INFO - Epoch 146/200 - Loss: 0.002713 - Acc: 99.05% - 10.66s
+2026-06-25 17:58:13 - execution - INFO - [Job fce852e8] 2026-06-25 17:58:13 - base - INFO - Checkpoint saved at epoch 146
+2026-06-25 17:58:13 - execution - INFO - [Job fce852e8] 2026-06-25 17:58:13 - base - INFO - Epoch 147/200 - starting
+2026-06-25 17:58:17 - execution - INFO - [Job a27da444] 2026-06-25 17:58:17 - base - INFO - Epoch 130/200 - Loss: 0.001800 - Acc: 99.10% - 9.19s
+2026-06-25 17:58:17 - execution - INFO - [Job a27da444] 2026-06-25 17:58:17 - base - INFO - Checkpoint saved at epoch 130
+2026-06-25 17:58:17 - execution - INFO - [Job a27da444] 2026-06-25 17:58:17 - base - INFO - Epoch 131/200 - starting
+2026-06-25 17:58:23 - execution - INFO - [Job fce852e8] 2026-06-25 17:58:23 - base - INFO - Epoch 147/200 - Loss: 0.001478 - Acc: 99.04% - 10.63s
+2026-06-25 17:58:23 - execution - INFO - [Job fce852e8] 2026-06-25 17:58:23 - base - INFO - Checkpoint saved at epoch 147
+2026-06-25 17:58:23 - execution - INFO - [Job fce852e8] 2026-06-25 17:58:23 - base - INFO - Epoch 148/200 - starting
+2026-06-25 17:58:26 - execution - INFO - [Job a27da444] 2026-06-25 17:58:26 - base - INFO - Epoch 131/200 - Loss: 0.000371 - Acc: 99.13% - 9.09s
+2026-06-25 17:58:26 - execution - INFO - [Job a27da444] 2026-06-25 17:58:26 - base - INFO - Checkpoint saved at epoch 131
+2026-06-25 17:58:26 - execution - INFO - [Job a27da444] 2026-06-25 17:58:26 - base - INFO - Epoch 132/200 - starting
+2026-06-25 17:58:34 - execution - INFO - [Job fce852e8] 2026-06-25 17:58:34 - base - INFO - Epoch 148/200 - Loss: 0.002677 - Acc: 99.01% - 10.56s
+2026-06-25 17:58:34 - execution - INFO - [Job fce852e8] 2026-06-25 17:58:34 - base - INFO - Checkpoint saved at epoch 148
+2026-06-25 17:58:34 - execution - INFO - [Job fce852e8] 2026-06-25 17:58:34 - base - INFO - Epoch 149/200 - starting
+2026-06-25 17:58:35 - execution - INFO - [Job a27da444] 2026-06-25 17:58:35 - base - INFO - Epoch 132/200 - Loss: 0.003091 - Acc: 98.90% - 9.09s
+2026-06-25 17:58:35 - execution - INFO - [Job a27da444] 2026-06-25 17:58:35 - base - INFO - Checkpoint saved at epoch 132
+2026-06-25 17:58:35 - execution - INFO - [Job a27da444] 2026-06-25 17:58:35 - base - INFO - Epoch 133/200 - starting
+2026-06-25 17:58:44 - execution - INFO - [Job a27da444] 2026-06-25 17:58:44 - base - INFO - Epoch 133/200 - Loss: 0.000981 - Acc: 98.95% - 9.07s
+2026-06-25 17:58:44 - execution - INFO - [Job a27da444] 2026-06-25 17:58:44 - base - INFO - Checkpoint saved at epoch 133
+2026-06-25 17:58:44 - execution - INFO - [Job a27da444] 2026-06-25 17:58:44 - base - INFO - Epoch 134/200 - starting
+2026-06-25 17:58:44 - execution - INFO - [Job fce852e8] 2026-06-25 17:58:44 - base - INFO - Epoch 149/200 - Loss: 0.001830 - Acc: 99.18% - 10.51s
+2026-06-25 17:58:44 - execution - INFO - [Job fce852e8] 2026-06-25 17:58:44 - base - INFO - Checkpoint saved at epoch 149
+2026-06-25 17:58:44 - execution - INFO - [Job fce852e8] 2026-06-25 17:58:44 - base - INFO - Epoch 150/200 - starting
+2026-06-25 17:58:53 - execution - INFO - [Job a27da444] 2026-06-25 17:58:53 - base - INFO - Epoch 134/200 - Loss: 0.003136 - Acc: 99.06% - 9.06s
+2026-06-25 17:58:53 - execution - INFO - [Job a27da444] 2026-06-25 17:58:53 - base - INFO - Checkpoint saved at epoch 134
+2026-06-25 17:58:53 - execution - INFO - [Job a27da444] 2026-06-25 17:58:53 - base - INFO - Epoch 135/200 - starting
+2026-06-25 17:58:55 - execution - INFO - [Job fce852e8] 2026-06-25 17:58:55 - base - INFO - Epoch 150/200 - Loss: 0.001061 - Acc: 99.10% - 10.51s
+2026-06-25 17:58:55 - execution - INFO - [Job fce852e8] 2026-06-25 17:58:55 - base - INFO - Checkpoint saved at epoch 150
+2026-06-25 17:58:55 - execution - INFO - [Job fce852e8] 2026-06-25 17:58:55 - base - INFO - Epoch 151/200 - starting
+2026-06-25 17:59:02 - execution - INFO - [Job a27da444] 2026-06-25 17:59:02 - base - INFO - Epoch 135/200 - Loss: 0.000838 - Acc: 98.98% - 9.11s
+2026-06-25 17:59:02 - execution - INFO - [Job a27da444] 2026-06-25 17:59:02 - base - INFO - Checkpoint saved at epoch 135
+2026-06-25 17:59:02 - execution - INFO - [Job a27da444] 2026-06-25 17:59:02 - base - INFO - Epoch 136/200 - starting
+2026-06-25 17:59:05 - execution - INFO - [Job fce852e8] 2026-06-25 17:59:05 - base - INFO - Epoch 151/200 - Loss: 0.001370 - Acc: 99.21% - 10.60s
+2026-06-25 17:59:05 - execution - INFO - [Job fce852e8] 2026-06-25 17:59:05 - base - INFO - Checkpoint saved at epoch 151
+2026-06-25 17:59:05 - execution - INFO - [Job fce852e8] 2026-06-25 17:59:05 - base - INFO - Epoch 152/200 - starting
+2026-06-25 17:59:11 - execution - INFO - [Job a27da444] 2026-06-25 17:59:11 - base - INFO - Epoch 136/200 - Loss: 0.000191 - Acc: 99.09% - 9.14s
+2026-06-25 17:59:11 - execution - INFO - [Job a27da444] 2026-06-25 17:59:11 - base - INFO - Checkpoint saved at epoch 136
+2026-06-25 17:59:11 - execution - INFO - [Job a27da444] 2026-06-25 17:59:11 - base - INFO - Epoch 137/200 - starting
+2026-06-25 17:59:16 - execution - INFO - [Job fce852e8] 2026-06-25 17:59:16 - base - INFO - Epoch 152/200 - Loss: 0.002870 - Acc: 99.04% - 10.61s
+2026-06-25 17:59:16 - execution - INFO - [Job fce852e8] 2026-06-25 17:59:16 - base - INFO - Checkpoint saved at epoch 152
+2026-06-25 17:59:16 - execution - INFO - [Job fce852e8] 2026-06-25 17:59:16 - base - INFO - Epoch 153/200 - starting
+2026-06-25 17:59:20 - execution - INFO - [Job a27da444] 2026-06-25 17:59:20 - base - INFO - Epoch 137/200 - Loss: 0.000035 - Acc: 99.07% - 9.15s
+2026-06-25 17:59:20 - execution - INFO - [Job a27da444] 2026-06-25 17:59:20 - base - INFO - Checkpoint saved at epoch 137
+2026-06-25 17:59:20 - execution - INFO - [Job a27da444] 2026-06-25 17:59:20 - base - INFO - Epoch 138/200 - starting
+2026-06-25 17:59:27 - execution - INFO - [Job fce852e8] 2026-06-25 17:59:27 - base - INFO - Epoch 153/200 - Loss: 0.002408 - Acc: 99.10% - 10.58s
+2026-06-25 17:59:27 - execution - INFO - [Job fce852e8] 2026-06-25 17:59:27 - base - INFO - Checkpoint saved at epoch 153
+2026-06-25 17:59:27 - execution - INFO - [Job fce852e8] 2026-06-25 17:59:27 - base - INFO - Epoch 154/200 - starting
+2026-06-25 17:59:29 - execution - INFO - [Job a27da444] 2026-06-25 17:59:29 - base - INFO - Epoch 138/200 - Loss: 0.000020 - Acc: 99.10% - 9.13s
+2026-06-25 17:59:29 - execution - INFO - [Job a27da444] 2026-06-25 17:59:29 - base - INFO - Checkpoint saved at epoch 138
+2026-06-25 17:59:29 - execution - INFO - [Job a27da444] 2026-06-25 17:59:29 - base - INFO - Epoch 139/200 - starting
+2026-06-25 17:59:37 - execution - INFO - [Job fce852e8] 2026-06-25 17:59:37 - base - INFO - Epoch 154/200 - Loss: 0.001011 - Acc: 99.09% - 10.62s
+2026-06-25 17:59:37 - execution - INFO - [Job fce852e8] 2026-06-25 17:59:37 - base - INFO - Checkpoint saved at epoch 154
+2026-06-25 17:59:37 - execution - INFO - [Job fce852e8] 2026-06-25 17:59:37 - base - INFO - Epoch 155/200 - starting
+2026-06-25 17:59:39 - execution - INFO - [Job a27da444] 2026-06-25 17:59:39 - base - INFO - Epoch 139/200 - Loss: 0.000013 - Acc: 99.11% - 9.08s
+2026-06-25 17:59:39 - execution - INFO - [Job a27da444] 2026-06-25 17:59:39 - base - INFO - Checkpoint saved at epoch 139
+2026-06-25 17:59:39 - execution - INFO - [Job a27da444] 2026-06-25 17:59:39 - base - INFO - Epoch 140/200 - starting
+2026-06-25 17:59:48 - execution - INFO - [Job a27da444] 2026-06-25 17:59:48 - base - INFO - Epoch 140/200 - Loss: 0.000009 - Acc: 99.11% - 9.11s
+2026-06-25 17:59:48 - execution - INFO - [Job a27da444] 2026-06-25 17:59:48 - base - INFO - Checkpoint saved at epoch 140
+2026-06-25 17:59:48 - execution - INFO - [Job a27da444] 2026-06-25 17:59:48 - base - INFO - Epoch 141/200 - starting
+2026-06-25 17:59:48 - execution - INFO - [Job fce852e8] 2026-06-25 17:59:48 - base - INFO - Epoch 155/200 - Loss: 0.001127 - Acc: 99.00% - 10.58s
+2026-06-25 17:59:48 - execution - INFO - [Job fce852e8] 2026-06-25 17:59:48 - base - INFO - Checkpoint saved at epoch 155
+2026-06-25 17:59:48 - execution - INFO - [Job fce852e8] 2026-06-25 17:59:48 - base - INFO - Epoch 156/200 - starting
+2026-06-25 17:59:57 - execution - INFO - [Job a27da444] 2026-06-25 17:59:57 - base - INFO - Epoch 141/200 - Loss: 0.000006 - Acc: 99.11% - 9.22s
+2026-06-25 17:59:57 - execution - INFO - [Job a27da444] 2026-06-25 17:59:57 - base - INFO - Checkpoint saved at epoch 141
+2026-06-25 17:59:57 - execution - INFO - [Job a27da444] 2026-06-25 17:59:57 - base - INFO - Epoch 142/200 - starting
+2026-06-25 17:59:59 - execution - INFO - [Job fce852e8] 2026-06-25 17:59:59 - base - INFO - Epoch 156/200 - Loss: 0.001968 - Acc: 98.82% - 10.73s
+2026-06-25 17:59:59 - execution - INFO - [Job fce852e8] 2026-06-25 17:59:59 - base - INFO - Checkpoint saved at epoch 156
+2026-06-25 17:59:59 - execution - INFO - [Job fce852e8] 2026-06-25 17:59:59 - base - INFO - Epoch 157/200 - starting
+2026-06-25 18:00:06 - execution - INFO - [Job a27da444] 2026-06-25 18:00:06 - base - INFO - Epoch 142/200 - Loss: 0.000004 - Acc: 99.12% - 9.16s
+2026-06-25 18:00:06 - execution - INFO - [Job a27da444] 2026-06-25 18:00:06 - base - INFO - Checkpoint saved at epoch 142
+2026-06-25 18:00:06 - execution - INFO - [Job a27da444] 2026-06-25 18:00:06 - base - INFO - Epoch 143/200 - starting
+2026-06-25 18:00:09 - execution - INFO - [Job fce852e8] 2026-06-25 18:00:09 - base - INFO - Epoch 157/200 - Loss: 0.002865 - Acc: 99.03% - 10.65s
+2026-06-25 18:00:09 - execution - INFO - [Job fce852e8] 2026-06-25 18:00:09 - base - INFO - Checkpoint saved at epoch 157
+2026-06-25 18:00:09 - execution - INFO - [Job fce852e8] 2026-06-25 18:00:09 - base - INFO - Epoch 158/200 - starting
+2026-06-25 18:00:15 - execution - INFO - [Job a27da444] 2026-06-25 18:00:15 - base - INFO - Epoch 143/200 - Loss: 0.000003 - Acc: 99.12% - 9.11s
+2026-06-25 18:00:15 - execution - INFO - [Job a27da444] 2026-06-25 18:00:15 - base - INFO - Checkpoint saved at epoch 143
+2026-06-25 18:00:15 - execution - INFO - [Job a27da444] 2026-06-25 18:00:15 - base - INFO - Epoch 144/200 - starting
+2026-06-25 18:00:20 - execution - INFO - [Job fce852e8] 2026-06-25 18:00:20 - base - INFO - Epoch 158/200 - Loss: 0.000533 - Acc: 99.05% - 10.61s
+2026-06-25 18:00:20 - execution - INFO - [Job fce852e8] 2026-06-25 18:00:20 - base - INFO - Checkpoint saved at epoch 158
+2026-06-25 18:00:20 - execution - INFO - [Job fce852e8] 2026-06-25 18:00:20 - base - INFO - Epoch 159/200 - starting
+2026-06-25 18:00:24 - execution - INFO - [Job a27da444] 2026-06-25 18:00:24 - base - INFO - Epoch 144/200 - Loss: 0.000002 - Acc: 99.11% - 9.13s
+2026-06-25 18:00:24 - execution - INFO - [Job a27da444] 2026-06-25 18:00:24 - base - INFO - Checkpoint saved at epoch 144
+2026-06-25 18:00:24 - execution - INFO - [Job a27da444] 2026-06-25 18:00:24 - base - INFO - Epoch 145/200 - starting
+2026-06-25 18:00:31 - execution - INFO - [Job fce852e8] 2026-06-25 18:00:31 - base - INFO - Epoch 159/200 - Loss: 0.001489 - Acc: 99.02% - 10.75s
+2026-06-25 18:00:31 - execution - INFO - [Job fce852e8] 2026-06-25 18:00:31 - base - INFO - Checkpoint saved at epoch 159
+2026-06-25 18:00:31 - execution - INFO - [Job fce852e8] 2026-06-25 18:00:31 - base - INFO - Epoch 160/200 - starting
+2026-06-25 18:00:33 - execution - INFO - [Job a27da444] 2026-06-25 18:00:33 - base - INFO - Epoch 145/200 - Loss: 0.000001 - Acc: 99.11% - 9.15s
+2026-06-25 18:00:33 - execution - INFO - [Job a27da444] 2026-06-25 18:00:33 - base - INFO - Checkpoint saved at epoch 145
+2026-06-25 18:00:33 - execution - INFO - [Job a27da444] 2026-06-25 18:00:33 - base - INFO - Epoch 146/200 - starting
+2026-06-25 18:00:41 - execution - INFO - [Job fce852e8] 2026-06-25 18:00:41 - base - INFO - Epoch 160/200 - Loss: 0.003878 - Acc: 99.03% - 10.65s
+2026-06-25 18:00:41 - execution - INFO - [Job fce852e8] 2026-06-25 18:00:41 - base - INFO - Checkpoint saved at epoch 160
+2026-06-25 18:00:41 - execution - INFO - [Job fce852e8] 2026-06-25 18:00:41 - base - INFO - Epoch 161/200 - starting
+2026-06-25 18:00:43 - execution - INFO - [Job a27da444] 2026-06-25 18:00:43 - base - INFO - Epoch 146/200 - Loss: 0.000001 - Acc: 99.12% - 9.16s
+2026-06-25 18:00:43 - execution - INFO - [Job a27da444] 2026-06-25 18:00:43 - base - INFO - Checkpoint saved at epoch 146
+2026-06-25 18:00:43 - execution - INFO - [Job a27da444] 2026-06-25 18:00:43 - base - INFO - Epoch 147/200 - starting
+2026-06-25 18:00:52 - execution - INFO - [Job a27da444] 2026-06-25 18:00:52 - base - INFO - Epoch 147/200 - Loss: 0.000000 - Acc: 99.13% - 9.15s
+2026-06-25 18:00:52 - execution - INFO - [Job a27da444] 2026-06-25 18:00:52 - base - INFO - Checkpoint saved at epoch 147
+2026-06-25 18:00:52 - execution - INFO - [Job a27da444] 2026-06-25 18:00:52 - base - INFO - Epoch 148/200 - starting
+2026-06-25 18:00:52 - execution - INFO - [Job fce852e8] 2026-06-25 18:00:52 - base - INFO - Epoch 161/200 - Loss: 0.001188 - Acc: 98.99% - 10.61s
+2026-06-25 18:00:52 - execution - INFO - [Job fce852e8] 2026-06-25 18:00:52 - base - INFO - Checkpoint saved at epoch 161
+2026-06-25 18:00:52 - execution - INFO - [Job fce852e8] 2026-06-25 18:00:52 - base - INFO - Epoch 162/200 - starting
+2026-06-25 18:01:01 - execution - INFO - [Job a27da444] 2026-06-25 18:01:01 - base - INFO - Epoch 148/200 - Loss: 0.000000 - Acc: 99.13% - 9.24s
+2026-06-25 18:01:01 - execution - INFO - [Job a27da444] 2026-06-25 18:01:01 - base - INFO - Checkpoint saved at epoch 148
+2026-06-25 18:01:01 - execution - INFO - [Job a27da444] 2026-06-25 18:01:01 - base - INFO - Epoch 149/200 - starting
+2026-06-25 18:01:03 - execution - INFO - [Job fce852e8] 2026-06-25 18:01:03 - base - INFO - Epoch 162/200 - Loss: 0.000497 - Acc: 99.10% - 10.69s
+2026-06-25 18:01:03 - execution - INFO - [Job fce852e8] 2026-06-25 18:01:03 - base - INFO - Checkpoint saved at epoch 162
+2026-06-25 18:01:03 - execution - INFO - [Job fce852e8] 2026-06-25 18:01:03 - base - INFO - Epoch 163/200 - starting
+2026-06-25 18:01:10 - execution - INFO - [Job a27da444] 2026-06-25 18:01:10 - base - INFO - Epoch 149/200 - Loss: 0.000000 - Acc: 99.14% - 9.17s
+2026-06-25 18:01:10 - execution - INFO - [Job a27da444] 2026-06-25 18:01:10 - base - INFO - Checkpoint saved at epoch 149
+2026-06-25 18:01:10 - execution - INFO - [Job a27da444] 2026-06-25 18:01:10 - base - INFO - Epoch 150/200 - starting
+2026-06-25 18:01:13 - execution - INFO - [Job fce852e8] 2026-06-25 18:01:13 - base - INFO - Epoch 163/200 - Loss: 0.000898 - Acc: 98.85% - 10.76s
+2026-06-25 18:01:13 - execution - INFO - [Job fce852e8] 2026-06-25 18:01:13 - base - INFO - Checkpoint saved at epoch 163
+2026-06-25 18:01:13 - execution - INFO - [Job fce852e8] 2026-06-25 18:01:13 - base - INFO - Epoch 164/200 - starting
+2026-06-25 18:01:19 - execution - INFO - [Job a27da444] 2026-06-25 18:01:19 - base - INFO - Epoch 150/200 - Loss: 0.000000 - Acc: 99.13% - 9.07s
+2026-06-25 18:01:19 - execution - INFO - [Job a27da444] 2026-06-25 18:01:19 - base - INFO - Checkpoint saved at epoch 150
+2026-06-25 18:01:19 - execution - INFO - [Job a27da444] 2026-06-25 18:01:19 - base - INFO - Epoch 151/200 - starting
+2026-06-25 18:01:24 - execution - INFO - [Job fce852e8] 2026-06-25 18:01:24 - base - INFO - Epoch 164/200 - Loss: 0.003793 - Acc: 99.00% - 10.62s
+2026-06-25 18:01:24 - execution - INFO - [Job fce852e8] 2026-06-25 18:01:24 - base - INFO - Checkpoint saved at epoch 164
+2026-06-25 18:01:24 - execution - INFO - [Job fce852e8] 2026-06-25 18:01:24 - base - INFO - Epoch 165/200 - starting
+2026-06-25 18:01:28 - execution - INFO - [Job a27da444] 2026-06-25 18:01:28 - base - INFO - Epoch 151/200 - Loss: 0.000000 - Acc: 99.16% - 9.08s
+2026-06-25 18:01:28 - execution - INFO - [Job a27da444] 2026-06-25 18:01:28 - base - INFO - Checkpoint saved at epoch 151
+2026-06-25 18:01:28 - execution - INFO - [Job a27da444] 2026-06-25 18:01:28 - base - INFO - Epoch 152/200 - starting
+2026-06-25 18:01:35 - execution - INFO - [Job fce852e8] 2026-06-25 18:01:35 - base - INFO - Epoch 165/200 - Loss: 0.001268 - Acc: 99.13% - 10.66s
+2026-06-25 18:01:35 - execution - INFO - [Job fce852e8] 2026-06-25 18:01:35 - base - INFO - Checkpoint saved at epoch 165
+2026-06-25 18:01:35 - execution - INFO - [Job fce852e8] 2026-06-25 18:01:35 - base - INFO - Epoch 166/200 - starting
+2026-06-25 18:01:37 - execution - INFO - [Job a27da444] 2026-06-25 18:01:37 - base - INFO - Epoch 152/200 - Loss: 0.000000 - Acc: 99.14% - 9.11s
+2026-06-25 18:01:37 - execution - INFO - [Job a27da444] 2026-06-25 18:01:37 - base - INFO - Checkpoint saved at epoch 152
+2026-06-25 18:01:37 - execution - INFO - [Job a27da444] 2026-06-25 18:01:37 - base - INFO - Epoch 153/200 - starting
+2026-06-25 18:01:45 - execution - INFO - [Job fce852e8] 2026-06-25 18:01:45 - base - INFO - Epoch 166/200 - Loss: 0.000158 - Acc: 99.19% - 10.65s
+2026-06-25 18:01:45 - execution - INFO - [Job fce852e8] 2026-06-25 18:01:45 - base - INFO - Checkpoint saved at epoch 166
+2026-06-25 18:01:45 - execution - INFO - [Job fce852e8] 2026-06-25 18:01:45 - base - INFO - Epoch 167/200 - starting
+2026-06-25 18:01:47 - execution - INFO - [Job a27da444] 2026-06-25 18:01:47 - base - INFO - Epoch 153/200 - Loss: 0.000000 - Acc: 99.16% - 9.22s
+2026-06-25 18:01:47 - execution - INFO - [Job a27da444] 2026-06-25 18:01:47 - base - INFO - Checkpoint saved at epoch 153
+2026-06-25 18:01:47 - execution - INFO - [Job a27da444] 2026-06-25 18:01:47 - base - INFO - Epoch 154/200 - starting
+2026-06-25 18:01:56 - execution - INFO - [Job a27da444] 2026-06-25 18:01:56 - base - INFO - Epoch 154/200 - Loss: 0.000000 - Acc: 99.15% - 9.15s
+2026-06-25 18:01:56 - execution - INFO - [Job a27da444] 2026-06-25 18:01:56 - base - INFO - Checkpoint saved at epoch 154
+2026-06-25 18:01:56 - execution - INFO - [Job a27da444] 2026-06-25 18:01:56 - base - INFO - Epoch 155/200 - starting
+2026-06-25 18:01:56 - execution - INFO - [Job fce852e8] 2026-06-25 18:01:56 - base - INFO - Epoch 167/200 - Loss: 0.002906 - Acc: 98.95% - 10.67s
+2026-06-25 18:01:56 - execution - INFO - [Job fce852e8] 2026-06-25 18:01:56 - base - INFO - Checkpoint saved at epoch 167
+2026-06-25 18:01:56 - execution - INFO - [Job fce852e8] 2026-06-25 18:01:56 - base - INFO - Epoch 168/200 - starting
+2026-06-25 18:02:05 - execution - INFO - [Job a27da444] 2026-06-25 18:02:05 - base - INFO - Epoch 155/200 - Loss: 0.000000 - Acc: 99.17% - 9.15s
+2026-06-25 18:02:05 - execution - INFO - [Job a27da444] 2026-06-25 18:02:05 - base - INFO - Checkpoint saved at epoch 155
+2026-06-25 18:02:05 - execution - INFO - [Job a27da444] 2026-06-25 18:02:05 - base - INFO - Epoch 156/200 - starting
+2026-06-25 18:02:07 - execution - INFO - [Job fce852e8] 2026-06-25 18:02:07 - base - INFO - Epoch 168/200 - Loss: 0.002379 - Acc: 98.97% - 10.67s
+2026-06-25 18:02:07 - execution - INFO - [Job fce852e8] 2026-06-25 18:02:07 - base - INFO - Checkpoint saved at epoch 168
+2026-06-25 18:02:07 - execution - INFO - [Job fce852e8] 2026-06-25 18:02:07 - base - INFO - Epoch 169/200 - starting
+2026-06-25 18:02:14 - execution - INFO - [Job a27da444] 2026-06-25 18:02:14 - base - INFO - Epoch 156/200 - Loss: 0.000000 - Acc: 99.15% - 9.16s
+2026-06-25 18:02:14 - execution - INFO - [Job a27da444] 2026-06-25 18:02:14 - base - INFO - Checkpoint saved at epoch 156
+2026-06-25 18:02:14 - execution - INFO - [Job a27da444] 2026-06-25 18:02:14 - base - INFO - Epoch 157/200 - starting
+2026-06-25 18:02:17 - execution - INFO - [Job fce852e8] 2026-06-25 18:02:17 - base - INFO - Epoch 169/200 - Loss: 0.001157 - Acc: 99.13% - 10.67s
+2026-06-25 18:02:17 - execution - INFO - [Job fce852e8] 2026-06-25 18:02:17 - base - INFO - Checkpoint saved at epoch 169
+2026-06-25 18:02:17 - execution - INFO - [Job fce852e8] 2026-06-25 18:02:17 - base - INFO - Epoch 170/200 - starting
+2026-06-25 18:02:23 - execution - INFO - [Job a27da444] 2026-06-25 18:02:23 - base - INFO - Epoch 157/200 - Loss: 0.000000 - Acc: 99.13% - 9.18s
+2026-06-25 18:02:23 - execution - INFO - [Job a27da444] 2026-06-25 18:02:23 - base - INFO - Checkpoint saved at epoch 157
+2026-06-25 18:02:23 - execution - INFO - [Job a27da444] 2026-06-25 18:02:23 - base - INFO - Epoch 158/200 - starting
+2026-06-25 18:02:28 - execution - INFO - [Job fce852e8] 2026-06-25 18:02:28 - base - INFO - Epoch 170/200 - Loss: 0.001098 - Acc: 98.98% - 10.69s
+2026-06-25 18:02:28 - execution - INFO - [Job fce852e8] 2026-06-25 18:02:28 - base - INFO - Checkpoint saved at epoch 170
+2026-06-25 18:02:28 - execution - INFO - [Job fce852e8] 2026-06-25 18:02:28 - base - INFO - Epoch 171/200 - starting
+2026-06-25 18:02:32 - execution - INFO - [Job a27da444] 2026-06-25 18:02:32 - base - INFO - Epoch 158/200 - Loss: 0.000000 - Acc: 99.13% - 9.14s
+2026-06-25 18:02:32 - execution - INFO - [Job a27da444] 2026-06-25 18:02:32 - base - INFO - Checkpoint saved at epoch 158
+2026-06-25 18:02:32 - execution - INFO - [Job a27da444] 2026-06-25 18:02:32 - base - INFO - Epoch 159/200 - starting
+2026-06-25 18:02:39 - execution - INFO - [Job fce852e8] 2026-06-25 18:02:39 - base - INFO - Epoch 171/200 - Loss: 0.001520 - Acc: 99.03% - 10.62s
+2026-06-25 18:02:39 - execution - INFO - [Job fce852e8] 2026-06-25 18:02:39 - base - INFO - Checkpoint saved at epoch 171
+2026-06-25 18:02:39 - execution - INFO - [Job fce852e8] 2026-06-25 18:02:39 - base - INFO - Epoch 172/200 - starting
+2026-06-25 18:02:42 - execution - INFO - [Job a27da444] 2026-06-25 18:02:42 - base - INFO - Epoch 159/200 - Loss: 0.000000 - Acc: 99.14% - 9.14s
+2026-06-25 18:02:42 - execution - INFO - [Job a27da444] 2026-06-25 18:02:42 - base - INFO - Checkpoint saved at epoch 159
+2026-06-25 18:02:42 - execution - INFO - [Job a27da444] 2026-06-25 18:02:42 - base - INFO - Epoch 160/200 - starting
+2026-06-25 18:02:49 - execution - INFO - [Job fce852e8] 2026-06-25 18:02:49 - base - INFO - Epoch 172/200 - Loss: 0.001212 - Acc: 98.90% - 10.67s
+2026-06-25 18:02:49 - execution - INFO - [Job fce852e8] 2026-06-25 18:02:49 - base - INFO - Checkpoint saved at epoch 172
+2026-06-25 18:02:49 - execution - INFO - [Job fce852e8] 2026-06-25 18:02:49 - base - INFO - Epoch 173/200 - starting
+2026-06-25 18:02:51 - execution - INFO - [Job a27da444] 2026-06-25 18:02:51 - base - INFO - Epoch 160/200 - Loss: 0.000000 - Acc: 99.13% - 9.10s
+2026-06-25 18:02:51 - execution - INFO - [Job a27da444] 2026-06-25 18:02:51 - base - INFO - Checkpoint saved at epoch 160
+2026-06-25 18:02:51 - execution - INFO - [Job a27da444] 2026-06-25 18:02:51 - base - INFO - Epoch 161/200 - starting
+2026-06-25 18:03:00 - execution - INFO - [Job a27da444] 2026-06-25 18:03:00 - base - INFO - Epoch 161/200 - Loss: 0.000000 - Acc: 99.14% - 9.08s
+2026-06-25 18:03:00 - execution - INFO - [Job a27da444] 2026-06-25 18:03:00 - base - INFO - Checkpoint saved at epoch 161
+2026-06-25 18:03:00 - execution - INFO - [Job a27da444] 2026-06-25 18:03:00 - base - INFO - Epoch 162/200 - starting
+2026-06-25 18:03:00 - execution - INFO - [Job fce852e8] 2026-06-25 18:03:00 - base - INFO - Epoch 173/200 - Loss: 0.003298 - Acc: 99.02% - 10.60s
+2026-06-25 18:03:00 - execution - INFO - [Job fce852e8] 2026-06-25 18:03:00 - base - INFO - Checkpoint saved at epoch 173
+2026-06-25 18:03:00 - execution - INFO - [Job fce852e8] 2026-06-25 18:03:00 - base - INFO - Epoch 174/200 - starting
+2026-06-25 18:03:09 - execution - INFO - [Job a27da444] 2026-06-25 18:03:09 - base - INFO - Epoch 162/200 - Loss: 0.000000 - Acc: 99.19% - 9.05s
+2026-06-25 18:03:09 - execution - INFO - [Job a27da444] 2026-06-25 18:03:09 - base - INFO - Checkpoint saved at epoch 162
+2026-06-25 18:03:09 - execution - INFO - [Job a27da444] 2026-06-25 18:03:09 - base - INFO - Epoch 163/200 - starting
+2026-06-25 18:03:10 - execution - INFO - [Job fce852e8] 2026-06-25 18:03:10 - base - INFO - Epoch 174/200 - Loss: 0.002288 - Acc: 99.02% - 10.50s
+2026-06-25 18:03:10 - execution - INFO - [Job fce852e8] 2026-06-25 18:03:10 - base - INFO - Checkpoint saved at epoch 174
+2026-06-25 18:03:10 - execution - INFO - [Job fce852e8] 2026-06-25 18:03:10 - base - INFO - Epoch 175/200 - starting
+2026-06-25 18:03:18 - execution - INFO - [Job a27da444] 2026-06-25 18:03:18 - base - INFO - Epoch 163/200 - Loss: 0.000000 - Acc: 99.18% - 9.10s
+2026-06-25 18:03:18 - execution - INFO - [Job a27da444] 2026-06-25 18:03:18 - base - INFO - Checkpoint saved at epoch 163
+2026-06-25 18:03:18 - execution - INFO - [Job a27da444] 2026-06-25 18:03:18 - base - INFO - Epoch 164/200 - starting
+2026-06-25 18:03:21 - execution - INFO - [Job fce852e8] 2026-06-25 18:03:21 - base - INFO - Epoch 175/200 - Loss: 0.001655 - Acc: 99.01% - 10.54s
+2026-06-25 18:03:21 - execution - INFO - [Job fce852e8] 2026-06-25 18:03:21 - base - INFO - Checkpoint saved at epoch 175
+2026-06-25 18:03:21 - execution - INFO - [Job fce852e8] 2026-06-25 18:03:21 - base - INFO - Epoch 176/200 - starting
+2026-06-25 18:03:27 - execution - INFO - [Job a27da444] 2026-06-25 18:03:27 - base - INFO - Epoch 164/200 - Loss: 0.000000 - Acc: 99.18% - 9.12s
+2026-06-25 18:03:27 - execution - INFO - [Job a27da444] 2026-06-25 18:03:27 - base - INFO - Checkpoint saved at epoch 164
+2026-06-25 18:03:27 - execution - INFO - [Job a27da444] 2026-06-25 18:03:27 - base - INFO - Epoch 165/200 - starting
+2026-06-25 18:03:32 - execution - INFO - [Job fce852e8] 2026-06-25 18:03:32 - base - INFO - Epoch 176/200 - Loss: 0.000584 - Acc: 99.04% - 10.58s
+2026-06-25 18:03:32 - execution - INFO - [Job fce852e8] 2026-06-25 18:03:32 - base - INFO - Checkpoint saved at epoch 176
+2026-06-25 18:03:32 - execution - INFO - [Job fce852e8] 2026-06-25 18:03:32 - base - INFO - Epoch 177/200 - starting
+2026-06-25 18:03:36 - execution - INFO - [Job a27da444] 2026-06-25 18:03:36 - base - INFO - Epoch 165/200 - Loss: 0.000000 - Acc: 99.19% - 9.05s
+2026-06-25 18:03:36 - execution - INFO - [Job a27da444] 2026-06-25 18:03:36 - base - INFO - Checkpoint saved at epoch 165
+2026-06-25 18:03:36 - execution - INFO - [Job a27da444] 2026-06-25 18:03:36 - base - INFO - Epoch 166/200 - starting
+2026-06-25 18:03:42 - execution - INFO - [Job fce852e8] 2026-06-25 18:03:42 - base - INFO - Epoch 177/200 - Loss: 0.000814 - Acc: 98.97% - 10.54s
+2026-06-25 18:03:42 - execution - INFO - [Job fce852e8] 2026-06-25 18:03:42 - base - INFO - Checkpoint saved at epoch 177
+2026-06-25 18:03:42 - execution - INFO - [Job fce852e8] 2026-06-25 18:03:42 - base - INFO - Epoch 178/200 - starting
+2026-06-25 18:03:45 - execution - INFO - [Job a27da444] 2026-06-25 18:03:45 - base - INFO - Epoch 166/200 - Loss: 0.000000 - Acc: 99.19% - 9.09s
+2026-06-25 18:03:45 - execution - INFO - [Job a27da444] 2026-06-25 18:03:45 - base - INFO - Checkpoint saved at epoch 166
+2026-06-25 18:03:45 - execution - INFO - [Job a27da444] 2026-06-25 18:03:45 - base - INFO - Epoch 167/200 - starting
+2026-06-25 18:03:53 - execution - INFO - [Job fce852e8] 2026-06-25 18:03:53 - base - INFO - Epoch 178/200 - Loss: 0.002286 - Acc: 98.96% - 10.51s
+2026-06-25 18:03:53 - execution - INFO - [Job fce852e8] 2026-06-25 18:03:53 - base - INFO - Checkpoint saved at epoch 178
+2026-06-25 18:03:53 - execution - INFO - [Job fce852e8] 2026-06-25 18:03:53 - base - INFO - Epoch 179/200 - starting
+2026-06-25 18:03:54 - execution - INFO - [Job a27da444] 2026-06-25 18:03:54 - base - INFO - Epoch 167/200 - Loss: 0.004964 - Acc: 98.57% - 9.08s
+2026-06-25 18:03:54 - execution - INFO - [Job a27da444] 2026-06-25 18:03:54 - base - INFO - Checkpoint saved at epoch 167
+2026-06-25 18:03:54 - execution - INFO - [Job a27da444] 2026-06-25 18:03:54 - base - INFO - Epoch 168/200 - starting
+2026-06-25 18:04:03 - execution - INFO - [Job fce852e8] 2026-06-25 18:04:03 - base - INFO - Epoch 179/200 - Loss: 0.001111 - Acc: 99.10% - 10.53s
+2026-06-25 18:04:03 - execution - INFO - [Job fce852e8] 2026-06-25 18:04:03 - base - INFO - Checkpoint saved at epoch 179
+2026-06-25 18:04:03 - execution - INFO - [Job fce852e8] 2026-06-25 18:04:03 - base - INFO - Epoch 180/200 - starting
+2026-06-25 18:04:03 - execution - INFO - [Job a27da444] 2026-06-25 18:04:03 - base - INFO - Epoch 168/200 - Loss: 0.008626 - Acc: 98.92% - 9.07s
+2026-06-25 18:04:03 - execution - INFO - [Job a27da444] 2026-06-25 18:04:03 - base - INFO - Checkpoint saved at epoch 168
+2026-06-25 18:04:03 - execution - INFO - [Job a27da444] 2026-06-25 18:04:03 - base - INFO - Epoch 169/200 - starting
+2026-06-25 18:04:13 - execution - INFO - [Job a27da444] 2026-06-25 18:04:13 - base - INFO - Epoch 169/200 - Loss: 0.002290 - Acc: 99.01% - 9.14s
+2026-06-25 18:04:13 - execution - INFO - [Job a27da444] 2026-06-25 18:04:13 - base - INFO - Checkpoint saved at epoch 169
+2026-06-25 18:04:13 - execution - INFO - [Job a27da444] 2026-06-25 18:04:13 - base - INFO - Epoch 170/200 - starting
+2026-06-25 18:04:14 - execution - INFO - [Job fce852e8] 2026-06-25 18:04:14 - base - INFO - Epoch 180/200 - Loss: 0.000167 - Acc: 99.11% - 10.65s
+2026-06-25 18:04:14 - execution - INFO - [Job fce852e8] 2026-06-25 18:04:14 - base - INFO - Checkpoint saved at epoch 180
+2026-06-25 18:04:14 - execution - INFO - [Job fce852e8] 2026-06-25 18:04:14 - base - INFO - Epoch 181/200 - starting
+2026-06-25 18:04:22 - execution - INFO - [Job a27da444] 2026-06-25 18:04:22 - base - INFO - Epoch 170/200 - Loss: 0.000730 - Acc: 99.00% - 9.17s
+2026-06-25 18:04:22 - execution - INFO - [Job a27da444] 2026-06-25 18:04:22 - base - INFO - Checkpoint saved at epoch 170
+2026-06-25 18:04:22 - execution - INFO - [Job a27da444] 2026-06-25 18:04:22 - base - INFO - Epoch 171/200 - starting
+2026-06-25 18:04:24 - execution - INFO - [Job fce852e8] 2026-06-25 18:04:24 - base - INFO - Epoch 181/200 - Loss: 0.000027 - Acc: 99.12% - 10.68s
+2026-06-25 18:04:24 - execution - INFO - [Job fce852e8] 2026-06-25 18:04:24 - base - INFO - Checkpoint saved at epoch 181
+2026-06-25 18:04:24 - execution - INFO - [Job fce852e8] 2026-06-25 18:04:24 - base - INFO - Epoch 182/200 - starting
+2026-06-25 18:04:31 - execution - INFO - [Job a27da444] 2026-06-25 18:04:31 - base - INFO - Epoch 171/200 - Loss: 0.001616 - Acc: 99.10% - 9.15s
+2026-06-25 18:04:31 - execution - INFO - [Job a27da444] 2026-06-25 18:04:31 - base - INFO - Checkpoint saved at epoch 171
+2026-06-25 18:04:31 - execution - INFO - [Job a27da444] 2026-06-25 18:04:31 - base - INFO - Epoch 172/200 - starting
+2026-06-25 18:04:35 - execution - INFO - [Job fce852e8] 2026-06-25 18:04:35 - base - INFO - Epoch 182/200 - Loss: 0.000015 - Acc: 99.09% - 10.67s
+2026-06-25 18:04:35 - execution - INFO - [Job fce852e8] 2026-06-25 18:04:35 - base - INFO - Checkpoint saved at epoch 182
+2026-06-25 18:04:35 - execution - INFO - [Job fce852e8] 2026-06-25 18:04:35 - base - INFO - Epoch 183/200 - starting
+2026-06-25 18:04:40 - execution - INFO - [Job a27da444] 2026-06-25 18:04:40 - base - INFO - Epoch 172/200 - Loss: 0.003150 - Acc: 98.92% - 9.19s
+2026-06-25 18:04:40 - execution - INFO - [Job a27da444] 2026-06-25 18:04:40 - base - INFO - Checkpoint saved at epoch 172
+2026-06-25 18:04:40 - execution - INFO - [Job a27da444] 2026-06-25 18:04:40 - base - INFO - Epoch 173/200 - starting
+2026-06-25 18:04:46 - execution - INFO - [Job fce852e8] 2026-06-25 18:04:46 - base - INFO - Epoch 183/200 - Loss: 0.000010 - Acc: 99.12% - 10.63s
+2026-06-25 18:04:46 - execution - INFO - [Job fce852e8] 2026-06-25 18:04:46 - base - INFO - Checkpoint saved at epoch 183
+2026-06-25 18:04:46 - execution - INFO - [Job fce852e8] 2026-06-25 18:04:46 - base - INFO - Epoch 184/200 - starting
+2026-06-25 18:04:49 - execution - INFO - [Job a27da444] 2026-06-25 18:04:49 - base - INFO - Epoch 173/200 - Loss: 0.001696 - Acc: 98.99% - 9.06s
+2026-06-25 18:04:49 - execution - INFO - [Job a27da444] 2026-06-25 18:04:49 - base - INFO - Checkpoint saved at epoch 173
+2026-06-25 18:04:49 - execution - INFO - [Job a27da444] 2026-06-25 18:04:49 - base - INFO - Epoch 174/200 - starting
+2026-06-25 18:04:56 - execution - INFO - [Job fce852e8] 2026-06-25 18:04:56 - base - INFO - Epoch 184/200 - Loss: 0.000007 - Acc: 99.10% - 10.65s
+2026-06-25 18:04:56 - execution - INFO - [Job fce852e8] 2026-06-25 18:04:56 - base - INFO - Checkpoint saved at epoch 184
+2026-06-25 18:04:56 - execution - INFO - [Job fce852e8] 2026-06-25 18:04:56 - base - INFO - Epoch 185/200 - starting
+2026-06-25 18:04:58 - execution - INFO - [Job a27da444] 2026-06-25 18:04:58 - base - INFO - Epoch 174/200 - Loss: 0.001676 - Acc: 99.04% - 9.14s
+2026-06-25 18:04:58 - execution - INFO - [Job a27da444] 2026-06-25 18:04:58 - base - INFO - Checkpoint saved at epoch 174
+2026-06-25 18:04:58 - execution - INFO - [Job a27da444] 2026-06-25 18:04:58 - base - INFO - Epoch 175/200 - starting
+2026-06-25 18:05:07 - execution - INFO - [Job fce852e8] 2026-06-25 18:05:07 - base - INFO - Epoch 185/200 - Loss: 0.000005 - Acc: 99.08% - 10.63s
+2026-06-25 18:05:07 - execution - INFO - [Job fce852e8] 2026-06-25 18:05:07 - base - INFO - Checkpoint saved at epoch 185
+2026-06-25 18:05:07 - execution - INFO - [Job fce852e8] 2026-06-25 18:05:07 - base - INFO - Epoch 186/200 - starting
+2026-06-25 18:05:07 - execution - INFO - [Job a27da444] 2026-06-25 18:05:07 - base - INFO - Epoch 175/200 - Loss: 0.001777 - Acc: 99.06% - 9.14s
+2026-06-25 18:05:07 - execution - INFO - [Job a27da444] 2026-06-25 18:05:07 - base - INFO - Checkpoint saved at epoch 175
+2026-06-25 18:05:07 - execution - INFO - [Job a27da444] 2026-06-25 18:05:07 - base - INFO - Epoch 176/200 - starting
+2026-06-25 18:05:17 - execution - INFO - [Job a27da444] 2026-06-25 18:05:17 - base - INFO - Epoch 176/200 - Loss: 0.000625 - Acc: 99.02% - 9.13s
+2026-06-25 18:05:17 - execution - INFO - [Job a27da444] 2026-06-25 18:05:17 - base - INFO - Checkpoint saved at epoch 176
+2026-06-25 18:05:17 - execution - INFO - [Job a27da444] 2026-06-25 18:05:17 - base - INFO - Epoch 177/200 - starting
+2026-06-25 18:05:18 - execution - INFO - [Job fce852e8] 2026-06-25 18:05:18 - base - INFO - Epoch 186/200 - Loss: 0.000003 - Acc: 99.09% - 10.60s
+2026-06-25 18:05:18 - execution - INFO - [Job fce852e8] 2026-06-25 18:05:18 - base - INFO - Checkpoint saved at epoch 186
+2026-06-25 18:05:18 - execution - INFO - [Job fce852e8] 2026-06-25 18:05:18 - base - INFO - Epoch 187/200 - starting
+2026-06-25 18:05:26 - execution - INFO - [Job a27da444] 2026-06-25 18:05:26 - base - INFO - Epoch 177/200 - Loss: 0.003663 - Acc: 98.78% - 9.12s
+2026-06-25 18:05:26 - execution - INFO - [Job a27da444] 2026-06-25 18:05:26 - base - INFO - Checkpoint saved at epoch 177
+2026-06-25 18:05:26 - execution - INFO - [Job a27da444] 2026-06-25 18:05:26 - base - INFO - Epoch 178/200 - starting
+2026-06-25 18:05:28 - execution - INFO - [Job fce852e8] 2026-06-25 18:05:28 - base - INFO - Epoch 187/200 - Loss: 0.000002 - Acc: 99.10% - 10.63s
+2026-06-25 18:05:28 - execution - INFO - [Job fce852e8] 2026-06-25 18:05:28 - base - INFO - Checkpoint saved at epoch 187
+2026-06-25 18:05:28 - execution - INFO - [Job fce852e8] 2026-06-25 18:05:28 - base - INFO - Epoch 188/200 - starting
+2026-06-25 18:05:35 - execution - INFO - [Job a27da444] 2026-06-25 18:05:35 - base - INFO - Epoch 178/200 - Loss: 0.002767 - Acc: 99.10% - 9.14s
+2026-06-25 18:05:35 - execution - INFO - [Job a27da444] 2026-06-25 18:05:35 - base - INFO - Checkpoint saved at epoch 178
+2026-06-25 18:05:35 - execution - INFO - [Job a27da444] 2026-06-25 18:05:35 - base - INFO - Epoch 179/200 - starting
+2026-06-25 18:05:39 - execution - INFO - [Job fce852e8] 2026-06-25 18:05:39 - base - INFO - Epoch 188/200 - Loss: 0.000001 - Acc: 99.12% - 10.61s
+2026-06-25 18:05:39 - execution - INFO - [Job fce852e8] 2026-06-25 18:05:39 - base - INFO - Checkpoint saved at epoch 188
+2026-06-25 18:05:39 - execution - INFO - [Job fce852e8] 2026-06-25 18:05:39 - base - INFO - Epoch 189/200 - starting
+2026-06-25 18:05:44 - execution - INFO - [Job a27da444] 2026-06-25 18:05:44 - base - INFO - Epoch 179/200 - Loss: 0.002248 - Acc: 99.18% - 9.17s
+2026-06-25 18:05:44 - execution - INFO - [Job a27da444] 2026-06-25 18:05:44 - base - INFO - Checkpoint saved at epoch 179
+2026-06-25 18:05:44 - execution - INFO - [Job a27da444] 2026-06-25 18:05:44 - base - INFO - Epoch 180/200 - starting
+2026-06-25 18:05:50 - execution - INFO - [Job fce852e8] 2026-06-25 18:05:50 - base - INFO - Epoch 189/200 - Loss: 0.000001 - Acc: 99.13% - 10.73s
+2026-06-25 18:05:50 - execution - INFO - [Job fce852e8] 2026-06-25 18:05:50 - base - INFO - Checkpoint saved at epoch 189
+2026-06-25 18:05:50 - execution - INFO - [Job fce852e8] 2026-06-25 18:05:50 - base - INFO - Epoch 190/200 - starting
+2026-06-25 18:05:53 - execution - INFO - [Job a27da444] 2026-06-25 18:05:53 - base - INFO - Epoch 180/200 - Loss: 0.000969 - Acc: 99.07% - 9.18s
+2026-06-25 18:05:53 - execution - INFO - [Job a27da444] 2026-06-25 18:05:53 - base - INFO - Checkpoint saved at epoch 180
+2026-06-25 18:05:53 - execution - INFO - [Job a27da444] 2026-06-25 18:05:53 - base - INFO - Epoch 181/200 - starting
+2026-06-25 18:06:00 - execution - INFO - [Job fce852e8] 2026-06-25 18:06:00 - base - INFO - Epoch 190/200 - Loss: 0.000001 - Acc: 99.09% - 10.73s
+2026-06-25 18:06:00 - execution - INFO - [Job fce852e8] 2026-06-25 18:06:00 - base - INFO - Checkpoint saved at epoch 190
+2026-06-25 18:06:00 - execution - INFO - [Job fce852e8] 2026-06-25 18:06:00 - base - INFO - Epoch 191/200 - starting
+2026-06-25 18:06:02 - execution - INFO - [Job a27da444] 2026-06-25 18:06:02 - base - INFO - Epoch 181/200 - Loss: 0.000653 - Acc: 98.98% - 9.22s
+2026-06-25 18:06:02 - execution - INFO - [Job a27da444] 2026-06-25 18:06:02 - base - INFO - Checkpoint saved at epoch 181
+2026-06-25 18:06:02 - execution - INFO - [Job a27da444] 2026-06-25 18:06:02 - base - INFO - Epoch 182/200 - starting
+2026-06-25 18:06:11 - execution - INFO - [Job fce852e8] 2026-06-25 18:06:11 - base - INFO - Epoch 191/200 - Loss: 0.000000 - Acc: 99.10% - 10.74s
+2026-06-25 18:06:11 - execution - INFO - [Job fce852e8] 2026-06-25 18:06:11 - base - INFO - Checkpoint saved at epoch 191
+2026-06-25 18:06:11 - execution - INFO - [Job fce852e8] 2026-06-25 18:06:11 - base - INFO - Epoch 192/200 - starting
+2026-06-25 18:06:12 - execution - INFO - [Job a27da444] 2026-06-25 18:06:12 - base - INFO - Epoch 182/200 - Loss: 0.003038 - Acc: 98.97% - 9.21s
+2026-06-25 18:06:12 - execution - INFO - [Job a27da444] 2026-06-25 18:06:12 - base - INFO - Checkpoint saved at epoch 182
+2026-06-25 18:06:12 - execution - INFO - [Job a27da444] 2026-06-25 18:06:12 - base - INFO - Epoch 183/200 - starting
+2026-06-25 18:06:21 - execution - INFO - [Job a27da444] 2026-06-25 18:06:21 - base - INFO - Epoch 183/200 - Loss: 0.001271 - Acc: 98.96% - 9.13s
+2026-06-25 18:06:21 - execution - INFO - [Job a27da444] 2026-06-25 18:06:21 - base - INFO - Checkpoint saved at epoch 183
+2026-06-25 18:06:21 - execution - INFO - [Job a27da444] 2026-06-25 18:06:21 - base - INFO - Epoch 184/200 - starting
+2026-06-25 18:06:22 - execution - INFO - [Job fce852e8] 2026-06-25 18:06:22 - base - INFO - Epoch 192/200 - Loss: 0.000000 - Acc: 99.05% - 10.67s
+2026-06-25 18:06:22 - execution - INFO - [Job fce852e8] 2026-06-25 18:06:22 - base - INFO - Checkpoint saved at epoch 192
+2026-06-25 18:06:22 - execution - INFO - [Job fce852e8] 2026-06-25 18:06:22 - base - INFO - Epoch 193/200 - starting
+2026-06-25 18:06:30 - execution - INFO - [Job a27da444] 2026-06-25 18:06:30 - base - INFO - Epoch 184/200 - Loss: 0.000361 - Acc: 98.94% - 9.20s
+2026-06-25 18:06:30 - execution - INFO - [Job a27da444] 2026-06-25 18:06:30 - base - INFO - Checkpoint saved at epoch 184
+2026-06-25 18:06:30 - execution - INFO - [Job a27da444] 2026-06-25 18:06:30 - base - INFO - Epoch 185/200 - starting
+2026-06-25 18:06:32 - execution - INFO - [Job fce852e8] 2026-06-25 18:06:32 - base - INFO - Epoch 193/200 - Loss: 0.000000 - Acc: 99.06% - 10.67s
+2026-06-25 18:06:32 - execution - INFO - [Job fce852e8] 2026-06-25 18:06:32 - base - INFO - Checkpoint saved at epoch 193
+2026-06-25 18:06:32 - execution - INFO - [Job fce852e8] 2026-06-25 18:06:32 - base - INFO - Epoch 194/200 - starting
+2026-06-25 18:06:39 - execution - INFO - [Job a27da444] 2026-06-25 18:06:39 - base - INFO - Epoch 185/200 - Loss: 0.000762 - Acc: 98.99% - 9.15s
+2026-06-25 18:06:39 - execution - INFO - [Job a27da444] 2026-06-25 18:06:39 - base - INFO - Checkpoint saved at epoch 185
+2026-06-25 18:06:39 - execution - INFO - [Job a27da444] 2026-06-25 18:06:39 - base - INFO - Epoch 186/200 - starting
+2026-06-25 18:06:43 - execution - INFO - [Job fce852e8] 2026-06-25 18:06:43 - base - INFO - Epoch 194/200 - Loss: 0.000000 - Acc: 99.04% - 10.63s
+2026-06-25 18:06:43 - execution - INFO - [Job fce852e8] 2026-06-25 18:06:43 - base - INFO - Checkpoint saved at epoch 194
+2026-06-25 18:06:43 - execution - INFO - [Job fce852e8] 2026-06-25 18:06:43 - base - INFO - Epoch 195/200 - starting
+2026-06-25 18:06:48 - execution - INFO - [Job a27da444] 2026-06-25 18:06:48 - base - INFO - Epoch 186/200 - Loss: 0.003009 - Acc: 98.95% - 9.15s
+2026-06-25 18:06:48 - execution - INFO - [Job a27da444] 2026-06-25 18:06:48 - base - INFO - Checkpoint saved at epoch 186
+2026-06-25 18:06:48 - execution - INFO - [Job a27da444] 2026-06-25 18:06:48 - base - INFO - Epoch 187/200 - starting
+2026-06-25 18:06:54 - execution - INFO - [Job fce852e8] 2026-06-25 18:06:54 - base - INFO - Epoch 195/200 - Loss: 0.000000 - Acc: 99.04% - 10.70s
+2026-06-25 18:06:54 - execution - INFO - [Job fce852e8] 2026-06-25 18:06:54 - base - INFO - Checkpoint saved at epoch 195
+2026-06-25 18:06:54 - execution - INFO - [Job fce852e8] 2026-06-25 18:06:54 - base - INFO - Epoch 196/200 - starting
+2026-06-25 18:06:57 - execution - INFO - [Job a27da444] 2026-06-25 18:06:57 - base - INFO - Epoch 187/200 - Loss: 0.002159 - Acc: 99.03% - 9.19s
+2026-06-25 18:06:57 - execution - INFO - [Job a27da444] 2026-06-25 18:06:57 - base - INFO - Checkpoint saved at epoch 187
+2026-06-25 18:06:57 - execution - INFO - [Job a27da444] 2026-06-25 18:06:57 - base - INFO - Epoch 188/200 - starting
+2026-06-25 18:07:04 - execution - INFO - [Job fce852e8] 2026-06-25 18:07:04 - base - INFO - Epoch 196/200 - Loss: 0.000000 - Acc: 99.03% - 10.65s
+2026-06-25 18:07:04 - execution - INFO - [Job fce852e8] 2026-06-25 18:07:04 - base - INFO - Checkpoint saved at epoch 196
+2026-06-25 18:07:04 - execution - INFO - [Job fce852e8] 2026-06-25 18:07:04 - base - INFO - Epoch 197/200 - starting
+2026-06-25 18:07:07 - execution - INFO - [Job a27da444] 2026-06-25 18:07:07 - base - INFO - Epoch 188/200 - Loss: 0.001289 - Acc: 98.90% - 9.16s
+2026-06-25 18:07:07 - execution - INFO - [Job a27da444] 2026-06-25 18:07:07 - base - INFO - Checkpoint saved at epoch 188
+2026-06-25 18:07:07 - execution - INFO - [Job a27da444] 2026-06-25 18:07:07 - base - INFO - Epoch 189/200 - starting
+2026-06-25 18:07:15 - execution - INFO - [Job fce852e8] 2026-06-25 18:07:15 - base - INFO - Epoch 197/200 - Loss: 0.000000 - Acc: 99.05% - 10.62s
+2026-06-25 18:07:15 - execution - INFO - [Job fce852e8] 2026-06-25 18:07:15 - base - INFO - Checkpoint saved at epoch 197
+2026-06-25 18:07:15 - execution - INFO - [Job fce852e8] 2026-06-25 18:07:15 - base - INFO - Epoch 198/200 - starting
+2026-06-25 18:07:16 - execution - INFO - [Job a27da444] 2026-06-25 18:07:16 - base - INFO - Epoch 189/200 - Loss: 0.000892 - Acc: 98.89% - 9.14s
+2026-06-25 18:07:16 - execution - INFO - [Job a27da444] 2026-06-25 18:07:16 - base - INFO - Checkpoint saved at epoch 189
+2026-06-25 18:07:16 - execution - INFO - [Job a27da444] 2026-06-25 18:07:16 - base - INFO - Epoch 190/200 - starting
+2026-06-25 18:07:25 - execution - INFO - [Job a27da444] 2026-06-25 18:07:25 - base - INFO - Epoch 190/200 - Loss: 0.001058 - Acc: 98.86% - 9.09s
+2026-06-25 18:07:25 - execution - INFO - [Job a27da444] 2026-06-25 18:07:25 - base - INFO - Checkpoint saved at epoch 190
+2026-06-25 18:07:25 - execution - INFO - [Job a27da444] 2026-06-25 18:07:25 - base - INFO - Epoch 191/200 - starting
+2026-06-25 18:07:26 - execution - INFO - [Job fce852e8] 2026-06-25 18:07:26 - base - INFO - Epoch 198/200 - Loss: 0.000000 - Acc: 99.04% - 10.63s
+2026-06-25 18:07:26 - execution - INFO - [Job fce852e8] 2026-06-25 18:07:26 - base - INFO - Checkpoint saved at epoch 198
+2026-06-25 18:07:26 - execution - INFO - [Job fce852e8] 2026-06-25 18:07:26 - base - INFO - Epoch 199/200 - starting
+2026-06-25 18:07:34 - execution - INFO - [Job a27da444] 2026-06-25 18:07:34 - base - INFO - Epoch 191/200 - Loss: 0.001322 - Acc: 99.02% - 9.26s
+2026-06-25 18:07:34 - execution - INFO - [Job a27da444] 2026-06-25 18:07:34 - base - INFO - Checkpoint saved at epoch 191
+2026-06-25 18:07:34 - execution - INFO - [Job a27da444] 2026-06-25 18:07:34 - base - INFO - Epoch 192/200 - starting
+2026-06-25 18:07:36 - execution - INFO - [Job fce852e8] 2026-06-25 18:07:36 - base - INFO - Epoch 199/200 - Loss: 0.000000 - Acc: 99.04% - 10.71s
+2026-06-25 18:07:36 - execution - INFO - [Job fce852e8] 2026-06-25 18:07:36 - base - INFO - Checkpoint saved at epoch 199
+2026-06-25 18:07:36 - execution - INFO - [Job fce852e8] 2026-06-25 18:07:36 - base - INFO - Epoch 200/200 - starting
+2026-06-25 18:07:43 - execution - INFO - [Job a27da444] 2026-06-25 18:07:43 - base - INFO - Epoch 192/200 - Loss: 0.001403 - Acc: 98.96% - 9.12s
+2026-06-25 18:07:43 - execution - INFO - [Job a27da444] 2026-06-25 18:07:43 - base - INFO - Checkpoint saved at epoch 192
+2026-06-25 18:07:43 - execution - INFO - [Job a27da444] 2026-06-25 18:07:43 - base - INFO - Epoch 193/200 - starting
+2026-06-25 18:07:47 - execution - INFO - [Job fce852e8] 2026-06-25 18:07:47 - base - INFO - Epoch 200/200 - Loss: 0.000000 - Acc: 99.06% - 10.62s
+2026-06-25 18:07:48 - execution - INFO - Job fce852e8 completed successfully
+2026-06-25 18:07:48 - execution - INFO - GPU allocator: job fce852e8 releases indices [0]
+2026-06-25 18:07:52 - execution - INFO - [Job a27da444] 2026-06-25 18:07:52 - base - INFO - Epoch 193/200 - Loss: 0.001430 - Acc: 98.95% - 9.07s
+2026-06-25 18:07:52 - execution - INFO - [Job a27da444] 2026-06-25 18:07:52 - base - INFO - Checkpoint saved at epoch 193
+2026-06-25 18:07:52 - execution - INFO - [Job a27da444] 2026-06-25 18:07:52 - base - INFO - Epoch 194/200 - starting
+2026-06-25 18:08:01 - execution - INFO - [Job a27da444] 2026-06-25 18:08:01 - base - INFO - Epoch 194/200 - Loss: 0.001547 - Acc: 98.89% - 8.98s
+2026-06-25 18:08:01 - execution - INFO - [Job a27da444] 2026-06-25 18:08:01 - base - INFO - Checkpoint saved at epoch 194
+2026-06-25 18:08:01 - execution - INFO - [Job a27da444] 2026-06-25 18:08:01 - base - INFO - Epoch 195/200 - starting
+2026-06-25 18:08:10 - execution - INFO - [Job a27da444] 2026-06-25 18:08:10 - base - INFO - Epoch 195/200 - Loss: 0.001398 - Acc: 98.97% - 9.07s
+2026-06-25 18:08:10 - execution - INFO - [Job a27da444] 2026-06-25 18:08:10 - base - INFO - Checkpoint saved at epoch 195
+2026-06-25 18:08:10 - execution - INFO - [Job a27da444] 2026-06-25 18:08:10 - base - INFO - Epoch 196/200 - starting
+2026-06-25 18:08:19 - execution - INFO - [Job a27da444] 2026-06-25 18:08:19 - base - INFO - Epoch 196/200 - Loss: 0.001025 - Acc: 99.06% - 9.02s
+2026-06-25 18:08:19 - execution - INFO - [Job a27da444] 2026-06-25 18:08:19 - base - INFO - Checkpoint saved at epoch 196
+2026-06-25 18:08:19 - execution - INFO - [Job a27da444] 2026-06-25 18:08:19 - base - INFO - Epoch 197/200 - starting
+2026-06-25 18:08:28 - execution - INFO - [Job a27da444] 2026-06-25 18:08:28 - base - INFO - Epoch 197/200 - Loss: 0.002578 - Acc: 99.04% - 8.80s
+2026-06-25 18:08:28 - execution - INFO - [Job a27da444] 2026-06-25 18:08:28 - base - INFO - Checkpoint saved at epoch 197
+2026-06-25 18:08:28 - execution - INFO - [Job a27da444] 2026-06-25 18:08:28 - base - INFO - Epoch 198/200 - starting
+2026-06-25 18:08:37 - execution - INFO - [Job a27da444] 2026-06-25 18:08:37 - base - INFO - Epoch 198/200 - Loss: 0.002051 - Acc: 99.00% - 8.91s
+2026-06-25 18:08:37 - execution - INFO - [Job a27da444] 2026-06-25 18:08:37 - base - INFO - Checkpoint saved at epoch 198
+2026-06-25 18:08:37 - execution - INFO - [Job a27da444] 2026-06-25 18:08:37 - base - INFO - Epoch 199/200 - starting
+2026-06-25 18:08:46 - execution - INFO - [Job a27da444] 2026-06-25 18:08:46 - base - INFO - Epoch 199/200 - Loss: 0.001373 - Acc: 99.02% - 8.95s
+2026-06-25 18:08:46 - execution - INFO - [Job a27da444] 2026-06-25 18:08:46 - base - INFO - Checkpoint saved at epoch 199
+2026-06-25 18:08:46 - execution - INFO - [Job a27da444] 2026-06-25 18:08:46 - base - INFO - Epoch 200/200 - starting
+2026-06-25 18:08:55 - execution - INFO - [Job a27da444] 2026-06-25 18:08:55 - base - INFO - Epoch 200/200 - Loss: 0.000282 - Acc: 99.04% - 9.02s
+2026-06-25 18:08:56 - execution - INFO - Job a27da444 completed successfully
+2026-06-25 18:08:56 - execution - INFO - GPU allocator: job a27da444 releases indices [1]

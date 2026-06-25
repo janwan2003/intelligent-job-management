@@ -1,0 +1,35 @@
+[19:00:31] Stage 0: cluster sanity
+  ✓ API + workers healthy
+[19:00:31] Stage 0: clearing state
+  ✓ DB + on-disk state cleared
+[19:00:31] Stage 1: submit 4 patient cnn_big jobs
+[19:00:47]   ids: fa2f78b3 fe8f9043 63cf0155 15afd4f3
+[19:00:47]   waiting for profile sweep complete + ≥2 RUNNING (≤ 12 min)…
+  ✓ Stage 1 — profile sweep complete, ≥2 patients RUNNING, all 4 cells measured
+[19:07:16]   asserting profile coverage includes 2-GPU bundles:
+  ✓ cnn_big profile coverage: 2 row(s) with 2-GPU bundles
+[19:07:16]     cells: {"A40":1}@polimi-gpu  {"A40":2}@polimi-gpu  {"QuadroP600":1}@matemagician  {"QuadroP600":2}@matemagician
+[19:07:16]   pre-urgent RUNNING (id@node): fe8f9043@polimi-gpu fa2f78b3@polimi-gpu
+[19:07:16]   settling: 60s wait after profile sweep so the cluster reaches steady state before URGENT
+[19:08:16] Stage 2: submit URGENT cnn_big (priority=5, deadline +10 min, epochs=200)
+[19:08:16]   id: 2a474f42
+[19:08:16]   verifying URGENT placed within 180s…
+  ✓ URGENT placed in 3s
+[19:08:19]   URGENT placed on matemagician: {
+  "QuadroP600": 2
+}
+  ✓ horizon-myopia confirmed: URGENT on QuadroP600×2 (slower free bundle), not A40
+[19:08:19]   asserting URGENT preempted no incumbent (A40 still held by patients)…
+  ✓ no incumbent preempted — URGENT took free capacity only (2 patient(s) still on A40)
+[19:08:35] Stage 4: waiting for URGENT 2a474f42 to migrate matemagician -> A40 (≤ 12 min)…
+  ✓ URGENT migrated to polimi-gpu (A40): {
+  "A40": 1
+}
+  ✓ cross-node migration confirmed: matemagician (P600) -> polimi-gpu (A40), torch 1.5.1 -> 2.6
+  ⚠ no 'resumed from' line in URGENT logs (logs may still be in flight)
+[19:11:31] Stage 5: waiting for all jobs to terminate (≤ 3600s)…
+[19:29:24]   terminal counts: SUCCEEDED=5 FAILED=0 PREEMPTED=0
+[19:29:24]   slot metrics: {"acquire_count":56,"release_count":56,"acquire_oversub_count":0,"release_underflow_count":0,"drift_recovery_count":26}
+  ✓ race-fix validation: zero underflow, zero oversub
+  ✓ drift heartbeat fired 26× (15s cadence; auto-recovered)
+  ✓ Scenario 1 complete: 2-GPU profiling, horizon-myopic P600 placement (no preempt), natural-finish migration P600->A40, slot-tracker clean

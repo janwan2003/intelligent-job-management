@@ -16,6 +16,7 @@ services:
       HOST_PROJECT_ROOT: /home/wangrat/ijm
       OPTIMIZER_URL: ${OPTIMIZER_URL:-http://localhost:8080}
       OPTIMIZER_VERBOSE: ${OPTIMIZER_VERBOSE:-2}
+      OPTIMIZER_METHOD: ${OPTIMIZER_METHOD:-RG}
     volumes:
       - ../backend/src:/app/src
       - ../shared:/app/shared:ro

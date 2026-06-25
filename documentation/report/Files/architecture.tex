@@ -1,5 +1,6 @@
 This section presents IJM's deployment topology, the~four-phase
-scheduling pipeline that drives every dispatch decision, the~job state
+scheduling pipeline that drives every dispatch decision, the~worker
+execution lifecycle that~runs and~stops each container, the~job state
 machine, the~persistent state held in~PostgreSQL, and~the~concurrency
 invariants that keep the~control plane consistent under racing API
 calls and~worker notifications.  Table~\ref{tab:components} catalogues
@@ -57,7 +58,7 @@ supported for~development but is~not the~deployment target: any tradeoff
 between local-dev simplicity and~distributed correctness resolves toward
 the~distributed topology.
 
-\section{Scheduling pipeline}
+\section{Scheduling pipeline}\label{sec:sched-pipeline}
 
 The pipeline is~shaped by~a~single governing assumption: \emph{profiling
 is~always worth its cost}.  A~deep-learning job runs for~hours, whereas
@@ -195,7 +196,6 @@ block other passes.}
 \begin{sequencediagram}
   \newthread{worker}{Worker}
   \newinst[1.5]{docker}{Docker}
-  \newinst[1.5]{api}{API}
   \newinst[1.5]{sched}{Scheduler}
   \newinst[1.5]{db}{PostgreSQL}
 
@@ -203,11 +203,11 @@ block other passes.}
   \end{call}
   \begin{call}{worker}{docker run (profile container, isolated ckpt dir)}{docker}{exit code}
   \end{call}
-  \begin{call}{worker}{UPDATE jobs SET status=QUEUED, is\_profiling=false}{db}{}
-    \begin{call}{api}{report mean per-epoch duration (warmup excluded)}{db}{}
-      \begin{call}{api}{UPDATE profiling\_results SET duration\_seconds}{db}{}
-      \end{call}
-    \end{call}
+  \begin{callself}{worker}{mean per-epoch duration (warmup epoch excluded)}{}
+  \end{callself}
+  \begin{call}{worker}{UPDATE profiling\_results SET duration\_seconds}{db}{}
+  \end{call}
+  \begin{call}{worker}{UPDATE jobs SET status=QUEUED, is\_profiling\_run=still\_owes}{db}{}
   \end{call}
   \begin{messcall}{worker}{NOTIFY ijm\_schedule}{db}
   \end{messcall}
@@ -218,8 +218,11 @@ block other passes.}
 \end{sequencediagram}}
 \caption{Profiling cycle.  Profile measurements are keyed by~the
 (job-type, GPU-config) pair and~shared across submissions of~the~same
-type.  Each instance contributes one profile run by~default; the
-per-instance claim row guards against duplicate measurements.}
+type.  Each instance profiles up~to~\texttt{PROFILING\_CONFIGS\_PER\_JOB}
+(default~2) configurations before it~becomes a~standard-run candidate;
+the~per-instance claim row guards against duplicate measurements.  The
+worker records the~result and~re-queues the~row in~a~single transaction
+(\texttt{worker/profiling.py:handle\_complete}).}
 \label{fig:seq-profiling-loop}
 \end{figure}
 
@@ -237,8 +240,8 @@ per-instance claim row guards against duplicate measurements.}
 
   \begin{call}{sched}{POST /optimizer/v5 \{jobs, nodes, currentScheduling\}}{opt}{assignments + preempts}
   \end{call}
-  \begin{call}{sched}{record pending\_evictions (in-memory)}{db}{}
-  \end{call}
+  \begin{callself}{sched}{stash pending\_migrates (in-memory)}{}
+  \end{callself}
   \begin{messcall}{sched}{POST /stop?reason=auto}{victim}
   \end{messcall}
   \begin{call}{victim}{kill container, drain run task}{db}{}
@@ -249,15 +252,20 @@ per-instance claim row guards against duplicate measurements.}
   \end{call}
   \begin{callself}{sched}{release NodeSlots permit on LISTEN}{}
   \end{callself}
-  \begin{call}{sched}{Phase 1b apply new placement (assigned\_node was NULL)}{db}{}
+  \begin{call}{sched}{apply pending migrate on slot-freed LISTEN (\textsc{where} assigned\_node \textsc{is null})}{db}{}
   \end{call}
   \begin{messcall}{sched}{dispatch\_with\_slot $\rightarrow$ POST /run}{target}
   \end{messcall}
 \end{sequencediagram}}
 \caption{Optimiser-driven preempt and~migrate.  The~API trusts the
 GPUspb plan: any job in~\texttt{currentScheduling} that the~optimiser
-drops or~moves is~preempted with~\texttt{reason=auto}, which clears its
-assignment so Phase~1b can re-apply the~new placement on~the~next pass.}
+drops or~moves is~preempted with~\texttt{reason=auto}, clearing its
+assignment.  Because an~\texttt{auto\_preempt} release deliberately does
+\emph{not} wake a~fresh optimiser pass, a~moved job's new placement is
+stashed in~\texttt{state.pending\_migrates} and~re-applied by~the~slot
+listener (conditional \texttt{UPDATE \ldots WHERE assigned\_node IS
+NULL}) once the~source \texttt{/stop} has drained the~row to
+\textsc{queued}.}
 \label{fig:seq-optimizer-cycle}
 \end{figure}
 
@@ -278,7 +286,7 @@ assignment so Phase~1b can re-apply the~new placement on~the~next pass.}
   \end{call}
   \begin{call}{worker}{UPDATE jobs SET SUCCEEDED/FAILED}{db}{}
   \end{call}
-  \begin{messcall}{worker}{NOTIFY ijm\_slot\_freed "node:n:terminal"; NOTIFY ijm\_schedule}{db}
+  \begin{messcall}{worker}{NOTIFY ijm\_slot\_freed "node:n:terminal"}{db}
   \end{messcall}
   \begin{sdblock}{next scheduling pass}{}
     \begin{callself}{sched}{place a waiting job on the freed slot}{}
@@ -288,9 +296,99 @@ assignment so Phase~1b can re-apply the~new placement on~the~next pass.}
 \caption{Standard run.  The~worker performs an~atomic
 conditional \texttt{UPDATE \ldots WHERE status = ANY(RUNNABLE\_STATUSES)}
 so concurrent stops or~duplicate dispatches cannot race a~row into
-\texttt{RUNNING}.  On~exit the~worker fires \texttt{ijm\_slot\_freed} and
-\texttt{ijm\_schedule} in~the~same transaction.}
+\texttt{RUNNING}.  On~exit the~worker fires a~single
+\texttt{ijm\_slot\_freed} (reason~\texttt{terminal}) in~the~same
+transaction as~the~status flip; the~slot listener releases the~permit
+and~wakes the~scheduler, so the~terminal path needs no~separate
+\texttt{ijm\_schedule}.}
 \label{fig:seq-standard-run}
+\end{figure}
+
+\section{Worker execution lifecycle}\label{sec:worker-lifecycle}
+
+The scheduling pass decides \emph{where} a~job runs; the~worker's run
+task (\texttt{\_run\_job}) owns \emph{how} it~runs and~how it~stops.  The
+task moves through four phases (Table~\ref{tab:worker-phases}), and~every
+database transition is~a~conditional \texttt{UPDATE}, so a~racing
+\texttt{/stop}, the~stuck-dispatch reaper, or~a~duplicate dispatch cannot
+corrupt the~row.
+
+\begin{table}[H]
+\centering\small
+\begin{tabularx}{\textwidth}{@{}l >{\raggedright\arraybackslash}X >{\raggedright\arraybackslash}X@{}}
+\toprule
+\textbf{Phase} & \textbf{Action} & \textbf{Invariant it~enforces} \\
+\midrule
+1.~Claim    & Atomic \texttt{UPDATE \ldots status=RUNNING/PROFILING WHERE status} $\in$ \textsc{runnable} \texttt{AND assigned\_node=self} & A~\texttt{/stop} or~reaper that~already moved the~row makes the~claim miss, so no~container starts for~a~re-placed row. \\
+2.~Launch   & Pick distinct physical GPU indices, prepare the~per-job checkpoint/runs directories, \texttt{docker run} & Distinct indices stop two 1-GPU jobs both landing on~GPU~0; an~in-process placeholder is~set \emph{before} any~\texttt{await}, so a~\texttt{/stop} cannot slip into the~window before the~container exists. \\
+3.~Stream   & Parse \texttt{Epoch x/y} from~container stdout; flush the~latest value through a~once-per-second background writer & The~progress \texttt{UPDATE} is~conditional on~a~matching \texttt{status} and~\texttt{container\_name}, so a~reassigned row no-ops it~and~stops the~stream.  Coalescing replaces a~per-epoch round-trip that~fell behind over the~SSH-tunnelled connection. \\
+4.~Complete & Write the~terminal status and~fire one~\texttt{ijm\_slot\_freed}; or, if~the~row was~migrated or~already stopped, record only the~exit code & A~kill-induced exit~137 never clobbers the~new owner's \textsc{running}; a~failed run also drops its~outstanding profile claims so their~cells are~not~left reserved. \\
+\bottomrule
+\end{tabularx}
+\caption{The~worker run task's four phases~--- distinct from~the
+scheduling pass's four phases above: that pass plans, this~task
+executes.}\label{tab:worker-phases}
+\end{table}
+
+A~\texttt{/stop} and~its target run task are~separate coroutines that~must
+not~race.  The~handler tags the~row in~an~in-process \texttt{stopping}
+map, waits for~the~run task to~publish its~container
+(\texttt{dispatch\_ready}), kills it, and~only \emph{after} awaiting the
+run task's full drain writes the~final status and~frees the~slot
+(Figure~\ref{fig:seq-worker-stop}).  The~run task's own completion phase,
+seeing the~\texttt{stopping} tag, records just the~exit code, so the~slot
+is~freed exactly once.  The~same hazard across nodes is~closed on~the~API
+side: \texttt{dispatch\_with\_slot} awaits any in-flight \texttt{/stop}
+on~the~target node before posting \texttt{/run}, so a~migration's new
+container never starts before the~evicted one's CUDA context has~released
+its~GPU.
+
+\begin{figure}[H]
+\centering
+\footnotesize
+\setlength{\unitlength}{0.7cm}
+\resizebox{\textwidth}{!}{%
+\begin{sequencediagram}
+  \newthread{api}{API}
+  \newinst[1.6]{run}{Worker run task}
+  \newinst[1.6]{dock}{Docker}
+  \newinst[1.6]{stop}{Worker /stop}
+  \newinst[1.6]{db}{PostgreSQL}
+
+  \begin{call}{api}{POST /run}{run}{202}
+  \end{call}
+  \begin{call}{run}{Phase 1: atomic claim status=RUNNING}{db}{ok}
+  \end{call}
+  \begin{call}{run}{Phase 2: docker run; set dispatch\_ready}{dock}{}
+  \end{call}
+  \begin{callself}{run}{Phase 3: stream stdout, progress @ 1/s}{}
+  \end{callself}
+  \begin{messcall}{api}{POST /stop?reason=auto  (stopping := auto)}{stop}
+  \end{messcall}
+  \begin{callself}{stop}{await dispatch\_ready}{}
+  \end{callself}
+  \begin{call}{stop}{kill container}{dock}{}
+  \end{call}
+  \begin{sdblock}{/stop awaits the run-task drain, then persists once}{}
+    \begin{messcall}{dock}{exit 137}{run}
+    \end{messcall}
+    \begin{callself}{run}{Phase 4: stopping set $\Rightarrow$ record exit\_code only}{}
+    \end{callself}
+    \begin{call}{stop}{\_persist\_stop: status=QUEUED, assigned\_node=NULL}{db}{}
+    \end{call}
+    \begin{messcall}{stop}{NOTIFY ijm\_slot\_freed "node:n:auto\_preempt"}{db}
+    \end{messcall}
+  \end{sdblock}
+\end{sequencediagram}}
+\caption{Worker execution and~a~scheduler stop.  The~run task and~the
+concurrent \texttt{/stop} synchronise through the~in-process
+\texttt{dispatch\_ready} and~\texttt{stopping} maps plus a~drain await, so
+the~slot is~freed exactly once and~by~exactly one path.  A
+\texttt{reason=auto} stop returns the~row to~\textsc{queued} with~its
+assignment cleared (a~\texttt{reason=user} stop lands on~\textsc{preempted}
+instead); the~resulting \texttt{auto\_preempt} notify is~the~one the~slot
+listener swallows (\S\ref{sec:sched-pipeline}).}
+\label{fig:seq-worker-stop}
 \end{figure}
 
 \section{State machine}
@@ -369,8 +467,8 @@ CREATE TABLE profiling_results (
 Two columns of~\texttt{jobs} are load-bearing for~the~scheduling pass
 above: \texttt{assigned\_node} is~the~target the~optimiser pass writes
 under \texttt{WHERE assigned\_node IS NULL}, and~\texttt{is\_profiling\_run}
-is~the~flag that makes a~row invisible to~the~optimiser (Phase~1b) and
-visible to~the~\texttt{ProfilingScheduler} (Phase~1c).
+is~the~flag that makes a~row invisible to~the~optimiser (phase~2) and
+visible to~the~\texttt{ProfilingScheduler} (phases~3--4).
 
 A~unique index on~\texttt{(job\_id, gpu\_config)} makes the
 cross-instance profile claim atomic.  Profile measurements are keyed
@@ -385,9 +483,11 @@ The control plane relies on~three invariants, each defended in~code.
 
 \textbf{No GPU oversubscription.}  Every dispatch goes through
 \texttt{NodeSlots.acquire(node\_id,\,n\_gpus)}.  On~startup the
-semaphores are reconciled from the~database; rows in~\textsc{running} or
-\textsc{profiling}, and~\textsc{queued} rows with~an~assigned node,
-pre-acquire their permits.  A~periodic drift watcher recomputes the
+semaphores are reconciled from the~database: only rows in~\textsc{running}
+or~\textsc{profiling} pre-acquire their permits, since a~\textsc{queued}
+row with~an~assigned node has~no~live container yet (its dispatch task
+acquires the~permit just before posting \texttt{/run}).  A~periodic drift
+watcher recomputes the
 authoritative count at~the~\texttt{IJM\_DRIFT\_HEARTBEAT\_S} cadence
 (default 15~s) and~corrects any divergence.
 
@@ -400,20 +500,68 @@ double-releasing its permit.
 
 \textbf{Profiling is~sacred.}  Auto-preempt
 (\texttt{\_preempt\_and\_release}) refuses to~act on
-\texttt{is\_profiling\_run=TRUE}, and~profile-preempt (Phase~1c) filters
+\texttt{is\_profiling\_run=TRUE}, and~profile-preempt (phase~4) filters
 victims by~\texttt{status='RUNNING'} only.  Only an~explicit user stop
 can cancel an~in-flight measurement.
 
-\section{Cross-node checkpoints and image variants}
+\section{Stoppable, resumable, cross-node training}\label{sec:checkpoints}
 
-Two GPU generations coexist.  The~\texttt{matemagician} node is~pinned to
-driver~418.x (CUDA~10.1 max), so it~runs a~separate
-\texttt{:legacy} image built on~PyTorch~1.5.1 and~Python~3.7.  The
-remaining nodes run the~default \texttt{:latest} image on~PyTorch~2.6
-and~CUDA~12.4.  Both images write checkpoints in~the~legacy pre-1.6
-\texttt{torch.save} format, and~both load with~\texttt{strict=False}, so
-a~job can resume across nodes regardless of~which torch version produced
-the~file.
+A~job is~\emph{stoppable} because the~trainer persists its~state after
+every epoch, and~\emph{resumable} because every (re)start loads that
+state.  \texttt{BaseTrainer.train} writes \texttt{latest.pt} at~the~end
+of~each epoch through a~temp-file-and-\texttt{rename}, so the~on-disk
+checkpoint is~always a~whole epoch, never a~half-written file.  Stopping
+a~job is~therefore just killing its~container
+(\S\ref{sec:worker-lifecycle}): the~in-progress epoch is~discarded,
+every completed epoch is~durable.  The~next dispatch~--- on~the~same node
+or~another~--- reconstructs the~trainer, which loads \texttt{latest.pt},
+restores the~model, optimiser, and~\texttt{current\_epoch}, and~continues
+the~loop (Figure~\ref{fig:seq-resume}).  No~scheduler state mirrors
+training progress; the~checkpoint file is~the~single source of~truth for
+how far a~job has~run.
+
+\begin{figure}[H]
+\centering
+\footnotesize
+\setlength{\unitlength}{0.7cm}
+\resizebox{0.85\textwidth}{!}{%
+\begin{sequencediagram}
+  \newthread{r1}{Trainer run --- node A}
+  \newinst[2.4]{fs}{latest.pt (shared FS)}
+  \newinst[2.4]{r2}{Trainer run --- node B}
+
+  \begin{callself}{r1}{epoch $k$: train + evaluate}{}
+  \end{callself}
+  \begin{call}{r1}{atomic save (temp file $\rightarrow$ rename)}{fs}{}
+  \end{call}
+  \begin{callself}{r1}{epoch $k{+}1$: training\ldots\ container killed}{}
+  \end{callself}
+  \begin{call}{r2}{load $\Rightarrow$ epoch $k$, model + optimiser (strict=False)}{fs}{state}
+  \end{call}
+  \begin{callself}{r2}{resume from epoch $k{+}1$}{}
+  \end{callself}
+\end{sequencediagram}}
+\caption{Stop and~resume.  The~trainer checkpoints after each epoch with
+a~temp-file-and-\texttt{rename}, so \texttt{latest.pt} is~never
+half-written.  A~stop kills the~container mid-epoch; the~next run~--- here
+on~a~different node, possibly a~different torch version~--- loads
+\texttt{latest.pt} and~continues.  Only the~interrupted epoch~$k{+}1$
+is~recomputed.}
+\label{fig:seq-resume}
+\end{figure}
+
+Two GPU generations coexist, so a~resume must survive a~change of~torch
+version mid-job.  The~\texttt{matemagician} node is~pinned to~driver~418.x
+(CUDA~10.1 max), so it~runs a~separate \texttt{:legacy} image built
+on~PyTorch~1.5.1 and~Python~3.7; the~remaining nodes run the~default
+\texttt{:latest} image on~PyTorch~2.6 and~CUDA~12.4.  Both images write
+the~checkpoint in~the~legacy pre-1.6 \texttt{torch.save} format, and~the
+load is~deliberately lenient: \texttt{strict=False} tolerates state-dict
+key differences between versions, and~a~failed optimiser-state load
+restarts Adam from~scratch rather than aborting the~resume~--- the~model
+weights are~what matter, and~a~few epochs of~optimiser warmup are
+invisible at~scenario timescales.  This is~what lets \texttt{cnn\_big}
+migrate between a~modern A40 and~a~legacy P600 without losing progress.
 
 The shared \texttt{data/} directory is~mounted on~every node via~rclone
 over SFTP.  It~contains:

@@ -1,0 +1,83 @@
+INFO:     Started server process [1]
+INFO:     Waiting for application startup.
+2026-06-25 16:58:23 - app - INFO - Worker starting up (node_id=matemagician)
+2026-06-25 16:58:23 - reconcile - INFO - Reconciling job states for node matemagician
+INFO:     Application startup complete.
+INFO:     Uvicorn running on http://0.0.0.0:8001 (Press CTRL+C to quit)
+INFO:     172.22.0.1:41988 - "GET /health HTTP/1.1" 200 OK
+INFO:     172.22.0.1:42014 - "GET /health HTTP/1.1" 200 OK
+INFO:     172.22.0.1:42032 - "GET /health HTTP/1.1" 200 OK
+INFO:     172.22.0.1:42038 - "POST /jobs/fa2f78b3-bea9-46a0-bd84-f5b73e18833d/run HTTP/1.1" 202 Accepted
+2026-06-25 17:00:31 - execution - INFO - GPU allocator: job fa2f78b3 claims indices [0]
+2026-06-25 17:00:31 - docker - INFO - docker rootless mode: False
+2026-06-25 17:00:31 - execution - INFO - Starting job fa2f78b3: docker run --rm --name ijm-fa2f78b3 -e NVIDIA_VISIBLE_DEVICES=0 --user 1049:1051 -e USER=ijm -e HOME=/tmp -v /home/wangrat/ijm/data/checkpoints/fa2f78b3-bea9-46a0-bd84-f5b73e18833d/.profiling:/checkpoints -v /home/wangrat/ijm/data/runs/fa2f78b3-bea9-46a0-bd84-f5b73e18833d:/runs -v /home/wangrat/ijm/data/datasets:/runs/data:ro -e OMP_NUM_THREADS=1 -e OPENBLAS_NUM_THREADS=1 -e MKL_NUM_THREADS=1 -e EPOCHS_TOTAL=3 wangrat/ijm-cnn_big:legacy
+2026-06-25 17:00:35 - execution - INFO - [Job fa2f78b3] 2026-06-25 17:00:35 - __main__ - INFO - ============================================================
+2026-06-25 17:00:35 - execution - INFO - [Job fa2f78b3] 2026-06-25 17:00:35 - __main__ - INFO - Starting cnn_big v2 training (synthetic 128x128x3, deep CNN)
+2026-06-25 17:00:35 - execution - INFO - [Job fa2f78b3] 2026-06-25 17:00:35 - __main__ - INFO - ============================================================
+2026-06-25 17:00:35 - execution - INFO - [Job fa2f78b3] 2026-06-25 17:00:35 - base - INFO - Using device: cuda
+2026-06-25 17:00:40 - execution - INFO - [Job fa2f78b3] 2026-06-25 17:00:40 - base - INFO - No checkpoint found, starting from scratch
+2026-06-25 17:00:40 - execution - INFO - [Job fa2f78b3] 2026-06-25 17:00:40 - base - INFO - Config: epochs_total=3, batch_size=32
+2026-06-25 17:00:40 - execution - INFO - [Job fa2f78b3] 2026-06-25 17:00:40 - base - INFO - Starting training from epoch 0 to 3
+2026-06-25 17:00:40 - execution - INFO - [Job fa2f78b3] 2026-06-25 17:00:40 - base - INFO - Epoch 1/3 - starting
+2026-06-25 17:01:56 - execution - INFO - [Job fa2f78b3] 2026-06-25 17:01:56 - base - INFO - Epoch 1/3 - Loss: 2.327574 - Acc: 10.16% - 76.34s
+2026-06-25 17:01:56 - execution - INFO - [Job fa2f78b3] 2026-06-25 17:01:56 - base - INFO - Checkpoint saved at epoch 1
+2026-06-25 17:01:56 - execution - INFO - [Job fa2f78b3] 2026-06-25 17:01:56 - base - INFO - Epoch 2/3 - starting
+2026-06-25 17:03:14 - execution - INFO - [Job fa2f78b3] 2026-06-25 17:03:14 - base - INFO - Epoch 2/3 - Loss: 2.322320 - Acc: 9.77% - 77.79s
+2026-06-25 17:03:14 - execution - INFO - [Job fa2f78b3] 2026-06-25 17:03:14 - base - INFO - Checkpoint saved at epoch 2
+2026-06-25 17:03:14 - execution - INFO - [Job fa2f78b3] 2026-06-25 17:03:14 - base - INFO - Epoch 3/3 - starting
+2026-06-25 17:04:33 - execution - INFO - [Job fa2f78b3] 2026-06-25 17:04:33 - base - INFO - Epoch 3/3 - Loss: 2.319490 - Acc: 8.59% - 78.93s
+2026-06-25 17:04:34 - execution - INFO - [Job fa2f78b3] 2026-06-25 17:04:34 - base - INFO - Checkpoint saved at epoch 3
+2026-06-25 17:04:35 - profiling - INFO - Profiling: warmup epoch excluded, mean=78.3600s/epoch over 2 sample(s)
+2026-06-25 17:04:35 - profiling - INFO - Profile-complete fa2f78b3: still_owes=True → is_profiling_run will be True
+2026-06-25 17:04:35 - profiling - INFO - Profiling complete for job fa2f78b3 (type=cnn_big): {'QuadroP600': 1} = 78.4s — reset to QUEUED
+2026-06-25 17:04:35 - execution - INFO - GPU allocator: job fa2f78b3 releases indices [0]
+INFO:     172.22.0.1:42086 - "POST /jobs/fa2f78b3-bea9-46a0-bd84-f5b73e18833d/run HTTP/1.1" 202 Accepted
+2026-06-25 17:04:37 - execution - INFO - GPU allocator: job fa2f78b3 claims indices [0, 1]
+2026-06-25 17:04:37 - execution - INFO - Starting job fa2f78b3: docker run --rm --name ijm-fa2f78b3 -e NVIDIA_VISIBLE_DEVICES=0,1 --user 1049:1051 -e USER=ijm -e HOME=/tmp -v /home/wangrat/ijm/data/checkpoints/fa2f78b3-bea9-46a0-bd84-f5b73e18833d/.profiling:/checkpoints -v /home/wangrat/ijm/data/runs/fa2f78b3-bea9-46a0-bd84-f5b73e18833d:/runs -v /home/wangrat/ijm/data/datasets:/runs/data:ro -e OMP_NUM_THREADS=1 -e OPENBLAS_NUM_THREADS=1 -e MKL_NUM_THREADS=1 -e EPOCHS_TOTAL=3 wangrat/ijm-cnn_big:legacy
+2026-06-25 17:04:41 - execution - INFO - [Job fa2f78b3] 2026-06-25 17:04:40 - __main__ - INFO - ============================================================
+2026-06-25 17:04:41 - execution - INFO - [Job fa2f78b3] 2026-06-25 17:04:40 - __main__ - INFO - Starting cnn_big v2 training (synthetic 128x128x3, deep CNN)
+2026-06-25 17:04:41 - execution - INFO - [Job fa2f78b3] 2026-06-25 17:04:40 - __main__ - INFO - ============================================================
+2026-06-25 17:04:41 - execution - INFO - [Job fa2f78b3] 2026-06-25 17:04:41 - base - INFO - Using device: cuda
+2026-06-25 17:04:43 - execution - INFO - [Job fa2f78b3] 2026-06-25 17:04:43 - base - INFO - Wrapping model in DataParallel across 2 GPUs
+2026-06-25 17:04:45 - execution - INFO - [Job fa2f78b3] 2026-06-25 17:04:45 - base - INFO - No checkpoint found, starting from scratch
+2026-06-25 17:04:45 - execution - INFO - [Job fa2f78b3] 2026-06-25 17:04:45 - base - INFO - Config: epochs_total=3, batch_size=32
+2026-06-25 17:04:45 - execution - INFO - [Job fa2f78b3] 2026-06-25 17:04:45 - base - INFO - Starting training from epoch 0 to 3
+2026-06-25 17:04:45 - execution - INFO - [Job fa2f78b3] 2026-06-25 17:04:45 - base - INFO - Epoch 1/3 - starting
+2026-06-25 17:05:32 - execution - INFO - [Job fa2f78b3] 2026-06-25 17:05:32 - base - INFO - Epoch 1/3 - Loss: 2.329207 - Acc: 9.96% - 46.15s
+2026-06-25 17:05:32 - execution - INFO - [Job fa2f78b3] 2026-06-25 17:05:32 - base - INFO - Checkpoint saved at epoch 1
+2026-06-25 17:05:32 - execution - INFO - [Job fa2f78b3] 2026-06-25 17:05:32 - base - INFO - Epoch 2/3 - starting
+2026-06-25 17:06:18 - execution - INFO - [Job fa2f78b3] 2026-06-25 17:06:18 - base - INFO - Epoch 2/3 - Loss: 2.315748 - Acc: 9.96% - 45.81s
+2026-06-25 17:06:18 - execution - INFO - [Job fa2f78b3] 2026-06-25 17:06:18 - base - INFO - Checkpoint saved at epoch 2
+2026-06-25 17:06:18 - execution - INFO - [Job fa2f78b3] 2026-06-25 17:06:18 - base - INFO - Epoch 3/3 - starting
+2026-06-25 17:07:05 - execution - INFO - [Job fa2f78b3] 2026-06-25 17:07:05 - base - INFO - Epoch 3/3 - Loss: 2.320462 - Acc: 10.16% - 47.51s
+2026-06-25 17:07:05 - execution - INFO - [Job fa2f78b3] 2026-06-25 17:07:05 - base - INFO - Checkpoint saved at epoch 3
+2026-06-25 17:07:07 - profiling - INFO - Profiling: warmup epoch excluded, mean=46.6600s/epoch over 2 sample(s)
+2026-06-25 17:07:07 - profiling - INFO - Profile-complete fa2f78b3: still_owes=False → is_profiling_run will be False
+2026-06-25 17:07:07 - profiling - INFO - Profiling complete for job fa2f78b3 (type=cnn_big): {'QuadroP600': 2} = 46.7s — reset to QUEUED
+2026-06-25 17:07:07 - execution - INFO - GPU allocator: job fa2f78b3 releases indices [0, 1]
+INFO:     172.22.0.1:42122 - "POST /jobs/2a474f42-a8f8-4b8c-870d-3292ffa8e1f9/run HTTP/1.1" 202 Accepted
+2026-06-25 17:08:16 - execution - INFO - GPU allocator: job 2a474f42 claims indices [0, 1]
+2026-06-25 17:08:16 - execution - INFO - Starting job 2a474f42: docker run --rm --name ijm-2a474f42 -e NVIDIA_VISIBLE_DEVICES=0,1 --user 1049:1051 -e USER=ijm -e HOME=/tmp -v /home/wangrat/ijm/data/checkpoints/2a474f42-a8f8-4b8c-870d-3292ffa8e1f9:/checkpoints -v /home/wangrat/ijm/data/runs/2a474f42-a8f8-4b8c-870d-3292ffa8e1f9:/runs -v /home/wangrat/ijm/data/datasets:/runs/data:ro -e OMP_NUM_THREADS=1 -e OPENBLAS_NUM_THREADS=1 -e MKL_NUM_THREADS=1 -e EPOCHS_TOTAL=200 wangrat/ijm-cnn_big:legacy
+2026-06-25 17:08:21 - execution - INFO - [Job 2a474f42] 2026-06-25 17:08:20 - __main__ - INFO - ============================================================
+2026-06-25 17:08:21 - execution - INFO - [Job 2a474f42] 2026-06-25 17:08:20 - __main__ - INFO - Starting cnn_big v2 training (synthetic 128x128x3, deep CNN)
+2026-06-25 17:08:21 - execution - INFO - [Job 2a474f42] 2026-06-25 17:08:20 - __main__ - INFO - ============================================================
+2026-06-25 17:08:21 - execution - INFO - [Job 2a474f42] 2026-06-25 17:08:21 - base - INFO - Using device: cuda
+2026-06-25 17:08:23 - execution - INFO - [Job 2a474f42] 2026-06-25 17:08:23 - base - INFO - Wrapping model in DataParallel across 2 GPUs
+2026-06-25 17:08:25 - execution - INFO - [Job 2a474f42] 2026-06-25 17:08:25 - base - INFO - No checkpoint found, starting from scratch
+2026-06-25 17:08:25 - execution - INFO - [Job 2a474f42] 2026-06-25 17:08:25 - base - INFO - Config: epochs_total=200, batch_size=32
+2026-06-25 17:08:25 - execution - INFO - [Job 2a474f42] 2026-06-25 17:08:25 - base - INFO - Starting training from epoch 0 to 200
+2026-06-25 17:08:25 - execution - INFO - [Job 2a474f42] 2026-06-25 17:08:25 - base - INFO - Epoch 1/200 - starting
+2026-06-25 17:09:11 - execution - INFO - [Job 2a474f42] 2026-06-25 17:09:11 - base - INFO - Epoch 1/200 - Loss: 2.331083 - Acc: 11.33% - 45.95s
+2026-06-25 17:09:12 - execution - INFO - [Job 2a474f42] 2026-06-25 17:09:12 - base - INFO - Checkpoint saved at epoch 1
+2026-06-25 17:09:12 - execution - INFO - [Job 2a474f42] 2026-06-25 17:09:12 - base - INFO - Epoch 2/200 - starting
+2026-06-25 17:09:58 - execution - INFO - [Job 2a474f42] 2026-06-25 17:09:58 - base - INFO - Epoch 2/200 - Loss: 2.324035 - Acc: 12.30% - 46.54s
+2026-06-25 17:09:59 - execution - INFO - [Job 2a474f42] 2026-06-25 17:09:59 - base - INFO - Checkpoint saved at epoch 2
+2026-06-25 17:09:59 - execution - INFO - [Job 2a474f42] 2026-06-25 17:09:59 - base - INFO - Epoch 3/200 - starting
+2026-06-25 17:10:46 - execution - INFO - [Job 2a474f42] 2026-06-25 17:10:46 - base - INFO - Epoch 3/200 - Loss: 2.318205 - Acc: 8.79% - 47.42s
+2026-06-25 17:10:47 - execution - INFO - [Job 2a474f42] 2026-06-25 17:10:47 - base - INFO - Checkpoint saved at epoch 3
+2026-06-25 17:10:47 - execution - INFO - [Job 2a474f42] 2026-06-25 17:10:47 - base - INFO - Epoch 4/200 - starting
+2026-06-25 17:11:25 - execution - INFO - Job 2a474f42 exited (exit=137) during /stop (reason=auto) — leaving status to /stop
+2026-06-25 17:11:25 - execution - INFO - GPU allocator: job 2a474f42 releases indices [0, 1]
+2026-06-25 17:11:25 - app - INFO - Killed container ijm-2a474f42 (reason=auto)
+INFO:     172.22.0.1:42158 - "POST /jobs/2a474f42-a8f8-4b8c-870d-3292ffa8e1f9/stop?reason=auto HTTP/1.1" 202 Accepted
+INFO:     172.22.0.1:42286 - "GET /health HTTP/1.1" 200 OK

@@ -65,7 +65,7 @@ talks to~workers over HTTP.
 \subsection{Energy costs (\texttt{gpu\_energy\_costs.json})}
 
 A~lookup table that maps a~GPU type and~bundle size to~an~hourly energy
-cost (EUR/h).  The~scheduler consults this table when scoring candidate
+cost (\$/h).  The~scheduler consults this table when scoring candidate
 placements.
 
 \begin{lstlisting}[language={}, numbers=none]
@@ -106,7 +106,7 @@ placements.
 \texttt{job\_id}            & string       & yes & Reusable job type identifier; profile measurements are correlated across submissions sharing the~same \texttt{job\_id} \\
 \texttt{dockerImage}        & string       & yes & Docker image to~execute \\
 \texttt{scriptPath}         & string       & no  & Path to~the~training script (overrides Docker CMD with~\texttt{python3 <scriptPath>}) \\
-\texttt{directoryToMount}   & string       & no  & Host directory mounted into the~container at~\texttt{/workspace} \\
+\texttt{directoryToMount}   & string       & no  & Host directory persisted on~the~job row (ANDREAS-compatibility field); not~mounted by~the~current worker, which mounts only checkpoints, the~runs directory, and~the~shared dataset cache \\
 \texttt{command}            & string[]     & no  & Command and~arguments (defaults to~the~image entrypoint; overridden by~\texttt{scriptPath}) \\
 \texttt{Priority}           & int 1--5     & no  & Job priority (default~3) \\
 \texttt{deadline}           & datetime     & no  & Job deadline (ISO 8601) \\
@@ -140,7 +140,7 @@ first run will be~a~profile or~a~standard execution.
   "command": ["python3", "train.py"],
   "status": "QUEUED",
   "is_profiling_run": true,
-  "assigned_node": "node-mixed-prof",
+  "assigned_node": "polimi-gpu",
   "assigned_gpu_config": { "A40": 1 },
   "priority": 3,
   "epochs_total": 20,
@@ -218,7 +218,7 @@ process at~startup.
 \texttt{IJM\_DRIFT\_HEARTBEAT\_S}       & 15 & Period of~the~slot-tracker drift heartbeat that reconciles \texttt{mem\_used} against \texttt{db\_used} per~node \\
 \texttt{WORKER\_GPU\_MODE}              & \texttt{runtime} & Worker-side; how Docker exposes GPUs to~training containers (\texttt{runtime} / \texttt{cdi} / \texttt{none}) \\
 \texttt{IMAGE\_TAG\_OVERRIDE}           & unset & Worker-side; rewrites \texttt{:latest} to~the~given tag.  Used on~\texttt{matemagician} to~pick the~CUDA-10.1-compatible \texttt{:legacy} image \\
-\texttt{HOST\_ROOT}, \texttt{HOST\_PROJECT\_ROOT} & \texttt{/host}, \texttt{\$\{PWD\}/..} & Resolve container-internal vs.~host paths for~Docker bind mounts \\
+\texttt{HOST\_ROOT}, \texttt{HOST\_PROJECT\_ROOT} & \texttt{/host} & Resolve container-internal vs.~host paths for~Docker bind mounts; \texttt{HOST\_PROJECT\_ROOT} falls back to \texttt{HOST\_ROOT} when unset \\
 \bottomrule
 \end{tabularx}
 \caption{Key environment variables.}\label{tab:env-vars}

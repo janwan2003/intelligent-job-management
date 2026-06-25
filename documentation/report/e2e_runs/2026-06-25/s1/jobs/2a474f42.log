@@ -1,0 +1,631 @@
+=== RUNNING on node=matemagician gpu_config={'QuadroP600': 2} image=wangrat/ijm-cnn_big:latest command=[] start=2026-06-25T17:08:16.763235+00:00 ===
+2026-06-25 17:08:20 - __main__ - INFO - ============================================================
+2026-06-25 17:08:20 - __main__ - INFO - Starting cnn_big v2 training (synthetic 128x128x3, deep CNN)
+2026-06-25 17:08:20 - __main__ - INFO - ============================================================
+2026-06-25 17:08:21 - base - INFO - Using device: cuda
+2026-06-25 17:08:23 - base - INFO - Wrapping model in DataParallel across 2 GPUs
+2026-06-25 17:08:25 - base - INFO - No checkpoint found, starting from scratch
+2026-06-25 17:08:25 - base - INFO - Config: epochs_total=200, batch_size=32
+2026-06-25 17:08:25 - base - INFO - Starting training from epoch 0 to 200
+2026-06-25 17:08:25 - base - INFO - Epoch 1/200 - starting
+2026-06-25 17:09:11 - base - INFO - Epoch 1/200 - Loss: 2.331083 - Acc: 11.33% - 45.95s
+2026-06-25 17:09:12 - base - INFO - Checkpoint saved at epoch 1
+2026-06-25 17:09:12 - base - INFO - Epoch 2/200 - starting
+2026-06-25 17:09:58 - base - INFO - Epoch 2/200 - Loss: 2.324035 - Acc: 12.30% - 46.54s
+2026-06-25 17:09:59 - base - INFO - Checkpoint saved at epoch 2
+2026-06-25 17:09:59 - base - INFO - Epoch 3/200 - starting
+2026-06-25 17:10:46 - base - INFO - Epoch 3/200 - Loss: 2.318205 - Acc: 8.79% - 47.42s
+2026-06-25 17:10:47 - base - INFO - Checkpoint saved at epoch 3
+2026-06-25 17:10:47 - base - INFO - Epoch 4/200 - starting
+=== RUNNING on node=polimi-gpu gpu_config={'A40': 1} image=wangrat/ijm-cnn_big:latest command=[] start=2026-06-25T17:11:30.966165+00:00 ===
+2026-06-25 17:11:33 - __main__ - INFO - ============================================================
+2026-06-25 17:11:33 - __main__ - INFO - Starting cnn_big v2 training (synthetic 128x128x3, deep CNN)
+2026-06-25 17:11:33 - __main__ - INFO - ============================================================
+2026-06-25 17:11:33 - base - INFO - Using device: cuda
+2026-06-25 17:11:34 - base - INFO - Loading checkpoint from /checkpoints/latest.pt
+2026-06-25 17:11:36 - base - INFO - Resumed from epoch 3 (best acc: 12.30%)
+2026-06-25 17:11:36 - base - INFO - Config: epochs_total=200, batch_size=32
+2026-06-25 17:11:36 - base - INFO - Starting training from epoch 3 to 200
+2026-06-25 17:11:36 - base - INFO - Epoch 4/200 - starting
+2026-06-25 17:11:41 - base - INFO - Epoch 4/200 - Loss: 2.309994 - Acc: 8.79% - 5.34s
+2026-06-25 17:11:41 - base - INFO - Checkpoint saved at epoch 4
+2026-06-25 17:11:41 - base - INFO - Epoch 5/200 - starting
+2026-06-25 17:11:46 - base - INFO - Epoch 5/200 - Loss: 2.296447 - Acc: 10.35% - 5.05s
+2026-06-25 17:11:46 - base - INFO - Checkpoint saved at epoch 5
+2026-06-25 17:11:46 - base - INFO - Epoch 6/200 - starting
+2026-06-25 17:11:51 - base - INFO - Epoch 6/200 - Loss: 2.252882 - Acc: 10.16% - 5.06s
+2026-06-25 17:11:52 - base - INFO - Checkpoint saved at epoch 6
+2026-06-25 17:11:52 - base - INFO - Epoch 7/200 - starting
+2026-06-25 17:11:57 - base - INFO - Epoch 7/200 - Loss: 2.139735 - Acc: 10.16% - 5.06s
+2026-06-25 17:11:57 - base - INFO - Checkpoint saved at epoch 7
+2026-06-25 17:11:57 - base - INFO - Epoch 8/200 - starting
+2026-06-25 17:12:02 - base - INFO - Epoch 8/200 - Loss: 1.941297 - Acc: 9.96% - 5.06s
+2026-06-25 17:12:02 - base - INFO - Checkpoint saved at epoch 8
+2026-06-25 17:12:02 - base - INFO - Epoch 9/200 - starting
+2026-06-25 17:12:07 - base - INFO - Epoch 9/200 - Loss: 1.655232 - Acc: 9.77% - 5.07s
+2026-06-25 17:12:08 - base - INFO - Checkpoint saved at epoch 9
+2026-06-25 17:12:08 - base - INFO - Epoch 10/200 - starting
+2026-06-25 17:12:13 - base - INFO - Epoch 10/200 - Loss: 1.348301 - Acc: 9.96% - 5.06s
+2026-06-25 17:12:13 - base - INFO - Checkpoint saved at epoch 10
+2026-06-25 17:12:13 - base - INFO - Epoch 11/200 - starting
+2026-06-25 17:12:18 - base - INFO - Epoch 11/200 - Loss: 1.031493 - Acc: 12.30% - 5.06s
+2026-06-25 17:12:18 - base - INFO - Checkpoint saved at epoch 11
+2026-06-25 17:12:18 - base - INFO - Epoch 12/200 - starting
+2026-06-25 17:12:23 - base - INFO - Epoch 12/200 - Loss: 0.693663 - Acc: 9.18% - 5.07s
+2026-06-25 17:12:23 - base - INFO - Checkpoint saved at epoch 12
+2026-06-25 17:12:23 - base - INFO - Epoch 13/200 - starting
+2026-06-25 17:12:28 - base - INFO - Epoch 13/200 - Loss: 0.514797 - Acc: 11.33% - 5.06s
+2026-06-25 17:12:29 - base - INFO - Checkpoint saved at epoch 13
+2026-06-25 17:12:29 - base - INFO - Epoch 14/200 - starting
+2026-06-25 17:12:34 - base - INFO - Epoch 14/200 - Loss: 0.354472 - Acc: 10.16% - 5.07s
+2026-06-25 17:12:34 - base - INFO - Checkpoint saved at epoch 14
+2026-06-25 17:12:34 - base - INFO - Epoch 15/200 - starting
+2026-06-25 17:12:39 - base - INFO - Epoch 15/200 - Loss: 0.284557 - Acc: 9.18% - 5.08s
+2026-06-25 17:12:39 - base - INFO - Checkpoint saved at epoch 15
+2026-06-25 17:12:39 - base - INFO - Epoch 16/200 - starting
+2026-06-25 17:12:44 - base - INFO - Epoch 16/200 - Loss: 0.253604 - Acc: 8.40% - 5.07s
+2026-06-25 17:12:45 - base - INFO - Checkpoint saved at epoch 16
+2026-06-25 17:12:45 - base - INFO - Epoch 17/200 - starting
+2026-06-25 17:12:50 - base - INFO - Epoch 17/200 - Loss: 0.188502 - Acc: 12.50% - 5.07s
+2026-06-25 17:12:50 - base - INFO - Checkpoint saved at epoch 17
+2026-06-25 17:12:50 - base - INFO - Epoch 18/200 - starting
+2026-06-25 17:12:55 - base - INFO - Epoch 18/200 - Loss: 0.175485 - Acc: 8.01% - 5.07s
+2026-06-25 17:12:55 - base - INFO - Checkpoint saved at epoch 18
+2026-06-25 17:12:55 - base - INFO - Epoch 19/200 - starting
+2026-06-25 17:13:00 - base - INFO - Epoch 19/200 - Loss: 0.159622 - Acc: 9.57% - 5.06s
+2026-06-25 17:13:01 - base - INFO - Checkpoint saved at epoch 19
+2026-06-25 17:13:01 - base - INFO - Epoch 20/200 - starting
+2026-06-25 17:13:06 - base - INFO - Epoch 20/200 - Loss: 0.158539 - Acc: 12.89% - 5.06s
+2026-06-25 17:13:06 - base - INFO - Checkpoint saved at epoch 20
+2026-06-25 17:13:06 - base - INFO - Epoch 21/200 - starting
+2026-06-25 17:13:11 - base - INFO - Epoch 21/200 - Loss: 0.153056 - Acc: 9.57% - 5.06s
+2026-06-25 17:13:11 - base - INFO - Checkpoint saved at epoch 21
+2026-06-25 17:13:11 - base - INFO - Epoch 22/200 - starting
+2026-06-25 17:13:16 - base - INFO - Epoch 22/200 - Loss: 0.154822 - Acc: 8.79% - 5.07s
+2026-06-25 17:13:17 - base - INFO - Checkpoint saved at epoch 22
+2026-06-25 17:13:17 - base - INFO - Epoch 23/200 - starting
+2026-06-25 17:13:22 - base - INFO - Epoch 23/200 - Loss: 0.140778 - Acc: 12.70% - 5.06s
+2026-06-25 17:13:22 - base - INFO - Checkpoint saved at epoch 23
+2026-06-25 17:13:22 - base - INFO - Epoch 24/200 - starting
+2026-06-25 17:13:27 - base - INFO - Epoch 24/200 - Loss: 0.116728 - Acc: 9.38% - 5.07s
+2026-06-25 17:13:27 - base - INFO - Checkpoint saved at epoch 24
+2026-06-25 17:13:27 - base - INFO - Epoch 25/200 - starting
+2026-06-25 17:13:32 - base - INFO - Epoch 25/200 - Loss: 0.092703 - Acc: 9.18% - 5.06s
+2026-06-25 17:13:33 - base - INFO - Checkpoint saved at epoch 25
+2026-06-25 17:13:33 - base - INFO - Epoch 26/200 - starting
+2026-06-25 17:13:38 - base - INFO - Epoch 26/200 - Loss: 0.096802 - Acc: 8.79% - 5.06s
+2026-06-25 17:13:38 - base - INFO - Checkpoint saved at epoch 26
+2026-06-25 17:13:38 - base - INFO - Epoch 27/200 - starting
+2026-06-25 17:13:43 - base - INFO - Epoch 27/200 - Loss: 0.101682 - Acc: 8.98% - 5.07s
+2026-06-25 17:13:43 - base - INFO - Checkpoint saved at epoch 27
+2026-06-25 17:13:43 - base - INFO - Epoch 28/200 - starting
+2026-06-25 17:13:48 - base - INFO - Epoch 28/200 - Loss: 0.118695 - Acc: 9.77% - 5.08s
+2026-06-25 17:13:49 - base - INFO - Checkpoint saved at epoch 28
+2026-06-25 17:13:49 - base - INFO - Epoch 29/200 - starting
+2026-06-25 17:13:54 - base - INFO - Epoch 29/200 - Loss: 0.104467 - Acc: 9.38% - 5.05s
+2026-06-25 17:13:54 - base - INFO - Checkpoint saved at epoch 29
+2026-06-25 17:13:54 - base - INFO - Epoch 30/200 - starting
+2026-06-25 17:13:59 - base - INFO - Epoch 30/200 - Loss: 0.116445 - Acc: 10.74% - 5.06s
+2026-06-25 17:13:59 - base - INFO - Checkpoint saved at epoch 30
+2026-06-25 17:13:59 - base - INFO - Epoch 31/200 - starting
+2026-06-25 17:14:04 - base - INFO - Epoch 31/200 - Loss: 0.138263 - Acc: 10.35% - 5.04s
+2026-06-25 17:14:04 - base - INFO - Checkpoint saved at epoch 31
+2026-06-25 17:14:04 - base - INFO - Epoch 32/200 - starting
+=== RUNNING on node=polimi-gpu gpu_config={'A40': 2} image=wangrat/ijm-cnn_big:latest command=[] start=2026-06-25T17:14:25.053388+00:00 ===
+2026-06-25 17:14:27 - __main__ - INFO - ============================================================
+2026-06-25 17:14:27 - __main__ - INFO - Starting cnn_big v2 training (synthetic 128x128x3, deep CNN)
+2026-06-25 17:14:27 - __main__ - INFO - ============================================================
+2026-06-25 17:14:27 - base - INFO - Using device: cuda
+2026-06-25 17:14:27 - base - INFO - Wrapping model in DataParallel across 2 GPUs
+2026-06-25 17:14:29 - base - INFO - Loading checkpoint from /checkpoints/latest.pt
+2026-06-25 17:14:29 - base - INFO - Resumed from epoch 31 (best acc: 12.89%)
+2026-06-25 17:14:29 - base - INFO - Config: epochs_total=200, batch_size=32
+2026-06-25 17:14:29 - base - INFO - Starting training from epoch 31 to 200
+2026-06-25 17:14:29 - base - INFO - Epoch 32/200 - starting
+2026-06-25 17:14:34 - base - INFO - Epoch 32/200 - Loss: 0.180772 - Acc: 9.96% - 5.44s
+2026-06-25 17:14:34 - base - INFO - Checkpoint saved at epoch 32
+2026-06-25 17:14:34 - base - INFO - Epoch 33/200 - starting
+2026-06-25 17:14:39 - base - INFO - Epoch 33/200 - Loss: 0.217148 - Acc: 10.35% - 4.64s
+2026-06-25 17:14:39 - base - INFO - Checkpoint saved at epoch 33
+2026-06-25 17:14:39 - base - INFO - Epoch 34/200 - starting
+2026-06-25 17:14:44 - base - INFO - Epoch 34/200 - Loss: 0.153914 - Acc: 8.59% - 4.90s
+2026-06-25 17:14:44 - base - INFO - Checkpoint saved at epoch 34
+2026-06-25 17:14:44 - base - INFO - Epoch 35/200 - starting
+2026-06-25 17:14:49 - base - INFO - Epoch 35/200 - Loss: 0.135506 - Acc: 13.09% - 4.70s
+2026-06-25 17:14:49 - base - INFO - Checkpoint saved at epoch 35
+2026-06-25 17:14:49 - base - INFO - Epoch 36/200 - starting
+2026-06-25 17:14:54 - base - INFO - Epoch 36/200 - Loss: 0.088672 - Acc: 8.59% - 4.70s
+2026-06-25 17:14:54 - base - INFO - Checkpoint saved at epoch 36
+2026-06-25 17:14:54 - base - INFO - Epoch 37/200 - starting
+2026-06-25 17:14:59 - base - INFO - Epoch 37/200 - Loss: 0.070749 - Acc: 12.50% - 4.66s
+2026-06-25 17:14:59 - base - INFO - Checkpoint saved at epoch 37
+2026-06-25 17:14:59 - base - INFO - Epoch 38/200 - starting
+2026-06-25 17:15:03 - base - INFO - Epoch 38/200 - Loss: 0.075393 - Acc: 8.98% - 4.63s
+2026-06-25 17:15:04 - base - INFO - Checkpoint saved at epoch 38
+2026-06-25 17:15:04 - base - INFO - Epoch 39/200 - starting
+2026-06-25 17:15:08 - base - INFO - Epoch 39/200 - Loss: 0.088764 - Acc: 9.77% - 4.64s
+2026-06-25 17:15:08 - base - INFO - Checkpoint saved at epoch 39
+2026-06-25 17:15:08 - base - INFO - Epoch 40/200 - starting
+2026-06-25 17:15:13 - base - INFO - Epoch 40/200 - Loss: 0.099226 - Acc: 9.18% - 4.63s
+2026-06-25 17:15:13 - base - INFO - Checkpoint saved at epoch 40
+2026-06-25 17:15:13 - base - INFO - Epoch 41/200 - starting
+2026-06-25 17:15:18 - base - INFO - Epoch 41/200 - Loss: 0.092256 - Acc: 9.96% - 4.94s
+2026-06-25 17:15:18 - base - INFO - Checkpoint saved at epoch 41
+2026-06-25 17:15:18 - base - INFO - Epoch 42/200 - starting
+2026-06-25 17:15:23 - base - INFO - Epoch 42/200 - Loss: 0.100529 - Acc: 10.16% - 4.80s
+2026-06-25 17:15:23 - base - INFO - Checkpoint saved at epoch 42
+2026-06-25 17:15:23 - base - INFO - Epoch 43/200 - starting
+2026-06-25 17:15:28 - base - INFO - Epoch 43/200 - Loss: 0.113595 - Acc: 9.96% - 4.98s
+2026-06-25 17:15:29 - base - INFO - Checkpoint saved at epoch 43
+2026-06-25 17:15:29 - base - INFO - Epoch 44/200 - starting
+2026-06-25 17:15:34 - base - INFO - Epoch 44/200 - Loss: 0.105634 - Acc: 7.81% - 5.10s
+2026-06-25 17:15:34 - base - INFO - Checkpoint saved at epoch 44
+2026-06-25 17:15:34 - base - INFO - Epoch 45/200 - starting
+2026-06-25 17:15:39 - base - INFO - Epoch 45/200 - Loss: 0.089436 - Acc: 10.35% - 5.08s
+2026-06-25 17:15:39 - base - INFO - Checkpoint saved at epoch 45
+2026-06-25 17:15:39 - base - INFO - Epoch 46/200 - starting
+2026-06-25 17:15:44 - base - INFO - Epoch 46/200 - Loss: 0.061628 - Acc: 10.74% - 4.98s
+2026-06-25 17:15:45 - base - INFO - Checkpoint saved at epoch 46
+2026-06-25 17:15:45 - base - INFO - Epoch 47/200 - starting
+2026-06-25 17:15:50 - base - INFO - Epoch 47/200 - Loss: 0.087146 - Acc: 9.18% - 5.10s
+2026-06-25 17:15:50 - base - INFO - Checkpoint saved at epoch 47
+2026-06-25 17:15:50 - base - INFO - Epoch 48/200 - starting
+2026-06-25 17:15:55 - base - INFO - Epoch 48/200 - Loss: 0.100396 - Acc: 9.18% - 5.12s
+2026-06-25 17:15:55 - base - INFO - Checkpoint saved at epoch 48
+2026-06-25 17:15:55 - base - INFO - Epoch 49/200 - starting
+2026-06-25 17:16:00 - base - INFO - Epoch 49/200 - Loss: 0.105215 - Acc: 8.40% - 4.99s
+2026-06-25 17:16:01 - base - INFO - Checkpoint saved at epoch 49
+2026-06-25 17:16:01 - base - INFO - Epoch 50/200 - starting
+2026-06-25 17:16:06 - base - INFO - Epoch 50/200 - Loss: 0.113261 - Acc: 9.77% - 5.02s
+2026-06-25 17:16:06 - base - INFO - Checkpoint saved at epoch 50
+2026-06-25 17:16:06 - base - INFO - Epoch 51/200 - starting
+2026-06-25 17:16:11 - base - INFO - Epoch 51/200 - Loss: 0.085223 - Acc: 11.52% - 5.04s
+2026-06-25 17:16:11 - base - INFO - Checkpoint saved at epoch 51
+2026-06-25 17:16:11 - base - INFO - Epoch 52/200 - starting
+2026-06-25 17:16:16 - base - INFO - Epoch 52/200 - Loss: 0.073350 - Acc: 11.72% - 5.02s
+2026-06-25 17:16:16 - base - INFO - Checkpoint saved at epoch 52
+2026-06-25 17:16:16 - base - INFO - Epoch 53/200 - starting
+2026-06-25 17:16:22 - base - INFO - Epoch 53/200 - Loss: 0.059300 - Acc: 9.38% - 5.12s
+2026-06-25 17:16:22 - base - INFO - Checkpoint saved at epoch 53
+2026-06-25 17:16:22 - base - INFO - Epoch 54/200 - starting
+2026-06-25 17:16:27 - base - INFO - Epoch 54/200 - Loss: 0.061882 - Acc: 10.74% - 5.19s
+2026-06-25 17:16:27 - base - INFO - Checkpoint saved at epoch 54
+2026-06-25 17:16:27 - base - INFO - Epoch 55/200 - starting
+2026-06-25 17:16:32 - base - INFO - Epoch 55/200 - Loss: 0.076717 - Acc: 11.13% - 5.16s
+2026-06-25 17:16:33 - base - INFO - Checkpoint saved at epoch 55
+2026-06-25 17:16:33 - base - INFO - Epoch 56/200 - starting
+2026-06-25 17:16:38 - base - INFO - Epoch 56/200 - Loss: 0.079949 - Acc: 9.96% - 4.96s
+2026-06-25 17:16:38 - base - INFO - Checkpoint saved at epoch 56
+2026-06-25 17:16:38 - base - INFO - Epoch 57/200 - starting
+2026-06-25 17:16:43 - base - INFO - Epoch 57/200 - Loss: 0.090575 - Acc: 12.50% - 4.99s
+2026-06-25 17:16:43 - base - INFO - Checkpoint saved at epoch 57
+2026-06-25 17:16:43 - base - INFO - Epoch 58/200 - starting
+2026-06-25 17:16:48 - base - INFO - Epoch 58/200 - Loss: 0.081533 - Acc: 9.18% - 5.05s
+2026-06-25 17:16:48 - base - INFO - Checkpoint saved at epoch 58
+2026-06-25 17:16:48 - base - INFO - Epoch 59/200 - starting
+2026-06-25 17:16:53 - base - INFO - Epoch 59/200 - Loss: 0.086075 - Acc: 11.72% - 4.98s
+2026-06-25 17:16:54 - base - INFO - Checkpoint saved at epoch 59
+2026-06-25 17:16:54 - base - INFO - Epoch 60/200 - starting
+2026-06-25 17:16:59 - base - INFO - Epoch 60/200 - Loss: 0.080327 - Acc: 9.77% - 4.92s
+2026-06-25 17:16:59 - base - INFO - Checkpoint saved at epoch 60
+2026-06-25 17:16:59 - base - INFO - Epoch 61/200 - starting
+2026-06-25 17:17:04 - base - INFO - Epoch 61/200 - Loss: 0.071605 - Acc: 10.16% - 5.10s
+2026-06-25 17:17:04 - base - INFO - Checkpoint saved at epoch 61
+2026-06-25 17:17:04 - base - INFO - Epoch 62/200 - starting
+2026-06-25 17:17:09 - base - INFO - Epoch 62/200 - Loss: 0.056421 - Acc: 11.91% - 5.08s
+2026-06-25 17:17:09 - base - INFO - Checkpoint saved at epoch 62
+2026-06-25 17:17:09 - base - INFO - Epoch 63/200 - starting
+2026-06-25 17:17:15 - base - INFO - Epoch 63/200 - Loss: 0.049170 - Acc: 10.35% - 5.10s
+2026-06-25 17:17:15 - base - INFO - Checkpoint saved at epoch 63
+2026-06-25 17:17:15 - base - INFO - Epoch 64/200 - starting
+2026-06-25 17:17:20 - base - INFO - Epoch 64/200 - Loss: 0.059494 - Acc: 8.79% - 5.12s
+2026-06-25 17:17:20 - base - INFO - Checkpoint saved at epoch 64
+2026-06-25 17:17:20 - base - INFO - Epoch 65/200 - starting
+2026-06-25 17:17:25 - base - INFO - Epoch 65/200 - Loss: 0.051302 - Acc: 9.18% - 5.09s
+2026-06-25 17:17:26 - base - INFO - Checkpoint saved at epoch 65
+2026-06-25 17:17:26 - base - INFO - Epoch 66/200 - starting
+2026-06-25 17:17:31 - base - INFO - Epoch 66/200 - Loss: 0.045027 - Acc: 8.59% - 4.98s
+2026-06-25 17:17:31 - base - INFO - Checkpoint saved at epoch 66
+2026-06-25 17:17:31 - base - INFO - Epoch 67/200 - starting
+2026-06-25 17:17:36 - base - INFO - Epoch 67/200 - Loss: 0.051146 - Acc: 11.33% - 4.98s
+2026-06-25 17:17:36 - base - INFO - Checkpoint saved at epoch 67
+2026-06-25 17:17:36 - base - INFO - Epoch 68/200 - starting
+2026-06-25 17:17:41 - base - INFO - Epoch 68/200 - Loss: 0.043850 - Acc: 9.96% - 4.98s
+2026-06-25 17:17:41 - base - INFO - Checkpoint saved at epoch 68
+2026-06-25 17:17:41 - base - INFO - Epoch 69/200 - starting
+2026-06-25 17:17:46 - base - INFO - Epoch 69/200 - Loss: 0.071788 - Acc: 9.38% - 5.00s
+2026-06-25 17:17:47 - base - INFO - Checkpoint saved at epoch 69
+2026-06-25 17:17:47 - base - INFO - Epoch 70/200 - starting
+2026-06-25 17:17:52 - base - INFO - Epoch 70/200 - Loss: 0.062208 - Acc: 9.57% - 5.07s
+2026-06-25 17:17:52 - base - INFO - Checkpoint saved at epoch 70
+2026-06-25 17:17:52 - base - INFO - Epoch 71/200 - starting
+2026-06-25 17:17:57 - base - INFO - Epoch 71/200 - Loss: 0.095819 - Acc: 11.33% - 5.05s
+2026-06-25 17:17:57 - base - INFO - Checkpoint saved at epoch 71
+2026-06-25 17:17:57 - base - INFO - Epoch 72/200 - starting
+2026-06-25 17:18:02 - base - INFO - Epoch 72/200 - Loss: 0.080894 - Acc: 8.79% - 4.99s
+2026-06-25 17:18:02 - base - INFO - Checkpoint saved at epoch 72
+2026-06-25 17:18:02 - base - INFO - Epoch 73/200 - starting
+2026-06-25 17:18:08 - base - INFO - Epoch 73/200 - Loss: 0.087704 - Acc: 10.35% - 5.02s
+2026-06-25 17:18:08 - base - INFO - Checkpoint saved at epoch 73
+2026-06-25 17:18:08 - base - INFO - Epoch 74/200 - starting
+2026-06-25 17:18:13 - base - INFO - Epoch 74/200 - Loss: 0.061669 - Acc: 10.16% - 5.00s
+2026-06-25 17:18:13 - base - INFO - Checkpoint saved at epoch 74
+2026-06-25 17:18:13 - base - INFO - Epoch 75/200 - starting
+2026-06-25 17:18:18 - base - INFO - Epoch 75/200 - Loss: 0.043928 - Acc: 9.96% - 4.99s
+2026-06-25 17:18:18 - base - INFO - Checkpoint saved at epoch 75
+2026-06-25 17:18:18 - base - INFO - Epoch 76/200 - starting
+2026-06-25 17:18:23 - base - INFO - Epoch 76/200 - Loss: 0.039127 - Acc: 11.33% - 4.99s
+2026-06-25 17:18:24 - base - INFO - Checkpoint saved at epoch 76
+2026-06-25 17:18:24 - base - INFO - Epoch 77/200 - starting
+2026-06-25 17:18:28 - base - INFO - Epoch 77/200 - Loss: 0.037858 - Acc: 10.74% - 4.92s
+2026-06-25 17:18:29 - base - INFO - Checkpoint saved at epoch 77
+2026-06-25 17:18:29 - base - INFO - Epoch 78/200 - starting
+2026-06-25 17:18:34 - base - INFO - Epoch 78/200 - Loss: 0.041208 - Acc: 10.16% - 5.06s
+2026-06-25 17:18:34 - base - INFO - Checkpoint saved at epoch 78
+2026-06-25 17:18:34 - base - INFO - Epoch 79/200 - starting
+2026-06-25 17:18:39 - base - INFO - Epoch 79/200 - Loss: 0.031940 - Acc: 11.13% - 5.08s
+2026-06-25 17:18:39 - base - INFO - Checkpoint saved at epoch 79
+2026-06-25 17:18:39 - base - INFO - Epoch 80/200 - starting
+2026-06-25 17:18:44 - base - INFO - Epoch 80/200 - Loss: 0.053424 - Acc: 10.74% - 5.08s
+2026-06-25 17:18:45 - base - INFO - Checkpoint saved at epoch 80
+2026-06-25 17:18:45 - base - INFO - Epoch 81/200 - starting
+2026-06-25 17:18:50 - base - INFO - Epoch 81/200 - Loss: 0.072029 - Acc: 8.01% - 5.10s
+2026-06-25 17:18:50 - base - INFO - Checkpoint saved at epoch 81
+2026-06-25 17:18:50 - base - INFO - Epoch 82/200 - starting
+2026-06-25 17:18:55 - base - INFO - Epoch 82/200 - Loss: 0.063210 - Acc: 11.33% - 5.08s
+2026-06-25 17:18:55 - base - INFO - Checkpoint saved at epoch 82
+2026-06-25 17:18:55 - base - INFO - Epoch 83/200 - starting
+2026-06-25 17:19:00 - base - INFO - Epoch 83/200 - Loss: 0.062067 - Acc: 10.16% - 4.98s
+2026-06-25 17:19:01 - base - INFO - Checkpoint saved at epoch 83
+2026-06-25 17:19:01 - base - INFO - Epoch 84/200 - starting
+2026-06-25 17:19:06 - base - INFO - Epoch 84/200 - Loss: 0.069211 - Acc: 9.38% - 5.04s
+2026-06-25 17:19:06 - base - INFO - Checkpoint saved at epoch 84
+2026-06-25 17:19:06 - base - INFO - Epoch 85/200 - starting
+2026-06-25 17:19:11 - base - INFO - Epoch 85/200 - Loss: 0.057312 - Acc: 10.35% - 5.03s
+2026-06-25 17:19:11 - base - INFO - Checkpoint saved at epoch 85
+2026-06-25 17:19:11 - base - INFO - Epoch 86/200 - starting
+2026-06-25 17:19:16 - base - INFO - Epoch 86/200 - Loss: 0.044607 - Acc: 10.55% - 4.95s
+2026-06-25 17:19:16 - base - INFO - Checkpoint saved at epoch 86
+2026-06-25 17:19:16 - base - INFO - Epoch 87/200 - starting
+2026-06-25 17:19:21 - base - INFO - Epoch 87/200 - Loss: 0.048336 - Acc: 10.55% - 5.05s
+2026-06-25 17:19:22 - base - INFO - Checkpoint saved at epoch 87
+2026-06-25 17:19:22 - base - INFO - Epoch 88/200 - starting
+2026-06-25 17:19:27 - base - INFO - Epoch 88/200 - Loss: 0.046012 - Acc: 9.96% - 4.99s
+2026-06-25 17:19:27 - base - INFO - Checkpoint saved at epoch 88
+2026-06-25 17:19:27 - base - INFO - Epoch 89/200 - starting
+2026-06-25 17:19:32 - base - INFO - Epoch 89/200 - Loss: 0.045755 - Acc: 9.38% - 4.94s
+2026-06-25 17:19:32 - base - INFO - Checkpoint saved at epoch 89
+2026-06-25 17:19:32 - base - INFO - Epoch 90/200 - starting
+2026-06-25 17:19:37 - base - INFO - Epoch 90/200 - Loss: 0.048140 - Acc: 10.94% - 4.97s
+2026-06-25 17:19:37 - base - INFO - Checkpoint saved at epoch 90
+2026-06-25 17:19:37 - base - INFO - Epoch 91/200 - starting
+2026-06-25 17:19:42 - base - INFO - Epoch 91/200 - Loss: 0.033905 - Acc: 8.01% - 5.00s
+2026-06-25 17:19:43 - base - INFO - Checkpoint saved at epoch 91
+2026-06-25 17:19:43 - base - INFO - Epoch 92/200 - starting
+2026-06-25 17:19:48 - base - INFO - Epoch 92/200 - Loss: 0.036247 - Acc: 11.72% - 4.97s
+2026-06-25 17:19:48 - base - INFO - Checkpoint saved at epoch 92
+2026-06-25 17:19:48 - base - INFO - Epoch 93/200 - starting
+2026-06-25 17:19:53 - base - INFO - Epoch 93/200 - Loss: 0.043253 - Acc: 10.16% - 4.93s
+2026-06-25 17:19:53 - base - INFO - Checkpoint saved at epoch 93
+2026-06-25 17:19:53 - base - INFO - Epoch 94/200 - starting
+2026-06-25 17:19:58 - base - INFO - Epoch 94/200 - Loss: 0.045651 - Acc: 10.55% - 5.03s
+2026-06-25 17:19:58 - base - INFO - Checkpoint saved at epoch 94
+2026-06-25 17:19:58 - base - INFO - Epoch 95/200 - starting
+2026-06-25 17:20:04 - base - INFO - Epoch 95/200 - Loss: 0.042553 - Acc: 9.96% - 5.08s
+2026-06-25 17:20:04 - base - INFO - Checkpoint saved at epoch 95
+2026-06-25 17:20:04 - base - INFO - Epoch 96/200 - starting
+2026-06-25 17:20:09 - base - INFO - Epoch 96/200 - Loss: 0.056105 - Acc: 12.11% - 4.98s
+2026-06-25 17:20:09 - base - INFO - Checkpoint saved at epoch 96
+2026-06-25 17:20:09 - base - INFO - Epoch 97/200 - starting
+2026-06-25 17:20:14 - base - INFO - Epoch 97/200 - Loss: 0.065553 - Acc: 10.16% - 5.00s
+2026-06-25 17:20:14 - base - INFO - Checkpoint saved at epoch 97
+2026-06-25 17:20:14 - base - INFO - Epoch 98/200 - starting
+2026-06-25 17:20:19 - base - INFO - Epoch 98/200 - Loss: 0.075201 - Acc: 8.20% - 5.00s
+2026-06-25 17:20:20 - base - INFO - Checkpoint saved at epoch 98
+2026-06-25 17:20:20 - base - INFO - Epoch 99/200 - starting
+2026-06-25 17:20:25 - base - INFO - Epoch 99/200 - Loss: 0.079225 - Acc: 12.70% - 4.98s
+2026-06-25 17:20:25 - base - INFO - Checkpoint saved at epoch 99
+2026-06-25 17:20:25 - base - INFO - Epoch 100/200 - starting
+2026-06-25 17:20:30 - base - INFO - Epoch 100/200 - Loss: 0.041849 - Acc: 11.33% - 5.02s
+2026-06-25 17:20:30 - base - INFO - Checkpoint saved at epoch 100
+2026-06-25 17:20:30 - base - INFO - Epoch 101/200 - starting
+2026-06-25 17:20:35 - base - INFO - Epoch 101/200 - Loss: 0.043817 - Acc: 12.30% - 5.04s
+2026-06-25 17:20:35 - base - INFO - Checkpoint saved at epoch 101
+2026-06-25 17:20:35 - base - INFO - Epoch 102/200 - starting
+2026-06-25 17:20:40 - base - INFO - Epoch 102/200 - Loss: 0.037124 - Acc: 8.59% - 5.02s
+2026-06-25 17:20:41 - base - INFO - Checkpoint saved at epoch 102
+2026-06-25 17:20:41 - base - INFO - Epoch 103/200 - starting
+2026-06-25 17:20:46 - base - INFO - Epoch 103/200 - Loss: 0.034957 - Acc: 11.91% - 5.02s
+2026-06-25 17:20:46 - base - INFO - Checkpoint saved at epoch 103
+2026-06-25 17:20:46 - base - INFO - Epoch 104/200 - starting
+2026-06-25 17:20:51 - base - INFO - Epoch 104/200 - Loss: 0.047787 - Acc: 11.91% - 5.04s
+2026-06-25 17:20:51 - base - INFO - Checkpoint saved at epoch 104
+2026-06-25 17:20:51 - base - INFO - Epoch 105/200 - starting
+2026-06-25 17:20:56 - base - INFO - Epoch 105/200 - Loss: 0.037412 - Acc: 8.79% - 5.01s
+2026-06-25 17:20:57 - base - INFO - Checkpoint saved at epoch 105
+2026-06-25 17:20:57 - base - INFO - Epoch 106/200 - starting
+2026-06-25 17:21:02 - base - INFO - Epoch 106/200 - Loss: 0.028781 - Acc: 10.94% - 5.02s
+2026-06-25 17:21:02 - base - INFO - Checkpoint saved at epoch 106
+2026-06-25 17:21:02 - base - INFO - Epoch 107/200 - starting
+2026-06-25 17:21:07 - base - INFO - Epoch 107/200 - Loss: 0.031570 - Acc: 9.77% - 5.05s
+2026-06-25 17:21:07 - base - INFO - Checkpoint saved at epoch 107
+2026-06-25 17:21:07 - base - INFO - Epoch 108/200 - starting
+2026-06-25 17:21:12 - base - INFO - Epoch 108/200 - Loss: 0.027070 - Acc: 9.96% - 5.07s
+2026-06-25 17:21:12 - base - INFO - Checkpoint saved at epoch 108
+2026-06-25 17:21:12 - base - INFO - Epoch 109/200 - starting
+2026-06-25 17:21:17 - base - INFO - Epoch 109/200 - Loss: 0.039246 - Acc: 9.18% - 4.97s
+2026-06-25 17:21:18 - base - INFO - Checkpoint saved at epoch 109
+2026-06-25 17:21:18 - base - INFO - Epoch 110/200 - starting
+2026-06-25 17:21:23 - base - INFO - Epoch 110/200 - Loss: 0.043328 - Acc: 8.98% - 4.90s
+2026-06-25 17:21:23 - base - INFO - Checkpoint saved at epoch 110
+2026-06-25 17:21:23 - base - INFO - Epoch 111/200 - starting
+2026-06-25 17:21:28 - base - INFO - Epoch 111/200 - Loss: 0.038108 - Acc: 8.01% - 4.93s
+2026-06-25 17:21:28 - base - INFO - Checkpoint saved at epoch 111
+2026-06-25 17:21:28 - base - INFO - Epoch 112/200 - starting
+2026-06-25 17:21:33 - base - INFO - Epoch 112/200 - Loss: 0.046211 - Acc: 12.89% - 4.95s
+2026-06-25 17:21:33 - base - INFO - Checkpoint saved at epoch 112
+2026-06-25 17:21:33 - base - INFO - Epoch 113/200 - starting
+2026-06-25 17:21:38 - base - INFO - Epoch 113/200 - Loss: 0.044139 - Acc: 8.98% - 4.96s
+2026-06-25 17:21:39 - base - INFO - Checkpoint saved at epoch 113
+2026-06-25 17:21:39 - base - INFO - Epoch 114/200 - starting
+2026-06-25 17:21:44 - base - INFO - Epoch 114/200 - Loss: 0.056830 - Acc: 8.59% - 4.95s
+2026-06-25 17:21:44 - base - INFO - Checkpoint saved at epoch 114
+2026-06-25 17:21:44 - base - INFO - Epoch 115/200 - starting
+2026-06-25 17:21:49 - base - INFO - Epoch 115/200 - Loss: 0.038957 - Acc: 11.91% - 5.03s
+2026-06-25 17:21:49 - base - INFO - Checkpoint saved at epoch 115
+2026-06-25 17:21:49 - base - INFO - Epoch 116/200 - starting
+2026-06-25 17:21:54 - base - INFO - Epoch 116/200 - Loss: 0.036163 - Acc: 11.72% - 5.04s
+2026-06-25 17:21:54 - base - INFO - Checkpoint saved at epoch 116
+2026-06-25 17:21:54 - base - INFO - Epoch 117/200 - starting
+2026-06-25 17:21:59 - base - INFO - Epoch 117/200 - Loss: 0.026625 - Acc: 13.48% - 4.96s
+2026-06-25 17:22:00 - base - INFO - Checkpoint saved at epoch 117
+2026-06-25 17:22:00 - base - INFO - Epoch 118/200 - starting
+2026-06-25 17:22:05 - base - INFO - Epoch 118/200 - Loss: 0.030398 - Acc: 10.35% - 4.97s
+2026-06-25 17:22:05 - base - INFO - Checkpoint saved at epoch 118
+2026-06-25 17:22:05 - base - INFO - Epoch 119/200 - starting
+2026-06-25 17:22:10 - base - INFO - Epoch 119/200 - Loss: 0.033601 - Acc: 12.30% - 4.99s
+2026-06-25 17:22:10 - base - INFO - Checkpoint saved at epoch 119
+2026-06-25 17:22:10 - base - INFO - Epoch 120/200 - starting
+2026-06-25 17:22:15 - base - INFO - Epoch 120/200 - Loss: 0.029642 - Acc: 9.77% - 4.91s
+2026-06-25 17:22:15 - base - INFO - Checkpoint saved at epoch 120
+2026-06-25 17:22:15 - base - INFO - Epoch 121/200 - starting
+2026-06-25 17:22:20 - base - INFO - Epoch 121/200 - Loss: 0.046213 - Acc: 12.50% - 4.95s
+2026-06-25 17:22:21 - base - INFO - Checkpoint saved at epoch 121
+2026-06-25 17:22:21 - base - INFO - Epoch 122/200 - starting
+2026-06-25 17:22:26 - base - INFO - Epoch 122/200 - Loss: 0.042460 - Acc: 11.13% - 5.03s
+2026-06-25 17:22:26 - base - INFO - Checkpoint saved at epoch 122
+2026-06-25 17:22:26 - base - INFO - Epoch 123/200 - starting
+2026-06-25 17:22:31 - base - INFO - Epoch 123/200 - Loss: 0.037972 - Acc: 12.89% - 5.08s
+2026-06-25 17:22:31 - base - INFO - Checkpoint saved at epoch 123
+2026-06-25 17:22:31 - base - INFO - Epoch 124/200 - starting
+2026-06-25 17:22:36 - base - INFO - Epoch 124/200 - Loss: 0.032052 - Acc: 10.94% - 5.07s
+2026-06-25 17:22:36 - base - INFO - Checkpoint saved at epoch 124
+2026-06-25 17:22:36 - base - INFO - Epoch 125/200 - starting
+2026-06-25 17:22:41 - base - INFO - Epoch 125/200 - Loss: 0.020499 - Acc: 7.42% - 5.05s
+2026-06-25 17:22:42 - base - INFO - Checkpoint saved at epoch 125
+2026-06-25 17:22:42 - base - INFO - Epoch 126/200 - starting
+2026-06-25 17:22:47 - base - INFO - Epoch 126/200 - Loss: 0.026945 - Acc: 11.72% - 5.02s
+2026-06-25 17:22:47 - base - INFO - Checkpoint saved at epoch 126
+2026-06-25 17:22:47 - base - INFO - Epoch 127/200 - starting
+2026-06-25 17:22:52 - base - INFO - Epoch 127/200 - Loss: 0.027560 - Acc: 10.35% - 5.04s
+2026-06-25 17:22:52 - base - INFO - Checkpoint saved at epoch 127
+2026-06-25 17:22:52 - base - INFO - Epoch 128/200 - starting
+2026-06-25 17:22:57 - base - INFO - Epoch 128/200 - Loss: 0.025127 - Acc: 9.96% - 5.04s
+2026-06-25 17:22:58 - base - INFO - Checkpoint saved at epoch 128
+2026-06-25 17:22:58 - base - INFO - Epoch 129/200 - starting
+2026-06-25 17:23:03 - base - INFO - Epoch 129/200 - Loss: 0.019466 - Acc: 11.33% - 5.05s
+2026-06-25 17:23:03 - base - INFO - Checkpoint saved at epoch 129
+2026-06-25 17:23:03 - base - INFO - Epoch 130/200 - starting
+2026-06-25 17:23:08 - base - INFO - Epoch 130/200 - Loss: 0.022561 - Acc: 12.30% - 4.97s
+2026-06-25 17:23:08 - base - INFO - Checkpoint saved at epoch 130
+2026-06-25 17:23:08 - base - INFO - Epoch 131/200 - starting
+2026-06-25 17:23:13 - base - INFO - Epoch 131/200 - Loss: 0.020024 - Acc: 11.33% - 4.86s
+2026-06-25 17:23:13 - base - INFO - Checkpoint saved at epoch 131
+2026-06-25 17:23:13 - base - INFO - Epoch 132/200 - starting
+2026-06-25 17:23:18 - base - INFO - Epoch 132/200 - Loss: 0.017043 - Acc: 9.77% - 4.88s
+2026-06-25 17:23:18 - base - INFO - Checkpoint saved at epoch 132
+2026-06-25 17:23:18 - base - INFO - Epoch 133/200 - starting
+2026-06-25 17:23:23 - base - INFO - Epoch 133/200 - Loss: 0.030051 - Acc: 12.50% - 4.90s
+2026-06-25 17:23:23 - base - INFO - Checkpoint saved at epoch 133
+2026-06-25 17:23:23 - base - INFO - Epoch 134/200 - starting
+2026-06-25 17:23:28 - base - INFO - Epoch 134/200 - Loss: 0.047723 - Acc: 10.16% - 4.90s
+2026-06-25 17:23:29 - base - INFO - Checkpoint saved at epoch 134
+2026-06-25 17:23:29 - base - INFO - Epoch 135/200 - starting
+2026-06-25 17:23:33 - base - INFO - Epoch 135/200 - Loss: 0.069902 - Acc: 10.16% - 4.92s
+2026-06-25 17:23:34 - base - INFO - Checkpoint saved at epoch 135
+2026-06-25 17:23:34 - base - INFO - Epoch 136/200 - starting
+2026-06-25 17:23:38 - base - INFO - Epoch 136/200 - Loss: 0.064985 - Acc: 8.98% - 4.92s
+2026-06-25 17:23:39 - base - INFO - Checkpoint saved at epoch 136
+2026-06-25 17:23:39 - base - INFO - Epoch 137/200 - starting
+2026-06-25 17:23:44 - base - INFO - Epoch 137/200 - Loss: 0.040564 - Acc: 10.94% - 5.06s
+2026-06-25 17:23:44 - base - INFO - Checkpoint saved at epoch 137
+2026-06-25 17:23:44 - base - INFO - Epoch 138/200 - starting
+2026-06-25 17:23:49 - base - INFO - Epoch 138/200 - Loss: 0.035492 - Acc: 10.74% - 5.00s
+2026-06-25 17:23:49 - base - INFO - Checkpoint saved at epoch 138
+2026-06-25 17:23:49 - base - INFO - Epoch 139/200 - starting
+2026-06-25 17:23:54 - base - INFO - Epoch 139/200 - Loss: 0.041153 - Acc: 10.35% - 5.06s
+2026-06-25 17:23:55 - base - INFO - Checkpoint saved at epoch 139
+2026-06-25 17:23:55 - base - INFO - Epoch 140/200 - starting
+2026-06-25 17:24:00 - base - INFO - Epoch 140/200 - Loss: 0.033042 - Acc: 9.38% - 5.03s
+2026-06-25 17:24:00 - base - INFO - Checkpoint saved at epoch 140
+2026-06-25 17:24:00 - base - INFO - Epoch 141/200 - starting
+2026-06-25 17:24:05 - base - INFO - Epoch 141/200 - Loss: 0.026138 - Acc: 10.35% - 4.95s
+2026-06-25 17:24:05 - base - INFO - Checkpoint saved at epoch 141
+2026-06-25 17:24:05 - base - INFO - Epoch 142/200 - starting
+2026-06-25 17:24:10 - base - INFO - Epoch 142/200 - Loss: 0.021262 - Acc: 10.94% - 4.97s
+2026-06-25 17:24:10 - base - INFO - Checkpoint saved at epoch 142
+2026-06-25 17:24:10 - base - INFO - Epoch 143/200 - starting
+2026-06-25 17:24:15 - base - INFO - Epoch 143/200 - Loss: 0.016350 - Acc: 10.35% - 4.94s
+2026-06-25 17:24:16 - base - INFO - Checkpoint saved at epoch 143
+2026-06-25 17:24:16 - base - INFO - Epoch 144/200 - starting
+2026-06-25 17:24:20 - base - INFO - Epoch 144/200 - Loss: 0.023835 - Acc: 9.18% - 4.88s
+2026-06-25 17:24:21 - base - INFO - Checkpoint saved at epoch 144
+2026-06-25 17:24:21 - base - INFO - Epoch 145/200 - starting
+2026-06-25 17:24:26 - base - INFO - Epoch 145/200 - Loss: 0.026970 - Acc: 12.50% - 4.90s
+2026-06-25 17:24:26 - base - INFO - Checkpoint saved at epoch 145
+2026-06-25 17:24:26 - base - INFO - Epoch 146/200 - starting
+2026-06-25 17:24:31 - base - INFO - Epoch 146/200 - Loss: 0.030848 - Acc: 12.11% - 4.98s
+2026-06-25 17:24:31 - base - INFO - Checkpoint saved at epoch 146
+2026-06-25 17:24:31 - base - INFO - Epoch 147/200 - starting
+2026-06-25 17:24:36 - base - INFO - Epoch 147/200 - Loss: 0.029242 - Acc: 9.77% - 4.91s
+2026-06-25 17:24:36 - base - INFO - Checkpoint saved at epoch 147
+2026-06-25 17:24:36 - base - INFO - Epoch 148/200 - starting
+2026-06-25 17:24:41 - base - INFO - Epoch 148/200 - Loss: 0.043344 - Acc: 11.91% - 4.92s
+2026-06-25 17:24:42 - base - INFO - Checkpoint saved at epoch 148
+2026-06-25 17:24:42 - base - INFO - Epoch 149/200 - starting
+2026-06-25 17:24:46 - base - INFO - Epoch 149/200 - Loss: 0.034408 - Acc: 9.77% - 4.93s
+2026-06-25 17:24:47 - base - INFO - Checkpoint saved at epoch 149
+2026-06-25 17:24:47 - base - INFO - Epoch 150/200 - starting
+2026-06-25 17:24:52 - base - INFO - Epoch 150/200 - Loss: 0.037875 - Acc: 9.77% - 4.97s
+2026-06-25 17:24:52 - base - INFO - Checkpoint saved at epoch 150
+2026-06-25 17:24:52 - base - INFO - Epoch 151/200 - starting
+2026-06-25 17:24:57 - base - INFO - Epoch 151/200 - Loss: 0.034940 - Acc: 9.96% - 4.91s
+2026-06-25 17:24:57 - base - INFO - Checkpoint saved at epoch 151
+2026-06-25 17:24:57 - base - INFO - Epoch 152/200 - starting
+2026-06-25 17:25:02 - base - INFO - Epoch 152/200 - Loss: 0.029472 - Acc: 10.35% - 4.95s
+2026-06-25 17:25:02 - base - INFO - Checkpoint saved at epoch 152
+2026-06-25 17:25:02 - base - INFO - Epoch 153/200 - starting
+2026-06-25 17:25:07 - base - INFO - Epoch 153/200 - Loss: 0.028969 - Acc: 10.35% - 4.91s
+2026-06-25 17:25:08 - base - INFO - Checkpoint saved at epoch 153
+2026-06-25 17:25:08 - base - INFO - Epoch 154/200 - starting
+2026-06-25 17:25:12 - base - INFO - Epoch 154/200 - Loss: 0.014804 - Acc: 9.96% - 4.92s
+2026-06-25 17:25:13 - base - INFO - Checkpoint saved at epoch 154
+2026-06-25 17:25:13 - base - INFO - Epoch 155/200 - starting
+2026-06-25 17:25:18 - base - INFO - Epoch 155/200 - Loss: 0.017505 - Acc: 8.40% - 4.94s
+2026-06-25 17:25:18 - base - INFO - Checkpoint saved at epoch 155
+2026-06-25 17:25:18 - base - INFO - Epoch 156/200 - starting
+2026-06-25 17:25:23 - base - INFO - Epoch 156/200 - Loss: 0.019282 - Acc: 10.94% - 4.95s
+2026-06-25 17:25:23 - base - INFO - Checkpoint saved at epoch 156
+2026-06-25 17:25:23 - base - INFO - Epoch 157/200 - starting
+2026-06-25 17:25:28 - base - INFO - Epoch 157/200 - Loss: 0.017377 - Acc: 8.20% - 4.95s
+2026-06-25 17:25:28 - base - INFO - Checkpoint saved at epoch 157
+2026-06-25 17:25:28 - base - INFO - Epoch 158/200 - starting
+2026-06-25 17:25:33 - base - INFO - Epoch 158/200 - Loss: 0.014303 - Acc: 12.50% - 4.99s
+2026-06-25 17:25:34 - base - INFO - Checkpoint saved at epoch 158
+2026-06-25 17:25:34 - base - INFO - Epoch 159/200 - starting
+2026-06-25 17:25:39 - base - INFO - Epoch 159/200 - Loss: 0.009270 - Acc: 9.38% - 4.87s
+2026-06-25 17:25:39 - base - INFO - Checkpoint saved at epoch 159
+2026-06-25 17:25:39 - base - INFO - Epoch 160/200 - starting
+2026-06-25 17:25:44 - base - INFO - Epoch 160/200 - Loss: 0.006270 - Acc: 11.52% - 4.90s
+2026-06-25 17:25:44 - base - INFO - Checkpoint saved at epoch 160
+2026-06-25 17:25:44 - base - INFO - Epoch 161/200 - starting
+2026-06-25 17:25:49 - base - INFO - Epoch 161/200 - Loss: 0.013924 - Acc: 11.33% - 4.95s
+2026-06-25 17:25:49 - base - INFO - Checkpoint saved at epoch 161
+2026-06-25 17:25:49 - base - INFO - Epoch 162/200 - starting
+2026-06-25 17:25:54 - base - INFO - Epoch 162/200 - Loss: 0.014173 - Acc: 12.70% - 4.97s
+2026-06-25 17:25:54 - base - INFO - Checkpoint saved at epoch 162
+2026-06-25 17:25:54 - base - INFO - Epoch 163/200 - starting
+2026-06-25 17:25:59 - base - INFO - Epoch 163/200 - Loss: 0.034979 - Acc: 8.20% - 4.61s
+2026-06-25 17:25:59 - base - INFO - Checkpoint saved at epoch 163
+2026-06-25 17:25:59 - base - INFO - Epoch 164/200 - starting
+2026-06-25 17:26:04 - base - INFO - Epoch 164/200 - Loss: 0.043705 - Acc: 13.67% - 4.51s
+2026-06-25 17:26:04 - base - INFO - Checkpoint saved at epoch 164
+2026-06-25 17:26:04 - base - INFO - Epoch 165/200 - starting
+2026-06-25 17:26:08 - base - INFO - Epoch 165/200 - Loss: 0.062892 - Acc: 8.79% - 4.52s
+2026-06-25 17:26:08 - base - INFO - Checkpoint saved at epoch 165
+2026-06-25 17:26:08 - base - INFO - Epoch 166/200 - starting
+2026-06-25 17:26:13 - base - INFO - Epoch 166/200 - Loss: 0.044578 - Acc: 12.50% - 4.50s
+2026-06-25 17:26:13 - base - INFO - Checkpoint saved at epoch 166
+2026-06-25 17:26:13 - base - INFO - Epoch 167/200 - starting
+2026-06-25 17:26:18 - base - INFO - Epoch 167/200 - Loss: 0.031885 - Acc: 8.20% - 4.65s
+2026-06-25 17:26:18 - base - INFO - Checkpoint saved at epoch 167
+2026-06-25 17:26:18 - base - INFO - Epoch 168/200 - starting
+2026-06-25 17:26:22 - base - INFO - Epoch 168/200 - Loss: 0.020515 - Acc: 12.30% - 4.61s
+2026-06-25 17:26:22 - base - INFO - Checkpoint saved at epoch 168
+2026-06-25 17:26:22 - base - INFO - Epoch 169/200 - starting
+2026-06-25 17:26:27 - base - INFO - Epoch 169/200 - Loss: 0.016162 - Acc: 10.94% - 4.62s
+2026-06-25 17:26:27 - base - INFO - Checkpoint saved at epoch 169
+2026-06-25 17:26:27 - base - INFO - Epoch 170/200 - starting
+2026-06-25 17:26:32 - base - INFO - Epoch 170/200 - Loss: 0.013732 - Acc: 11.52% - 4.73s
+2026-06-25 17:26:32 - base - INFO - Checkpoint saved at epoch 170
+2026-06-25 17:26:32 - base - INFO - Epoch 171/200 - starting
+2026-06-25 17:26:37 - base - INFO - Epoch 171/200 - Loss: 0.023585 - Acc: 11.52% - 4.96s
+2026-06-25 17:26:37 - base - INFO - Checkpoint saved at epoch 171
+2026-06-25 17:26:37 - base - INFO - Epoch 172/200 - starting
+2026-06-25 17:26:42 - base - INFO - Epoch 172/200 - Loss: 0.017561 - Acc: 10.35% - 5.00s
+2026-06-25 17:26:43 - base - INFO - Checkpoint saved at epoch 172
+2026-06-25 17:26:43 - base - INFO - Epoch 173/200 - starting
+2026-06-25 17:26:48 - base - INFO - Epoch 173/200 - Loss: 0.028595 - Acc: 9.77% - 5.06s
+2026-06-25 17:26:48 - base - INFO - Checkpoint saved at epoch 173
+2026-06-25 17:26:48 - base - INFO - Epoch 174/200 - starting
+2026-06-25 17:26:53 - base - INFO - Epoch 174/200 - Loss: 0.021927 - Acc: 7.62% - 5.15s
+2026-06-25 17:26:53 - base - INFO - Checkpoint saved at epoch 174
+2026-06-25 17:26:53 - base - INFO - Epoch 175/200 - starting
+2026-06-25 17:26:59 - base - INFO - Epoch 175/200 - Loss: 0.022797 - Acc: 9.96% - 5.21s
+2026-06-25 17:26:59 - base - INFO - Checkpoint saved at epoch 175
+2026-06-25 17:26:59 - base - INFO - Epoch 176/200 - starting
+2026-06-25 17:27:04 - base - INFO - Epoch 176/200 - Loss: 0.026404 - Acc: 11.13% - 5.25s
+2026-06-25 17:27:04 - base - INFO - Checkpoint saved at epoch 176
+2026-06-25 17:27:04 - base - INFO - Epoch 177/200 - starting
+2026-06-25 17:27:09 - base - INFO - Epoch 177/200 - Loss: 0.015864 - Acc: 8.98% - 5.27s
+2026-06-25 17:27:10 - base - INFO - Checkpoint saved at epoch 177
+2026-06-25 17:27:10 - base - INFO - Epoch 178/200 - starting
+2026-06-25 17:27:15 - base - INFO - Epoch 178/200 - Loss: 0.018607 - Acc: 12.11% - 5.28s
+2026-06-25 17:27:15 - base - INFO - Checkpoint saved at epoch 178
+2026-06-25 17:27:15 - base - INFO - Epoch 179/200 - starting
+2026-06-25 17:27:20 - base - INFO - Epoch 179/200 - Loss: 0.026444 - Acc: 9.57% - 5.08s
+2026-06-25 17:27:20 - base - INFO - Checkpoint saved at epoch 179
+2026-06-25 17:27:20 - base - INFO - Epoch 180/200 - starting
+2026-06-25 17:27:26 - base - INFO - Epoch 180/200 - Loss: 0.033723 - Acc: 11.33% - 5.30s
+2026-06-25 17:27:26 - base - INFO - Checkpoint saved at epoch 180
+2026-06-25 17:27:26 - base - INFO - Epoch 181/200 - starting
+2026-06-25 17:27:31 - base - INFO - Epoch 181/200 - Loss: 0.023663 - Acc: 9.18% - 5.15s
+2026-06-25 17:27:31 - base - INFO - Checkpoint saved at epoch 181
+2026-06-25 17:27:31 - base - INFO - Epoch 182/200 - starting
+2026-06-25 17:27:37 - base - INFO - Epoch 182/200 - Loss: 0.026934 - Acc: 10.16% - 5.20s
+2026-06-25 17:27:37 - base - INFO - Checkpoint saved at epoch 182
+2026-06-25 17:27:37 - base - INFO - Epoch 183/200 - starting
+2026-06-25 17:27:42 - base - INFO - Epoch 183/200 - Loss: 0.027319 - Acc: 10.94% - 5.18s
+2026-06-25 17:27:42 - base - INFO - Checkpoint saved at epoch 183
+2026-06-25 17:27:42 - base - INFO - Epoch 184/200 - starting
+2026-06-25 17:27:48 - base - INFO - Epoch 184/200 - Loss: 0.020721 - Acc: 10.16% - 5.29s
+2026-06-25 17:27:48 - base - INFO - Checkpoint saved at epoch 184
+2026-06-25 17:27:48 - base - INFO - Epoch 185/200 - starting
+2026-06-25 17:27:53 - base - INFO - Epoch 185/200 - Loss: 0.018513 - Acc: 11.52% - 5.29s
+2026-06-25 17:27:53 - base - INFO - Checkpoint saved at epoch 185
+2026-06-25 17:27:53 - base - INFO - Epoch 186/200 - starting
+2026-06-25 17:27:58 - base - INFO - Epoch 186/200 - Loss: 0.011464 - Acc: 12.30% - 5.09s
+2026-06-25 17:27:59 - base - INFO - Checkpoint saved at epoch 186
+2026-06-25 17:27:59 - base - INFO - Epoch 187/200 - starting
+2026-06-25 17:28:04 - base - INFO - Epoch 187/200 - Loss: 0.021418 - Acc: 11.91% - 5.22s
+2026-06-25 17:28:04 - base - INFO - Checkpoint saved at epoch 187
+2026-06-25 17:28:04 - base - INFO - Epoch 188/200 - starting
+2026-06-25 17:28:09 - base - INFO - Epoch 188/200 - Loss: 0.017060 - Acc: 8.98% - 5.24s
+2026-06-25 17:28:10 - base - INFO - Checkpoint saved at epoch 188
+2026-06-25 17:28:10 - base - INFO - Epoch 189/200 - starting
+2026-06-25 17:28:15 - base - INFO - Epoch 189/200 - Loss: 0.018775 - Acc: 12.11% - 5.16s
+2026-06-25 17:28:15 - base - INFO - Checkpoint saved at epoch 189
+2026-06-25 17:28:15 - base - INFO - Epoch 190/200 - starting
+2026-06-25 17:28:20 - base - INFO - Epoch 190/200 - Loss: 0.024344 - Acc: 9.57% - 5.29s
+2026-06-25 17:28:20 - base - INFO - Checkpoint saved at epoch 190
+2026-06-25 17:28:20 - base - INFO - Epoch 191/200 - starting
+2026-06-25 17:28:26 - base - INFO - Epoch 191/200 - Loss: 0.021309 - Acc: 9.38% - 5.27s
+2026-06-25 17:28:26 - base - INFO - Checkpoint saved at epoch 191
+2026-06-25 17:28:26 - base - INFO - Epoch 192/200 - starting
+2026-06-25 17:28:31 - base - INFO - Epoch 192/200 - Loss: 0.023674 - Acc: 11.13% - 5.23s
+2026-06-25 17:28:31 - base - INFO - Checkpoint saved at epoch 192
+2026-06-25 17:28:31 - base - INFO - Epoch 193/200 - starting
+2026-06-25 17:28:37 - base - INFO - Epoch 193/200 - Loss: 0.013991 - Acc: 10.16% - 5.19s
+2026-06-25 17:28:37 - base - INFO - Checkpoint saved at epoch 193
+2026-06-25 17:28:37 - base - INFO - Epoch 194/200 - starting
+2026-06-25 17:28:42 - base - INFO - Epoch 194/200 - Loss: 0.010546 - Acc: 10.55% - 5.30s
+2026-06-25 17:28:42 - base - INFO - Checkpoint saved at epoch 194
+2026-06-25 17:28:42 - base - INFO - Epoch 195/200 - starting
+2026-06-25 17:28:48 - base - INFO - Epoch 195/200 - Loss: 0.015666 - Acc: 8.98% - 5.23s
+2026-06-25 17:28:48 - base - INFO - Checkpoint saved at epoch 195
+2026-06-25 17:28:48 - base - INFO - Epoch 196/200 - starting
+2026-06-25 17:28:53 - base - INFO - Epoch 196/200 - Loss: 0.030565 - Acc: 10.35% - 5.10s
+2026-06-25 17:28:53 - base - INFO - Checkpoint saved at epoch 196
+2026-06-25 17:28:53 - base - INFO - Epoch 197/200 - starting
+2026-06-25 17:28:58 - base - INFO - Epoch 197/200 - Loss: 0.031856 - Acc: 11.13% - 5.22s
+2026-06-25 17:28:58 - base - INFO - Checkpoint saved at epoch 197
+2026-06-25 17:28:58 - base - INFO - Epoch 198/200 - starting
+2026-06-25 17:29:04 - base - INFO - Epoch 198/200 - Loss: 0.040999 - Acc: 11.91% - 5.17s
+2026-06-25 17:29:04 - base - INFO - Checkpoint saved at epoch 198
+2026-06-25 17:29:04 - base - INFO - Epoch 199/200 - starting
+2026-06-25 17:29:09 - base - INFO - Epoch 199/200 - Loss: 0.026550 - Acc: 12.70% - 5.22s
+2026-06-25 17:29:09 - base - INFO - Checkpoint saved at epoch 199
+2026-06-25 17:29:09 - base - INFO - Epoch 200/200 - starting
+2026-06-25 17:29:15 - base - INFO - Epoch 200/200 - Loss: 0.025959 - Acc: 9.77% - 5.21s
+2026-06-25 17:29:15 - base - INFO - Checkpoint saved at epoch 200
+2026-06-25 17:29:15 - base - INFO - Training completed! Final epoch: 200

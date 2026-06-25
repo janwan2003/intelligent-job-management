@@ -14,30 +14,36 @@ from db import fetch_job
 logger = logging.getLogger(__name__)
 
 
-# Need ≥ 2 timestamps: one ending the warmup epoch and one ending a
-# steady-state epoch, giving 1 post-warmup interval to average.
-MIN_EPOCH_TIMESTAMPS_FOR_STEADY = 2
+# Need >= 2 per-epoch samples: epoch 1 is warmup (cold CUDA / cuDNN autotune,
+# first dataset pass) and is dropped, leaving >= 1 steady-state sample.
+MIN_EPOCH_SAMPLES_FOR_STEADY = 2
 
 
 def compute_duration(
-    epoch_timestamps: list[tuple[int, float]] | None,
+    epoch_durations: list[tuple[int, float]] | None,
     run_start_time: datetime,
 ) -> float:
-    """Compute mean per-epoch duration, excluding the first (warmup) epoch.
+    """Mean steady-state per-epoch compute time, warmup (epoch 1) excluded.
 
-    The runtime emits a timestamp after each epoch finishes, so
-    ``epoch_timestamps[0]`` marks the end of epoch 1 (warmup) — its duration
-    is unknown because the run-start clock is wall-time, not the container's
-    monotonic clock. Every interval between timestamps is therefore already
-    a post-warmup sample.
+    Each entry is ``(epoch_num, compute_seconds)`` — the per-epoch time the
+    *runtime itself* measured and logged (the trailing ``- 5.21s``), captured
+    worker-side by ``EPOCH_DONE_RE``.  We use the trainer's own number rather
+    than timing when its log lines arrive at the worker: arrival intervals
+    absorb checkpoint-save I/O and log/network jitter, which run much heavier
+    during the concurrent profile sweep than during the steady standard run
+    and would bias the estimate high (observed 2026-06-25: A40x1 = 8.0s by
+    arrival interval vs ~5.2s real compute).
+
+    Epoch 1 carries cold-start overhead that does not recur, so it is dropped
+    and the remaining samples are averaged.
     """
-    if epoch_timestamps and len(epoch_timestamps) >= MIN_EPOCH_TIMESTAMPS_FOR_STEADY:
-        intervals = [epoch_timestamps[i + 1][1] - epoch_timestamps[i][1] for i in range(len(epoch_timestamps) - 1)]
-        mean_epoch_time = sum(intervals) / len(intervals)
+    if epoch_durations and len(epoch_durations) >= MIN_EPOCH_SAMPLES_FOR_STEADY:
+        steady = [d for _, d in epoch_durations[1:]]  # drop epoch-1 warmup
+        mean_epoch_time = sum(steady) / len(steady)
         logger.info(
             "Profiling: warmup epoch excluded, mean=%.4fs/epoch over %d sample(s)",
             mean_epoch_time,
-            len(intervals),
+            len(steady),
         )
         return mean_epoch_time
     return (datetime.now(UTC) - run_start_time).total_seconds()
@@ -47,14 +53,14 @@ async def handle_complete(
     conn: psycopg.AsyncConnection[Any],
     job_id: str,
     run_start_time: datetime,
-    epoch_timestamps: list[tuple[int, float]],
+    epoch_durations: list[tuple[int, float]],
 ) -> bool:
     """Write profiling result to DB and reset job to QUEUED. Returns True if this was a profiling run."""
     job = await fetch_job(conn, job_id, "is_profiling_run", "assigned_gpu_config", "assigned_node", "job_id")
     if not job or not job["is_profiling_run"]:
         return False
 
-    duration = compute_duration(epoch_timestamps, run_start_time)
+    duration = compute_duration(epoch_durations, run_start_time)
     now = datetime.now(UTC)
     async with conn.cursor() as cur:
         # Filter by instance_id so a stray finish from a different instance
