@@ -7,6 +7,7 @@
     profhatchP/.style={pattern=north east lines, pattern color=red!60!black},
     queued/.style={densely dotted, gray!55, line width=1.1pt},
     deadlinev/.style={dashed, violet!70!black, line width=0.7pt},
+    predfin/.style={dash pattern=on 2pt off 1.4pt, orange!85!black, line width=0.9pt},
   ]
   \draw[->] (0,0) -- (33.32,0);
   \draw (0,0) -- (0,-0.10) node[below] {0};
@@ -27,7 +28,9 @@
   \node[font=\tiny, anchor=center] at (5.34,1.85) {$\times 2$};
   \draw[nodeA40] (6.59,0.78) rectangle (13.50,1.22);
   \draw[deadlinev] (29.99,0.55) -- (29.99,1.45);
-  \node[anchor=west, font=\tiny, text=green!45!black] at (13.70,1.0) {SUCC. 75/75};
+  \draw[predfin] (12.69,0.66) -- (12.69,1.34);
+  \node[font=\tiny, text=orange!85!black, anchor=south] at (12.69,1.32) {$\blacktriangledown$};
+  \node[anchor=west, font=\tiny, text=green!45!black] at (13.70,1.0) {SUCC. 75/75\ \textcolor{orange!75!black}{\scriptsize ($\Delta{=}+0.8$\,m)}};
 
   % ---- JOB2 (fe8f9043, p=4 ep=75)
   \node[anchor=east] at (-0.2,2.4) {\textbf{JOB2}};
@@ -38,19 +41,25 @@
   \node[font=\tiny, anchor=center] at (1.04,3.25) {$\times 2$};
   \draw[nodeA40] (3.93,2.18) rectangle (10.87,2.62);
   \draw[deadlinev] (29.99,1.95) -- (29.99,2.85);
-  \node[anchor=west, font=\tiny, text=green!45!black] at (11.07,2.4) {SUCC. 75/75};
+  \draw[predfin] (10.03,2.06) -- (10.03,2.74);
+  \node[font=\tiny, text=orange!85!black, anchor=south] at (10.03,2.72) {$\blacktriangledown$};
+  \node[anchor=west, font=\tiny, text=green!45!black] at (11.07,2.4) {SUCC. 75/75\ \textcolor{orange!75!black}{\scriptsize ($\Delta{=}+0.8$\,m)}};
 
   % ---- JOB4 (15afd4f3, p=1 ep=25)
   \node[anchor=east] at (-0.2,3.8) {\textbf{JOB4}};
   \draw[queued] (0.26,3.8) -- (1.31,3.8);
   \draw[nodeA40] (1.31,3.58) rectangle (3.92,4.02);
-  \node[anchor=west, font=\tiny, text=green!45!black] at (4.12,3.8) {SUCC. 25/25\ \textcolor{violet!70!black}{d\,$\to$\,$+$2\,h}};
+  \draw[predfin] (3.42,3.46) -- (3.42,4.14);
+  \node[font=\tiny, text=orange!85!black, anchor=south] at (3.42,4.12) {$\blacktriangledown$};
+  \node[anchor=west, font=\tiny, text=green!45!black] at (4.12,3.8) {SUCC. 25/25\ \textcolor{orange!75!black}{\scriptsize ($\Delta{=}+0.5$\,m)}\ \textcolor{violet!70!black}{d\,$\to$\,$+$2\,h}};
 
   % ---- JOB3 (63cf0155, p=2 ep=50)
   \node[anchor=east] at (-0.2,5.2) {\textbf{JOB3}};
   \draw[queued] (0.17,5.2) -- (1.31,5.2);
   \draw[nodeA40] (1.31,4.98) rectangle (6.17,5.42);
-  \node[anchor=west, font=\tiny, text=green!45!black] at (6.37,5.2) {SUCC. 50/50\ \textcolor{violet!70!black}{d\,$\to$\,$+$2\,h}};
+  \draw[predfin] (5.54,4.86) -- (5.54,5.54);
+  \node[font=\tiny, text=orange!85!black, anchor=south] at (5.54,5.52) {$\blacktriangledown$};
+  \node[anchor=west, font=\tiny, text=green!45!black] at (6.37,5.2) {SUCC. 50/50\ \textcolor{orange!75!black}{\scriptsize ($\Delta{=}+0.6$\,m)}\ \textcolor{violet!70!black}{d\,$\to$\,$+$2\,h}};
 
   % ---- URGENT (2a474f42, p=5 ep=200)
   \node[anchor=east] at (-0.2,6.6) {\textbf{URGENT}};
@@ -60,7 +69,9 @@
   \draw[nodeA40] (13.80,5.90) rectangle (28.82,7.30);
   \node[font=\tiny, anchor=center] at (21.31,7.45) {$\times 2$};
   \draw[deadlinev] (17.74,6.15) -- (17.74,7.05);
-  \node[anchor=west, font=\tiny, text=green!45!black] at (29.02,6.6) {SUCC. 200/200};
+  \draw[predfin] (26.71,5.78) -- (26.71,7.42);
+  \node[font=\tiny, text=orange!85!black, anchor=south] at (26.71,7.40) {$\blacktriangledown$};
+  \node[anchor=west, font=\tiny, text=green!45!black] at (29.02,6.6) {SUCC. 200/200\ \textcolor{orange!75!black}{\scriptsize ($\Delta{=}+2.1$\,m)}};
 
   % Two-row legend below the chart.
   \begin{scope}[shift={(0,-1.5)}, x=1.0cm, y=0.45cm]
@@ -79,5 +90,8 @@
     \node[anchor=west] at (0.7,0.3) {\scriptsize hatched $=$ profile run};
     \draw[nodeA40] (4.0,0) rectangle (4.6,0.6);
     \node[anchor=west] at (4.7,0.3) {\scriptsize taller bar $=$ 2-GPU bundle};
+    \draw[predfin] (9.5,0.0) -- (9.5,0.6);
+    \node[font=\tiny, text=orange!85!black] at (9.5,0.78) {$\blacktriangledown$};
+    \node[anchor=west] at (9.75,0.3) {\scriptsize optimiser-predicted finish ($\Delta=$ actual$-$predicted)};
   \end{scope}
 \end{tikzpicture}

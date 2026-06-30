@@ -9,6 +9,22 @@ position comes from segments derived from ``api.log`` and
 numbers, no chance of oversubscription that the underlying data does
 not actually contain.
 
+Every completed job also carries an orange ``optimiser-predicted finish``
+marker (``$\\blacktriangledown$``) overlaid on its bar, with the signed
+error ``$\\Delta=$ actual$-$predicted`` appended to the terminal-status
+label.  The prediction is the optimiser's own ExecTime estimate for the
+placement the job actually *completed* under (its final standard-run
+segment)::
+
+    predicted_finish = final_standard_segment.start
+                       + remaining_epochs * per_epoch(final_bundle)
+
+``remaining_epochs`` is read from the ``OPT REQ`` line that drove that
+placement (``api.log``); ``per_epoch`` from ``profiles_<type>.json`` (the
+per-epoch cost the optimiser was fed).  The marker is only the timeline's
+deadline-and-prediction overlay — it shares the bars, queue lines, and
+deadline ticks, so the timeline reads as a single chart.
+
 Usage::
 
     python infra/generate_chart_tex.py <snapshot_dir> <out.tex> \
@@ -23,6 +39,7 @@ row.  Unmapped jobs fall back to ``J1``, ``J2``, ... by submission order
 from __future__ import annotations
 
 import argparse
+import json
 import sys
 from datetime import datetime
 from pathlib import Path
@@ -110,6 +127,135 @@ def _load(snap_dir: Path) -> tuple[list, list, dict, datetime]:
 
 
 # ---------------------------------------------------------------------------
+# Optimiser-predicted finish overlay
+#
+# For each completed job we draw where the optimiser predicted its
+# *completing* run would end, so the prediction error reads off the gap to the
+# bar's true right edge.  See the module docstring for the formula.
+
+# Reuse the OPT REQ job-tuple shape:  ('6a0707ca', 5, '200', ['A40', ...])
+#                                       ^id        ^prio ^epochs-remaining
+_OPT_REQ_JOB = re.compile(r"\('([0-9a-f]{6,})',\s*\d+,\s*'(\d+)'")
+
+
+def _parse_opt_req_epochs(
+    api_log: Path, anchor_day: datetime
+) -> list[tuple[datetime, dict[str, int]]]:
+    """List of ``(ts, {jid8: remaining_epochs})`` from each ``OPT REQ`` line.
+
+    Same TZ-offset handling as :func:`generate_chart.parse_log` so the
+    timestamps share the chart's coordinate system.
+    """
+    from generate_chart import LINE, parse_time  # noqa: PLC0415
+
+    out: list[tuple[datetime, dict[str, int]]] = []
+    if not api_log.exists():
+        return out
+    raw_lines = api_log.read_text(errors="replace").splitlines()
+    api_offset = timedelta(0)
+    latest_inline = None
+    for raw in raw_lines:
+        m = LINE.match(raw.strip())
+        if m:
+            cand = parse_time(m.group(1), anchor_day)
+            if latest_inline is None or cand > latest_inline:
+                latest_inline = cand
+    if latest_inline is not None:
+        mtime = datetime.fromtimestamp(api_log.stat().st_mtime)
+        api_offset = tz_offset_from_drift(mtime, latest_inline)
+    for raw in raw_lines:
+        m = LINE.match(raw.strip())
+        if not m:
+            continue
+        msg = m.group(2)
+        if "OPT REQ" not in msg:
+            continue
+        ts = parse_time(m.group(1), anchor_day) + api_offset
+        epochs = {jid[:8]: int(ep) for jid, ep in _OPT_REQ_JOB.findall(msg)}
+        if epochs:
+            out.append((ts, epochs))
+    return out
+
+
+def _load_profiles(
+    snap_dir: Path, jobs: list[dict]
+) -> dict[str, dict[tuple[str, int], float]]:
+    """``{job_type: {(gpu_type, count): per_epoch_seconds}}`` from profiles_<type>.json.
+
+    ``duration_seconds`` in the profile rows is the steady-state per-epoch
+    wall-clock (warmup excluded) — exactly the value fed to the optimiser as
+    the per-epoch cost, so ``per_epoch * remaining_epochs`` reproduces its
+    ExecTime estimate.
+    """
+    out: dict[str, dict[tuple[str, int], float]] = {}
+    for jtype in {j.get("job_id") for j in jobs if j.get("job_id")}:
+        f = snap_dir / f"profiles_{jtype}.json"
+        if not f.exists():
+            continue
+        per_epoch: dict[tuple[str, int], float] = {}
+        for row in json.loads(f.read_text()):
+            cfg = row.get("gpu_config") or {}
+            dur = row.get("duration_seconds")
+            if not cfg or dur is None:
+                continue
+            (gtype, cnt), = cfg.items()
+            per_epoch[(gtype, int(cnt))] = float(dur)
+        out[jtype] = per_epoch
+    return out
+
+
+def _predicted_finish(
+    jid: str,
+    j: dict,
+    segs_j: list[dict],
+    opt_reqs: list[tuple[datetime, dict[str, int]]],
+    profiles: dict[str, dict[tuple[str, int], float]],
+) -> dict | None:
+    """Optimiser-predicted finish for the placement *jid* completed under.
+
+    Returns ``{pred_ts, end_ts, R, per_epoch, half_h, bundle}`` or ``None`` when
+    the job never ran a standard segment / has no profile for its final bundle.
+    """
+    pe_map = profiles.get(j.get("job_id", ""), {})
+    standard = [s for s in segs_j if not s["profile"]]
+    if not standard:
+        return None
+    final = standard[-1]
+    gpus = final["gpus"]
+    if not gpus:
+        return None
+    (gtype, cnt), = list(gpus.items())[:1]  # single (type, count) bundle
+    per_epoch = pe_map.get((gtype, int(cnt)))
+    if per_epoch is None:
+        return None
+    seg_start = final["start"]
+    # Remaining epochs the optimiser saw at this placement: the OPT REQ with the
+    # largest ts at-or-just-before the segment dispatch that lists this job.
+    r: int | None = None
+    best_ts: datetime | None = None
+    for ts, ep in opt_reqs:
+        if jid in ep and ts <= seg_start + timedelta(seconds=3) and (best_ts is None or ts > best_ts):
+            best_ts, r = ts, ep[jid]
+    if r is None:  # fall back to the first OPT REQ that lists it, else full epochs
+        for _ts, ep in opt_reqs:
+            if jid in ep:
+                r = ep[jid]
+                break
+    if r is None:
+        r = j.get("epochs_total")
+    if not r:
+        return None
+    return {
+        "pred_ts": seg_start + timedelta(seconds=r * per_epoch),
+        "end_ts": final["end"],
+        "R": r,
+        "per_epoch": per_epoch,
+        "half_h": 0.22 if sum(gpus.values()) == 1 else 0.70,
+        "bundle": f"{gtype}x{cnt}",
+    }
+
+
+# ---------------------------------------------------------------------------
 # TikZ emission
 
 PREAMBLE = r"""% Auto-generated by infra/generate_chart_tex.py — do not edit by hand.
@@ -121,6 +267,7 @@ PREAMBLE = r"""% Auto-generated by infra/generate_chart_tex.py — do not edit b
     profhatchP/.style={{pattern=north east lines, pattern color=red!60!black}},
     queued/.style={{densely dotted, gray!55, line width=1.1pt}},
     deadlinev/.style={{dashed, violet!70!black, line width=0.7pt}},
+    predfin/.style={{dash pattern=on 2pt off 1.4pt, orange!85!black, line width=0.9pt}},
   ]
 """
 
@@ -141,6 +288,9 @@ POSTAMBLE = r"""  % Two-row legend below the chart.
     \node[anchor=west] at (0.7,0.3) {{\scriptsize hatched $=$ profile run}};
     \draw[nodeA40] (4.0,0) rectangle (4.6,0.6);
     \node[anchor=west] at (4.7,0.3) {{\scriptsize taller bar $=$ 2-GPU bundle}};
+    \draw[predfin] (9.5,0.0) -- (9.5,0.6);
+    \node[font=\tiny, text=orange!85!black] at (9.5,0.78) {{$\blacktriangledown$}};
+    \node[anchor=west] at (9.75,0.3) {{\scriptsize optimiser-predicted finish ($\Delta=$ actual$-$predicted)}};
   \end{{scope}}
 \end{{tikzpicture}}
 """
@@ -181,6 +331,9 @@ def emit_tikz(
     segs = derived["segs"]
     progress = derived["progress"]
     submit_ts: dict[str, datetime] = derived["submit_ts"]
+
+    opt_reqs = _parse_opt_req_epochs(snap_dir / "api.log", t0.replace(microsecond=0))
+    profiles = _load_profiles(snap_dir, jobs)
 
     def to_min(t: datetime) -> float:
         return (t - t0).total_seconds() / 60.0
@@ -223,8 +376,22 @@ def emit_tikz(
             job_deadline_x[jid] = to_min(anchor) + override_min
         elif j.get("created_at") and j.get("deadline"):
             job_deadline_x[jid] = to_min(_parse_iso(j["deadline"]))
+    # Predicted-finish per job (drawn over the actual bars below).  Compute
+    # first so far-right predictions widen the x-range like a deadline would.
+    pred: dict[str, dict] = {}
+    for j in sorted_jobs:
+        jid = j["id"][:8]
+        if j.get("status") != "SUCCEEDED":
+            continue
+        pf = _predicted_finish(jid, j, segs.get(jid, []), opt_reqs, profiles)
+        if pf is not None:
+            pred[jid] = pf
+
     dl_visible = [d for d in job_deadline_x.values() if 0 <= d <= seg_end_max + 5]
-    x_max = max(seg_end_max + 4.0, *(dl_visible or [0.0]))
+    pred_x_visible = [
+        to_min(p["pred_ts"]) for p in pred.values() if to_min(p["pred_ts"]) <= seg_end_max + 8
+    ]
+    x_max = max(seg_end_max + 4.0, *(dl_visible or [0.0]), *(pred_x_visible or [0.0]))
 
     # Each row is 1.4 tall (so 2-GPU bars at ±0.7 don't overlap neighbours).
     row_gap = 1.4
@@ -325,7 +492,33 @@ def emit_tikz(
                     + off_txt + "}"
                 )
 
-        # Terminal-status marker (with optional deadline-far suffix) next to last bar.
+        # --- Predicted-finish overlay -------------------------------------
+        # Orange marker at the optimiser's predicted completion for the run
+        # this job finished under; the gap to the bar's right edge is the error.
+        pred_suffix = ""
+        pf = pred.get(jid)
+        if pf is not None:
+            px = to_min(pf["pred_ts"])
+            ax = to_min(pf["end_ts"])
+            hh = pf["half_h"]
+            top = y + hh + 0.12
+            bot = y - hh - 0.12
+            if px <= x_max:
+                lines.append(f"  \\draw[predfin] ({px:.2f},{bot:.2f}) -- ({px:.2f},{top:.2f});\n")
+                lines.append(
+                    f"  \\node[font=\\tiny, text=orange!85!black, anchor=south] "
+                    f"at ({px:.2f},{top - 0.02:.2f}) {{$\\blacktriangledown$}};\n"
+                )
+            # Signed error (actual − predicted) appended to the terminal label
+            # so it never collides with bars or neighbouring rows.
+            derr = ax - px
+            pred_suffix = (
+                "\\ \\textcolor{orange!75!black}{\\scriptsize ($\\Delta{=}"
+                + f"{derr:+.1f}" + "$\\,m)}"
+            )
+
+        # Terminal-status marker (with optional predicted-error and deadline-far
+        # suffixes) next to last bar.
         status = j.get("status", "")
         if status in ("SUCCEEDED", "FAILED"):
             last_end = max((to_min(s["end"]) for s in segs.get(jid, [])), default=0.0)
@@ -336,7 +529,7 @@ def emit_tikz(
             lines.append(
                 f"  \\node[anchor=west, font=\\tiny, text={color}] "
                 f"at ({last_end + 0.2:.2f},{y}) "
-                f"{{{label_txt} {done}/{j['epochs_total']}{dl_suffix}}};\n"
+                f"{{{label_txt} {done}/{j['epochs_total']}{pred_suffix}{dl_suffix}}};\n"
             )
         elif dl_suffix:
             # No terminal marker (e.g. job still running) — emit a standalone

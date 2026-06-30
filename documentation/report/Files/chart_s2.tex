@@ -7,6 +7,7 @@
     profhatchP/.style={pattern=north east lines, pattern color=red!60!black},
     queued/.style={densely dotted, gray!55, line width=1.1pt},
     deadlinev/.style={dashed, violet!70!black, line width=0.7pt},
+    predfin/.style={dash pattern=on 2pt off 1.4pt, orange!85!black, line width=0.9pt},
   ]
   \draw[->] (0,0) -- (42.96,0);
   \draw (0,0) -- (0,-0.10) node[below] {0};
@@ -31,7 +32,9 @@
   \draw[nodeA40] (13.62,0.30) rectangle (14.74,1.70);
   \node[font=\tiny, anchor=center] at (14.18,1.85) {$\times 2$};
   \draw[deadlinev] (9.99,0.55) -- (9.99,1.45);
-  \node[anchor=west, font=\tiny, text=green!45!black] at (14.94,1.0) {SUCC. 80/80};
+  \draw[predfin] (14.51,0.18) -- (14.51,1.82);
+  \node[font=\tiny, text=orange!85!black, anchor=south] at (14.51,1.80) {$\blacktriangledown$};
+  \node[anchor=west, font=\tiny, text=green!45!black] at (14.94,1.0) {SUCC. 80/80\ \textcolor{orange!75!black}{\scriptsize ($\Delta{=}+0.2$\,m)}};
 
   % ---- PIN-B (0e8ac2f9, p=5 ep=80)
   \node[anchor=east] at (-0.2,2.4) {\textbf{PIN-B}};
@@ -42,7 +45,9 @@
   \node[font=\tiny, anchor=center] at (1.05,3.25) {$\times 2$};
   \draw[nodeA40] (2.03,2.18) rectangle (9.46,2.62);
   \draw[deadlinev] (9.99,1.95) -- (9.99,2.85);
-  \node[anchor=west, font=\tiny, text=green!45!black] at (9.66,2.4) {SUCC. 80/80};
+  \draw[predfin] (8.61,2.06) -- (8.61,2.74);
+  \node[font=\tiny, text=orange!85!black, anchor=south] at (8.61,2.72) {$\blacktriangledown$};
+  \node[anchor=west, font=\tiny, text=green!45!black] at (9.66,2.4) {SUCC. 80/80\ \textcolor{orange!75!black}{\scriptsize ($\Delta{=}+0.9$\,m)}};
 
   % ---- P-LSTM-1 (a27da444, p=1 ep=200)
   \node[anchor=east] at (-0.2,3.8) {\textbf{P-LSTM-1}};
@@ -52,7 +57,9 @@
     \draw[profhatchP] (6.57,3.10) rectangle (7.63,4.50);
   \node[font=\tiny, anchor=center] at (7.10,4.65) {$\times 2$};
   \draw[nodeP600] (7.64,3.58) rectangle (38.46,4.02);
-  \node[anchor=west, font=\tiny, text=green!45!black] at (38.66,3.8) {SUCC. 200/200\ \textcolor{violet!70!black}{d\,$\to$\,$+$8\,h}};
+  \draw[predfin] (37.74,3.46) -- (37.74,4.14);
+  \node[font=\tiny, text=orange!85!black, anchor=south] at (37.74,4.12) {$\blacktriangledown$};
+  \node[anchor=west, font=\tiny, text=green!45!black] at (38.66,3.8) {SUCC. 200/200\ \textcolor{orange!75!black}{\scriptsize ($\Delta{=}+0.7$\,m)}\ \textcolor{violet!70!black}{d\,$\to$\,$+$8\,h}};
 
   % ---- P-LSTM-2 (fce852e8, p=1 ep=200)
   \node[anchor=east] at (-0.2,5.2) {\textbf{P-LSTM-2}};
@@ -64,14 +71,18 @@
   \draw[nodeA40] (2.03,4.98) rectangle (6.57,5.42);
   \draw[nodeP600] (7.64,4.98) rectangle (7.72,5.42);
   \draw[nodeP600] (9.49,4.98) rectangle (37.33,5.42);
-  \node[anchor=west, font=\tiny, text=green!45!black] at (37.53,5.2) {SUCC. 200/200\ \textcolor{violet!70!black}{d\,$\to$\,$+$8\,h}};
+  \draw[predfin] (33.03,4.86) -- (33.03,5.54);
+  \node[font=\tiny, text=orange!85!black, anchor=south] at (33.03,5.52) {$\blacktriangledown$};
+  \node[anchor=west, font=\tiny, text=green!45!black] at (37.53,5.2) {SUCC. 200/200\ \textcolor{orange!75!black}{\scriptsize ($\Delta{=}+4.3$\,m)}\ \textcolor{violet!70!black}{d\,$\to$\,$+$8\,h}};
 
   % ---- URGENT (8b9367c2, p=5 ep=40)
   \node[anchor=east] at (-0.2,6.6) {\textbf{URGENT}};
   \draw[nodeP600] (7.74,6.38) rectangle (9.46,6.82);
   \draw[nodeA40] (9.50,6.38) rectangle (13.26,6.82);
   \draw[deadlinev] (29.69,6.15) -- (29.69,7.05);
-  \node[anchor=west, font=\tiny, text=green!45!black] at (13.46,6.6) {SUCC. 40/40};
+  \draw[predfin] (12.74,6.26) -- (12.74,6.94);
+  \node[font=\tiny, text=orange!85!black, anchor=south] at (12.74,6.92) {$\blacktriangledown$};
+  \node[anchor=west, font=\tiny, text=green!45!black] at (13.46,6.6) {SUCC. 40/40\ \textcolor{orange!75!black}{\scriptsize ($\Delta{=}+0.5$\,m)}};
 
   % Two-row legend below the chart.
   \begin{scope}[shift={(0,-1.5)}, x=1.0cm, y=0.45cm]
@@ -90,5 +101,8 @@
     \node[anchor=west] at (0.7,0.3) {\scriptsize hatched $=$ profile run};
     \draw[nodeA40] (4.0,0) rectangle (4.6,0.6);
     \node[anchor=west] at (4.7,0.3) {\scriptsize taller bar $=$ 2-GPU bundle};
+    \draw[predfin] (9.5,0.0) -- (9.5,0.6);
+    \node[font=\tiny, text=orange!85!black] at (9.5,0.78) {$\blacktriangledown$};
+    \node[anchor=west] at (9.75,0.3) {\scriptsize optimiser-predicted finish ($\Delta=$ actual$-$predicted)};
   \end{scope}
 \end{tikzpicture}

@@ -17,15 +17,19 @@ optimisation, distributed systems, FastAPI, PostgreSQL, Docker}
 \begin{abstract}
 Intelligent Job Management (IJM) is~a~scheduler for~shared GPU clusters
 that combines profile-aware placement, deadline-driven preemption,
-and~cross-version checkpoint resume.  It~extends the~ANDREAS project
-(Politecnico di~Milano) from a~single-host prototype to~a~distributed
-control plane: one FastAPI service drives per-node workers over
-SSH-tunnelled HTTP, an~external GPUspb optimiser handles standard-run
-placement, and~training jobs migrate between heterogeneous GPU
-generations (A40, QuadroP600) without losing progress.  The~report
-describes the~deployment topology, the~four-phase scheduling pipeline,
-the~configuration surface, and~two end-to-end scenarios that exercise
-the~system on~a~two-node cluster.
+and~cross-version checkpoint resume.  It~is~an~independent
+reimplementation of~the~cost-aware, profiling-driven approach of~the
+ANDREAS project (Politecnico di~Milano), built for~a~\emph{heterogeneous}
+cluster: one FastAPI service drives per-node workers over SSH-tunnelled
+HTTP, an~external GPUspb optimiser handles standard-run placement,
+and~--- unlike ANDREAS's uniform Tesla~V100 deployment --- training jobs
+migrate between different GPU generations (A40, legacy QuadroP600)
+across torch versions without losing progress.  The~report describes
+the~deployment topology, the~four-phase scheduling pipeline, the
+configuration surface, and~two end-to-end scenarios on~a~two-node Polimi
+cluster that validate the~profile sweep, deadline-driven preemption,
+single- and~dual-GPU placement, and~cross-node checkpoint migration ---
+all driven coherently by~the~optimiser's decisions.
 \end{abstract}
 
 \tableofcontents
@@ -44,6 +48,10 @@ the~system on~a~two-node cluster.
 
 \chapter{Conclusion}\label{ch:conclusion}
 \input{Files/conclusion}
+
+\appendix
+\chapter{The GPUspb proxy and its horizon-myopia}\label{app:proxy}
+\input{Files/appendix_proxy}
 
 \nocite{andreas}
 \bibliographystyle{alpha}

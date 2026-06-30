@@ -3,60 +3,144 @@ scheduling pipeline that drives every dispatch decision, the~worker
 execution lifecycle that~runs and~stops each container, the~job state
 machine, the~persistent state held in~PostgreSQL, and~the~concurrency
 invariants that keep the~control plane consistent under racing API
-calls and~worker notifications.  Table~\ref{tab:components} catalogues
-every component referenced in~the~rest of~the~chapter.
+calls and~worker notifications.  Table~\ref{tab:components} separates
+the~five processes that~make up~a~deployment from~the~modules that~run
+inside the~API process.
 
 \begin{table}[H]
 \centering\small
 \begin{tabularx}{\textwidth}{@{}l l X@{}}
 \toprule
-\textbf{Component} & \textbf{Process} & \textbf{Responsibility} \\
+\textbf{Component} & \textbf{Binary / host} & \textbf{Responsibility} \\
 \midrule
-API                       & \texttt{ijm-api} (FastAPI) & HTTP frontend; hosts the~scheduling and~dispatch loops \\
-\texttt{ProfilingScheduler} & in-API & Picks the~next unmeasured \texttt{(node, GPU-count)} cell for~profile-owing rows \\
-\texttt{JobDispatcher}      & in-API & Acquires the~destination's \texttt{NodeSlots} permit, then~POSTs \texttt{/jobs/\{id\}/run} to~the~target worker \\
-\texttt{NodeSlots}          & in-API & Per-node semaphore tracking GPU permits; reconciled with the~DB by~a~periodic drift heartbeat \\
-\texttt{ClusterManager}     & in-API & Loads \texttt{nodes\_config.json} and~exposes node and~GPU resources \\
-Optimizer client          & in-API & Packages the~GPUspb request, parses the~returned assignments and~preempts \\
-Worker                    & \texttt{ijm-worker} (FastAPI) & Owns the~local Docker daemon; performs atomic claim, runs the~container, emits slot-freed notifications \\
-PostgreSQL                & DB & Source of~truth for~job rows and~profile measurements \\
-GPUspb optimiser          & external HTTP & Cost-aware standard-run placement (reached via~\texttt{OPTIMIZER\_URL}) \\
-SPA                       & static (Vite) & Operator UI; polls the~API every 3--5~s \\
+\multicolumn{3}{@{}l}{\textit{Deployable processes}}\\[2pt]
+API              & \texttt{ijm-api} (FastAPI)     & HTTP frontend; hosts the~scheduling and~dispatch loops \\
+Worker           & \texttt{ijm-worker} (FastAPI)  & One per~GPU node; owns the~local Docker daemon, runs the~container, emits slot-freed notifications \\
+PostgreSQL       & \texttt{postgres} (a~GPU node) & Source of~truth for~job rows and~profile measurements, and~the~message bus (\texttt{LISTEN}/\texttt{NOTIFY}) \\
+GPUspb optimiser & external HTTP                  & Cost-aware standard-run placement (reached via~\texttt{OPTIMIZER\_URL}) \\
+SPA              & static (Vite)                 & Operator UI; polls the~API every 3--5~s \\
+\addlinespace
+\multicolumn{3}{@{}l}{\textit{Modules inside the~API process}}\\[2pt]
+\texttt{ProfilingScheduler} & --- & Picks the~next unmeasured \texttt{(node, GPU-count)} cell for~profile-owing rows \\
+\texttt{JobDispatcher}      & --- & Acquires the~destination's \texttt{NodeSlots} permit, then~POSTs \texttt{/jobs/\{id\}/run} to~the~target worker \\
+\texttt{NodeSlots}          & --- & Per-node GPU-permit semaphore; reconciled with the~DB by~a~periodic drift heartbeat \\
+\texttt{ClusterManager}     & --- & Loads \texttt{nodes\_config.json} and~exposes node and~GPU resources \\
+Optimizer client            & --- & Packages the~GPUspb request, parses the~returned assignments and~preempts \\
 \bottomrule
 \end{tabularx}
-\caption{IJM components and~their responsibilities.}\label{tab:components}
+\caption{IJM components: five deployable processes and~the~modules that~run
+inside the~API process.}\label{tab:components}
 \end{table}
 
 \section{Deployment topology}
 
-IJM runs as~a~small distributed system.  The~FastAPI \emph{API}~--- which
-also hosts the~\texttt{ProfilingScheduler}, the~\texttt{JobDispatcher},
-the~\texttt{NodeSlots} semaphores, and~the~optimiser client~--- runs on
-the~operator's machine.  A~lightweight FastAPI \emph{worker} runs on
-every GPU node and~owns the~local Docker daemon.  PostgreSQL runs on
-one of~the~GPU nodes.
+IJM runs as~a~small distributed system.  The~FastAPI \emph{API} runs on
+a~control host~--- the~operator's laptop in~our prototype, though nothing
+stops it~from running on~a~dedicated node or~in~a~cluster~--- and~hosts the
+\texttt{ProfilingScheduler}, the~\texttt{JobDispatcher}, the~\texttt{NodeSlots}
+semaphores, and~the~optimiser client.  A~lightweight FastAPI \emph{worker}
+runs on~every GPU node and~owns the~local Docker daemon.  PostgreSQL runs
+on~one of~the~GPU nodes, deliberately close to~the~workers
+(Figure~\ref{fig:prototype}): the~per-epoch status and~progress writes from
+every running container make the~worker\,$\leftrightarrow$\,database link the
+highest-volume traffic in~the~system, so it~should not~have to~cross the~SSH
+tunnel back to~the~control host.
 
-Communication is~plain HTTP over SSH tunnels.  Every worker is~reached
-from the~API at~a~stable \texttt{http://localhost:800x} alias regardless
-of~its physical location, so the~same scheduler code drives a~laptop
-talking to~a~remote cluster and~a~single-host development setup.
-An~optional GPUspb \emph{optimiser} HTTP service is~reached the~same
-way.
+Components talk over plain HTTP carried on~SSH tunnels.  The~scheduler
+addresses each worker by~a~stable per-node alias rather than by~its physical
+address, and~the~tunnel maps that~alias to~the~right machine; the~same
+scheduler code therefore runs unchanged whether the~control host is~a~laptop
+tunnelling into a~remote cluster or~a~node co-located with the~workers.  The
+GPUspb optimiser is~reached the~same way.
+
+Which transport carries what is~a~deliberate split rather than a~matter
+of~convenience.  \emph{Commands}~--- start a~container, stop a~container~---
+travel API\,$\rightarrow$\,worker as~HTTP requests: each is~addressed to~one
+named node and~waits on~a~synchronous reply, so request/response fits,
+and~the~\texttt{JobDispatcher} is~their sole origin.  \emph{State changes,
+and~the~scheduling wake-ups they~imply}~--- a~run reaching a~terminal state,
+a~GPU slot coming free, a~profile finishing~--- travel the~opposite way,
+worker\,$\rightarrow$\,API, as~a~committed row write paired with~a
+\texttt{NOTIFY}; a~worker never issues an~HTTP call back to~the~control
+plane.  Keeping the~two~directions on~two~transports lets the~workers stay
+ignorant of~the~control host's address~--- they~open only a~database
+connection~--- and~leaves every cross-process fact to~be~read from~its
+committed row rather than trusted to~a~message still in~flight.
+
+PostgreSQL doubles as~the~message bus, so IJM needs no~separate broker.
+Components coordinate by~writing a~row and~issuing \texttt{NOTIFY} on~one of
+two channels in~the~same transaction~--- \texttt{ijm\_schedule} to~wake the
+scheduler, \texttt{ijm\_slot\_freed} when a~GPU slot is~released~--- while
+their peers \texttt{LISTEN}.  Because each notification commits in~the~same
+transaction as~the~state change it~announces, a~committed change is~never
+left unsignalled; the~watchdogs of~\S\ref{sec:sched-pipeline} recover only
+the~rare notification dropped by~a~connection reset.
 
 \begin{figure}[H]
 \centering
-\includegraphics[width=\textwidth]{Images/CurrentPrototype.png}
-\caption{Distributed prototype.  The~SPA, API, and~optimiser run on
-the~operator's machine; workers and~Docker run on~each GPU node;
-PostgreSQL runs on~a~GPU~node.  A~shared rclone-over-SFTP mount makes
-checkpoints written by~one node visible from the~other.}
+\begin{tikzpicture}[
+  font=\small,
+  box/.style={draw, rounded corners, align=center, inner sep=4pt,
+              minimum height=9mm, minimum width=28mm, fill=white},
+  shared/.style={draw, rounded corners, align=center, inner sep=4pt,
+                 minimum height=9mm, fill=black!5},
+  zone/.style={draw, dashed, rounded corners, inner sep=10pt},
+  zlabel/.style={font=\footnotesize\bfseries},
+  >={Stealth[]},
+  ctrl/.style={->, semithick, black!55},
+  heavy/.style={->, line width=1.3pt},
+]
+% --- control host (left) ---
+\node[box] (spa) at (0,1.8) {React SPA};
+\node[box] (api) at (0,0) {API\\[-1pt]\scriptsize FastAPI control plane};
+\node[box] (opt) at (0,-1.8) {GPUspb optimiser\\[-1pt]\scriptsize external, optional};
+\begin{scope}[on background layer]
+  \node[zone, fit=(spa)(api)(opt)] (host) {};
+\end{scope}
+\node[zlabel, above=0pt of host.north west, anchor=south west] {Control host};
+
+% --- GPU cluster (right): nodes + co-located PostgreSQL ---
+\node[box] (na) at (8.4,1.7)  {GPU node A \scriptsize(legacy)\\[-1pt]\scriptsize Worker + Docker + GPUs \texttt{:legacy}};
+\node[box] (nb) at (8.4,-0.4) {GPU node B\\[-1pt]\scriptsize Worker + Docker + GPUs \texttt{:latest}};
+\node[shared] (pg) at (5.6,-2.6) {PostgreSQL \scriptsize(on a~GPU node)\\[-1pt]\scriptsize state + message bus};
+\begin{scope}[on background layer]
+  \node[zone, fit=(na)(nb)(pg)] (cluster) {};
+\end{scope}
+\node[zlabel, above=0pt of cluster.north west, anchor=south west] {GPU cluster};
+
+% --- shared checkpoint store (bottom right) ---
+\node[shared] (fs) at (10.6,-2.6) {Shared checkpoint store\\[-1pt]\scriptsize rclone / SFTP};
+
+% --- control links (thin) ---
+\draw[ctrl] (spa) -- node[right, font=\scriptsize, black]{HTTP} (api);
+\draw[ctrl] (api) -- node[right, font=\scriptsize, black]{HTTP} (opt);
+\draw[ctrl] (api.east) -- node[above, font=\scriptsize, black, pos=0.6]{HTTP / SSH} (na.west);
+\draw[ctrl] (api.east) -- (nb.west);
+\draw[ctrl] (api.south east) to[out=-40, in=165] (pg.west);
+\node[font=\scriptsize, black] at (3.0,-1.55) {SQL\,+\,\texttt{NOTIFY}};
+% --- heavy, co-located data links (thick) ---
+\draw[heavy] (na.south west) to[out=-110, in=95] (pg.north);
+\draw[heavy] (nb.south) to[out=-90, in=35] (pg.east);
+% --- checkpoints (thin, on the right) ---
+\draw[ctrl, black] (na.east) to[out=0, in=70] (fs.north);
+\draw[ctrl, black] (nb.east) to[out=0, in=110] (fs.north west);
+\end{tikzpicture}
+\caption{Distributed prototype, at~a~glance.  Each arrow points from~the
+\emph{initiator} of~a~connection to~the~service it~calls; a~single head
+is~request/response, \emph{not} a~two-way channel, and~line thickness shows
+relative volume, not~direction.  The~API calls the~workers (HTTP
+\texttt{/run}, \texttt{/stop}), the~optimiser (one POST per~pass), and
+PostgreSQL (SQL; it~also holds the~\texttt{LISTEN})~--- all over SSH tunnels.
+Neither the~optimiser nor PostgreSQL ever calls back: a~worker reports
+a~finished run or~a~freed slot by~committing a~row and~\texttt{NOTIFY}ing,
+which reaches the~API through the~database, never by~an~HTTP call to~the
+control plane.  The~thick worker\,$\rightarrow$\,PostgreSQL arrows are~the
+\emph{heavy} per-epoch status and~progress writes~--- the~reason PostgreSQL
+is~co-located with~the~workers on~a~GPU node rather than placed by~the~control
+host.  The~training containers read and~write the~shared checkpoint store, so
+a~checkpoint written on~one node is~visible from~the~other.}
 \label{fig:prototype}
 \end{figure}
-
-Single-process \texttt{docker compose} on~the~operator's machine is
-supported for~development but is~not the~deployment target: any tradeoff
-between local-dev simplicity and~distributed correctness resolves toward
-the~distributed topology.
 
 \section{Scheduling pipeline}\label{sec:sched-pipeline}
 
@@ -89,14 +173,27 @@ scheduler work:
 
 \begin{enumerate}[leftmargin=*,itemsep=2pt,topsep=4pt]
   \item \textbf{Reset stuck assignments.}
-    Reset \texttt{QUEUED} rows whose \texttt{assigned\_node} was set
-    $\geq 30$~s ago without the~worker advancing them, so a~later phase
-    can re-place the~row.
+    A~row can be~left \texttt{QUEUED} with~\texttt{assigned\_node} set but~no
+    container behind it: a~dispatch the~optimiser pass (or~a~pending migrate)
+    planned, but~that~never landed because the~image pull failed, the~worker
+    was~unreachable, or~the~API restarted between writing the~assignment and
+    posting \texttt{/run}.  Such a~row would otherwise stay pinned to~a~node
+    forever, holding a~slot the~optimiser believes is~occupied.  This phase
+    clears the~assignment of~any \texttt{QUEUED} row stale for~$\geq 30$~s
+    with~no~live dispatch task~--- well above the~sub-second latency of~a
+    healthy \texttt{/run}~--- and~reclaims its~leaked slot, so a~later phase
+    can re-place it.  It~is~recovery for~a~lost dispatch, not~a~routine step:
+    in~steady state it~resets nothing.
   \item \textbf{Optimiser pass.}
-    Call the~optimiser outside the~lock (to~accommodate its 30~s HTTP
-    timeout) and~apply its assignments through a~conditional
-    \texttt{UPDATE \ldots WHERE assigned\_node IS NULL}, collecting the
-    optimiser's preempt list.  The~optimiser only ever scores rows with
+    The~optimiser is~an~external HTTP service bounded only by~a~30~s timeout,
+    so the~call is~made \emph{outside} \texttt{schedule\_lock}: holding the
+    lock across a~network round-trip that~slow would stall every other
+    scheduling activity~--- slot-freed handling, new submissions, the~drift
+    sweep~--- for~as~long as~the~optimiser takes.  The~lock is~re-acquired
+    only to~apply the~returned assignments, through a~conditional
+    \texttt{UPDATE \ldots WHERE assigned\_node IS NULL} (so a~suggestion for~a
+    row already claimed since the~call simply does~not~match), while~collecting
+    the~optimiser's preempt list.  The~optimiser only ever scores rows with
     \texttt{is\_profiling\_run = FALSE}~--- rows still owing a~profile
     run are invisible to~it.
   \item \textbf{Profile placement.}
@@ -111,11 +208,34 @@ scheduler work:
     it~becomes a~candidate for~the optimiser-driven standard placement
     above.
   \item \textbf{Profile-preempt.}
-    If~a~profile-owing row still has~no~slot after the~placement pass,
-    find the~cheapest set of~low-priority \texttt{RUNNING} jobs whose
-    eviction would free enough GPUs for~the~next unmeasured
-    configuration.
+    If~a~profile-owing row still has~no~slot after the~placement pass, the
+    scheduler evicts the~cheapest \emph{minimal} set of~\texttt{RUNNING} jobs
+    that~frees enough GPUs for~the~next unmeasured configuration.  On~each
+    profiling-capable node whose \emph{total} capacity could host the
+    configuration it~ranks the~\texttt{RUNNING} jobs cheapest-first (priority
+    ascending, then~progress ascending) and~picks the~smallest victim subset
+    that~covers the~shortfall~--- choosing a~higher-ranked victim only when
+    no~cheaper set covers, and~never an~over-large one: it~will not~evict
+    a~small job and~then~a~larger one that~alone would have sufficed.  A
+    \texttt{PROFILING} row is~never a~victim.  The~first node where such a~set
+    exists wins; its~victims are~evicted and~the~freed slots claimed on~the
+    next pass.
 \end{enumerate}
+
+Which configurations an~instance profiles is~deterministic, not~opportunistic.
+The~valid configurations for~a~job type are~the~GPU bundles common to~the
+profiling and~production nodes, sorted by~total GPU count and~then~by~GPU-type
+name; an~instance profiles the~first \texttt{PROFILING\_CONFIGS\_PER\_JOB}
+(default~2) of~them that~are~still unmeasured for~its~type.  Reservations are
+atomic and~shared: each \texttt{(job\_id, gpu\_config)} cell is~claimed under
+the~unique index of~\S\ref{sec:persistent-state}, so two instances of~the~same
+type never measure the~same cell and~one instance's measurement is~reused
+by~all~the~others.  There is~no~separate ``profiling finished'' flag to~keep
+in~sync: an~instance is~in~profiling mode \emph{iff} it~still owns an~unmeasured
+claim, so once its~budget is~spent and~its~claims are~recorded~--- or~no
+unmeasured configuration remains~--- \texttt{is\_profiling\_run} is~derived
+as~\texttt{FALSE} and~the~row falls through to~the~optimiser for~standard
+placement.
 
 Once the~lock is~released, the~plan is~executed asynchronously: each
 preempt and~each dispatch runs as~an~independent task, so a~slow stop
@@ -144,10 +264,12 @@ is~safe because independent watchdogs~--- a~drift heartbeat, the
 stuck-dispatch reaper, and~a~periodic queue watcher~--- re-wake the
 scheduler if~a~planned dispatch ever fails to~land.
 
-Figure~\ref{fig:seq-submit} shows the~submission path,
+The figures follow a~job through that~lifecycle in~order:
+Figure~\ref{fig:seq-submit} submission and~the~first (profiling) pass,
 Figure~\ref{fig:seq-profiling-loop} the~cross-instance profile cycle,
-Figure~\ref{fig:seq-optimizer-cycle} an~optimiser-driven preempt and
-migrate round, and~Figure~\ref{fig:seq-standard-run} the~standard run.
+Figure~\ref{fig:seq-optimizer-cycle} the~optimiser-driven scheduling round
+that~preempts and~migrates, and~Figure~\ref{fig:seq-standard-run} a~standard
+run.
 
 \begin{figure}[H]
 \centering
@@ -162,29 +284,32 @@ migrate round, and~Figure~\ref{fig:seq-standard-run} the~standard run.
   \newinst[1.5]{db}{PostgreSQL}
   \newinst[1.5]{worker}{Worker}
 
-  \begin{call}{user}{\textsc{post} /jobs \{job\_id, dockerImage, \ldots\}}{api}{instance\_id}
+  \begin{call}{user}{\textsc{post} /jobs \{job\_id, image, \ldots\}}{api}{instance\_id}
     \begin{call}{api}{INSERT INTO jobs (status=QUEUED)}{db}{}
     \end{call}
     \begin{messcall}{api}{NOTIFY ijm\_schedule}{db}
     \end{messcall}
   \end{call}
   \begin{sdblock}{schedule pass}{coalesced, $\geq 5$s apart}
-    \begin{call}{sched}{sweep stale claims; reset stuck QUEUED}{db}{}
+    \begin{call}{sched}{reset stuck assignments}{db}{}
     \end{call}
-    \begin{call}{sched}{optimize(active jobs, currentScheduling)}{opt}{assignments, preempts}
+    \begin{call}{sched}{optimize(profiled jobs)}{opt}{skips unprofiled row}
     \end{call}
-    \begin{call}{sched}{UPDATE assigned\_node WHERE NULL}{db}{}
+    \begin{call}{sched}{profile-placement: reserve unmeasured cell}{db}{cell}
     \end{call}
-    \begin{callself}{sched}{profile-placement + profile-preempt scan}{}
-    \end{callself}
-    \begin{messcall}{sched}{dispatch\_with\_slot $\rightarrow$ acquire permit $\rightarrow$ POST /run}{worker}
+    \begin{messcall}{sched}{POST /jobs/\{id\}/run (profile run)}{worker}
     \end{messcall}
   \end{sdblock}
 \end{sequencediagram}}
-\caption{Submission and~scheduling.  The~API writes the~row and~notifies
-the~scheduler; placement is~decided by~the~next pass.  The~optimiser
-call sits outside the~schedule lock so its 30~s HTTP timeout cannot
-block other passes.}
+\caption{Submission and~profiling.  The~API writes the~\textsc{queued} row
+and~notifies the~scheduler.  A~freshly submitted job still owes a~profile
+run, so the~optimiser pass skips it~(it~scores only profiled rows); phase~3
+reserves an~unmeasured \texttt{(node, GPU-count)} cell and~dispatches the
+profile run, the~dispatcher acquiring the~node's \texttt{NodeSlots} permit
+before posting \texttt{/run}.  A~job submitted with~no~configuration left
+to~profile skips straight to~the~optimiser, which places it~as~a~standard
+run (Figure~\ref{fig:seq-optimizer-cycle}).  The~optimiser call sits outside
+the~schedule lock so its~30~s timeout cannot block other passes.}
 \label{fig:seq-submit}
 \end{figure}
 
@@ -212,16 +337,19 @@ block other passes.}
   \begin{messcall}{worker}{NOTIFY ijm\_schedule}{db}
   \end{messcall}
   \begin{sdblock}{next scheduling pass}{}
-    \begin{callself}{sched}{place this row as standard run, or pick next config to profile}{}
-    \end{callself}
+    \begin{call}{sched}{more configs owed? re-profile : hand to optimiser}{db}{decision}
+    \end{call}
   \end{sdblock}
 \end{sequencediagram}}
-\caption{Profiling cycle.  Profile measurements are keyed by~the
-(job-type, GPU-config) pair and~shared across submissions of~the~same
-type.  Each instance profiles up~to~\texttt{PROFILING\_CONFIGS\_PER\_JOB}
-(default~2) configurations before it~becomes a~standard-run candidate;
-the~per-instance claim row guards against duplicate measurements.  The
-worker records the~result and~re-queues the~row in~a~single transaction
+\caption{Profiling cycle.  The~\texttt{NOTIFY} re-queues the~row, and~the
+next pass reads the~\texttt{is\_profiling\_run} flag: while~the~instance
+still owes a~configuration it~is~profiled again, and~once all~its
+\texttt{PROFILING\_CONFIGS\_PER\_JOB} (default~2) configurations are~measured
+it~becomes a~standard-run candidate, handed to~the~optimiser
+(Figure~\ref{fig:seq-optimizer-cycle}).  Measurements are~keyed by~the
+(job-type, GPU-config) pair and~shared across submissions of~the~same type;
+the~per-instance claim row guards against duplicate measurements.  The~worker
+records the~result and~re-queues the~row in~a~single transaction
 (\texttt{worker/profiling.py:handle\_complete}).}
 \label{fig:seq-profiling-loop}
 \end{figure}
@@ -233,28 +361,28 @@ worker records the~result and~re-queues the~row in~a~single transaction
 \resizebox{\textwidth}{!}{%
 \begin{sequencediagram}
   \newthread{sched}{Scheduler}
-  \newinst[1.5]{opt}{Optimizer}
-  \newinst[1.5]{db}{PostgreSQL}
-  \newinst[1.5]{victim}{Worker (victim)}
-  \newinst[1.5]{target}{Worker (target)}
+  \newinst[2]{opt}{Optimizer}
+  \newinst[2]{db}{PostgreSQL}
+  \newinst[2]{victim}{Worker (victim)}
+  \newinst[2]{target}{Worker (target)}
 
-  \begin{call}{sched}{POST /optimizer/v5 \{jobs, nodes, currentScheduling\}}{opt}{assignments + preempts}
+  \begin{call}{sched}{POST /optimizer/v5}{opt}{assignments + preempts}
   \end{call}
-  \begin{callself}{sched}{stash pending\_migrates (in-memory)}{}
+  \begin{callself}{sched}{stash pending migrates}{}
   \end{callself}
   \begin{messcall}{sched}{POST /stop?reason=auto}{victim}
   \end{messcall}
-  \begin{call}{victim}{kill container, drain run task}{db}{}
-    \begin{call}{victim}{UPDATE jobs SET status=QUEUED, assigned\_node=NULL}{db}{}
-    \end{call}
-    \begin{messcall}{victim}{NOTIFY ijm\_slot\_freed "node:n:auto\_preempt"}{db}
-    \end{messcall}
-  \end{call}
-  \begin{callself}{sched}{release NodeSlots permit on LISTEN}{}
+  \begin{callself}{victim}{kill container, drain run task}{}
   \end{callself}
-  \begin{call}{sched}{apply pending migrate on slot-freed LISTEN (\textsc{where} assigned\_node \textsc{is null})}{db}{}
+  \begin{call}{victim}{UPDATE status=QUEUED, assigned\_node=NULL}{db}{}
   \end{call}
-  \begin{messcall}{sched}{dispatch\_with\_slot $\rightarrow$ POST /run}{target}
+  \begin{messcall}{victim}{NOTIFY ijm\_slot\_freed (auto\_preempt)}{db}
+  \end{messcall}
+  \begin{callself}{sched}{release permit on LISTEN}{}
+  \end{callself}
+  \begin{call}{sched}{apply pending migrate (WHERE assigned\_node IS NULL)}{db}{}
+  \end{call}
+  \begin{messcall}{sched}{POST /run}{target}
   \end{messcall}
 \end{sequencediagram}}
 \caption{Optimiser-driven preempt and~migrate.  The~API trusts the
@@ -286,11 +414,11 @@ NULL}) once the~source \texttt{/stop} has drained the~row to
   \end{call}
   \begin{call}{worker}{UPDATE jobs SET SUCCEEDED/FAILED}{db}{}
   \end{call}
-  \begin{messcall}{worker}{NOTIFY ijm\_slot\_freed "node:n:terminal"}{db}
+  \begin{messcall}{worker}{NOTIFY ijm\_slot\_freed (terminal)}{db}
   \end{messcall}
   \begin{sdblock}{next scheduling pass}{}
-    \begin{callself}{sched}{place a waiting job on the freed slot}{}
-    \end{callself}
+    \begin{call}{sched}{place a waiting job on the freed slot}{db}{}
+    \end{call}
   \end{sdblock}
 \end{sequencediagram}}
 \caption{Standard run.  The~worker performs an~atomic
@@ -330,8 +458,9 @@ scheduling pass's four phases above: that pass plans, this~task
 executes.}\label{tab:worker-phases}
 \end{table}
 
-A~\texttt{/stop} and~its target run task are~separate coroutines that~must
-not~race.  The~handler tags the~row in~an~in-process \texttt{stopping}
+Within the~one worker process on~the~node, a~\texttt{/stop} and~its target run
+task are~separate coroutines that~must not~race.  The~handler tags the~row
+in~an~in-process \texttt{stopping}
 map, waits for~the~run task to~publish its~container
 (\texttt{dispatch\_ready}), kills it, and~only \emph{after} awaiting the
 run task's full drain writes the~final status and~frees the~slot
@@ -350,9 +479,9 @@ its~GPU.
 \resizebox{\textwidth}{!}{%
 \begin{sequencediagram}
   \newthread{api}{API}
-  \newinst[1.6]{run}{Worker run task}
+  \newinst[1.6]{run}{run-task coroutine}
   \newinst[1.6]{dock}{Docker}
-  \newinst[1.6]{stop}{Worker /stop}
+  \newinst[1.6]{stop}{/stop coroutine}
   \newinst[1.6]{db}{PostgreSQL}
 
   \begin{call}{api}{POST /run}{run}{202}
@@ -380,14 +509,20 @@ its~GPU.
     \end{messcall}
   \end{sdblock}
 \end{sequencediagram}}
-\caption{Worker execution and~a~scheduler stop.  The~run task and~the
-concurrent \texttt{/stop} synchronise through the~in-process
-\texttt{dispatch\_ready} and~\texttt{stopping} maps plus a~drain await, so
-the~slot is~freed exactly once and~by~exactly one path.  A
-\texttt{reason=auto} stop returns the~row to~\textsc{queued} with~its
-assignment cleared (a~\texttt{reason=user} stop lands on~\textsc{preempted}
-instead); the~resulting \texttt{auto\_preempt} notify is~the~one the~slot
-listener swallows (\S\ref{sec:sched-pipeline}).}
+\caption{Worker execution and~a~scheduler stop, all~\emph{inside one worker
+process}.  The~two middle lifelines are~not~two workers: they are the~node's
+single worker acting as~two concurrent coroutines~--- the~run task spawned
+by~\texttt{POST /run} and~the~handler spawned by~\texttt{POST /stop}~--- drawn
+apart only because they run at~the~same time.  The~run task owns the
+\texttt{docker run} subprocess, so it~(not~\texttt{/stop}) is~the~coroutine
+that~observes the~container's \texttt{exit 137}; \texttt{/stop} merely kills the
+container, then~awaits the~run task's drain before persisting.  The~two
+coroutines synchronise through the~in-process \texttt{dispatch\_ready} and
+\texttt{stopping} maps plus that~drain await, so the~slot is~freed exactly once
+and~by~exactly one path.  A~\texttt{reason=auto} stop returns the~row to
+\textsc{queued} with~its assignment cleared (a~\texttt{reason=user} stop lands
+on~\textsc{preempted} instead); the~resulting \texttt{auto\_preempt} notify
+is~the~one the~slot listener swallows (\S\ref{sec:sched-pipeline}).}
 \label{fig:seq-worker-stop}
 \end{figure}
 
@@ -428,39 +563,42 @@ aimed at~a~row that has~since been re-assigned to~another node.
 
 Two PostgreSQL tables hold every fact the~scheduler reads or~writes;
 both are created idempotently on~startup from~\texttt{backend/schema.sql}.
+Each row of~\texttt{jobs} is~one submitted job \emph{instance} (the~term
+``row'' below always means one such instance), while \texttt{job\_id} names
+the~job \emph{type} that~many instances can~share.
 
-\begin{lstlisting}[language=SQL, numbers=none]
+\begin{lstlisting}[language=SQL, numbers=none, basicstyle=\scriptsize\ttfamily]
 CREATE TABLE jobs (
-    id                  TEXT PRIMARY KEY,
-    job_id              TEXT NOT NULL,
-    image               TEXT NOT NULL,
-    command             JSONB NOT NULL,
-    script_path         TEXT,
-    directory_to_mount  TEXT,
-    status              TEXT NOT NULL,
-    created_at          TIMESTAMPTZ NOT NULL,
-    updated_at          TIMESTAMPTZ NOT NULL,
-    container_name      TEXT,
-    exit_code           INT,
-    progress            TEXT,
-    priority            INT DEFAULT 3,
-    deadline            TIMESTAMPTZ,
-    batch_size          INT,
-    epochs_total        INT,
-    profiling_epochs_no INT,
-    assigned_node       TEXT,
-    assigned_gpu_config JSONB,
-    is_profiling_run    BOOLEAN DEFAULT FALSE
+    id                  TEXT PRIMARY KEY,     -- instance id (one submission)
+    job_id              TEXT NOT NULL,        -- job *type*; keys profiling
+    image               TEXT NOT NULL,        -- container image
+    command             JSONB NOT NULL,       -- container argv
+    script_path         TEXT,                 -- optional training script
+    directory_to_mount  TEXT,                 -- optional host dir mounted in
+    status              TEXT NOT NULL,        -- lifecycle state (see 2.4)
+    created_at          TIMESTAMPTZ NOT NULL, -- submission time
+    updated_at          TIMESTAMPTZ NOT NULL, -- last change (reaper input)
+    container_name      TEXT,                 -- docker name while running
+    exit_code           INT,                  -- container exit code
+    progress            TEXT,                 -- latest "Epoch x/y"
+    priority            INT DEFAULT 3,        -- lower value preempted first
+    deadline            TIMESTAMPTZ,          -- drives optimiser urgency
+    batch_size          INT,                  -- training batch size
+    epochs_total        INT,                  -- epochs in a full run
+    profiling_epochs_no INT,                  -- epochs per profile
+    assigned_node       TEXT,                 -- placed node; NULL=unplaced
+    assigned_gpu_config JSONB,                -- chosen bundle {A40:2}
+    is_profiling_run    BOOLEAN DEFAULT FALSE -- TRUE=profile run (hidden)
 );
 
 CREATE TABLE profiling_results (
-    id               TEXT PRIMARY KEY,
-    job_id           TEXT NOT NULL,
-    instance_id      TEXT,
-    gpu_config       JSONB NOT NULL,
-    node_id          TEXT NOT NULL,
-    duration_seconds FLOAT,
-    created_at       TIMESTAMPTZ NOT NULL
+    id               TEXT PRIMARY KEY,    -- measurement/claim row id
+    job_id           TEXT NOT NULL,       -- job *type* measured
+    instance_id      TEXT,                -- instance that claimed it
+    gpu_config       JSONB NOT NULL,      -- measured bundle {A40:1}
+    node_id          TEXT NOT NULL,       -- node measured on
+    duration_seconds FLOAT,               -- mean per-epoch s; NULL=none
+    created_at       TIMESTAMPTZ NOT NULL -- claim time
 );
 \end{lstlisting}
 
@@ -481,54 +619,74 @@ measurement is~shared by~every subsequent instance of~that type.
 
 The control plane relies on~three invariants, each defended in~code.
 
-\textbf{No GPU oversubscription.}  Every dispatch goes through
-\texttt{NodeSlots.acquire(node\_id,\,n\_gpus)}.  On~startup the
-semaphores are reconciled from the~database: only rows in~\textsc{running}
+\textbf{No GPU oversubscription.}  \texttt{NodeSlots} is~a~\emph{counting}
+semaphore per~node: its capacity is~the~node's total GPU count, and~every
+dispatch calls \texttt{acquire(node\_id,\,n)} to~reserve \texttt{n} permits.
+It~bounds \emph{how many} GPUs are concurrently in~use on~a~node, not~\emph{which}
+ones~--- the~concrete physical GPU indices a~container binds to~are chosen by~the
+worker at~launch (Phase~2, distinct indices), not~by~\texttt{acquire}.  Matching
+the~\emph{type} of~GPU is~handled upstream, at~placement: the~optimiser and~the
+\texttt{ProfilingScheduler} only put a~\texttt{(node, gpu\_config)} where that
+node has~free GPUs of~that type, computed per~type from~the~database
+(\texttt{get\_node\_gpu\_usage}).  In~the~supported cluster each node exposes
+a~single GPU type, so the~per-node permit count and~the~per-type free capacity
+coincide; a~mixed-type node would rely on~that placement check, not~on~the
+counting semaphore, to~avoid per-type oversubscription.  On~startup the
+semaphores are reconciled from~the~database: only rows in~\textsc{running}
 or~\textsc{profiling} pre-acquire their permits, since a~\textsc{queued}
 row with~an~assigned node has~no~live container yet (its dispatch task
 acquires the~permit just before posting \texttt{/run}).  A~periodic drift
-watcher recomputes the
-authoritative count at~the~\texttt{IJM\_DRIFT\_HEARTBEAT\_S} cadence
-(default 15~s) and~corrects any divergence.
+watcher recomputes the~authoritative count at~the~\texttt{IJM\_DRIFT\_HEARTBEAT\_S}
+cadence (default 15~s) and~corrects any divergence.
 
-\textbf{No duplicate containers per row.}  Both the~worker (Phase~1
+\textbf{No duplicate containers per job instance.}  Both the~worker (Phase~1
 claim, \texttt{running\_jobs[job\_id]} check) and~the~API
 (\texttt{dispatch\_tasks[instance\_id]} deduplication) refuse a~second
 concurrent dispatch for~the~same instance.  The~reaper that resets stuck
 \textsc{queued} rows cancels any live dispatch task instead of
 double-releasing its permit.
 
-\textbf{Profiling is~sacred.}  Auto-preempt
-(\texttt{\_preempt\_and\_release}) refuses to~act on
-\texttt{is\_profiling\_run=TRUE}, and~profile-preempt (phase~4) filters
-victims by~\texttt{status='RUNNING'} only.  Only an~explicit user stop
-can cancel an~in-flight measurement.
+\textbf{Profiling is~sacred.}  A~profiling run is~never \emph{offered} for
+preemption in~the~first place: the~optimiser request and~its
+\texttt{currentScheduling} are~built only from~rows with
+\texttt{is\_profiling\_run = FALSE} (\S\ref{sec:sched-pipeline}), and~a~fully
+profiled \texttt{RUNNING} job never reverts to~a~profiling run, so the~preempt
+list the~optimiser returns can~never name a~measurement in~flight.  The
+auto-preempt path (\texttt{\_preempt\_and\_release}) re-reads the~flag anyway
+and, if~it~ever sees \texttt{is\_profiling\_run = TRUE}, refuses and~logs
+a~caller bug~--- a~fail-loud assertion guarding the~invariant, not~the~primary
+mechanism.  Profile-preempt (phase~4) likewise considers only
+\texttt{status='RUNNING'} victims, never \texttt{PROFILING} ones.  Only an
+explicit user stop can~cancel an~in-flight measurement.
 
 \section{Stoppable, resumable, cross-node training}\label{sec:checkpoints}
 
 A~job is~\emph{stoppable} because the~trainer persists its~state after
 every epoch, and~\emph{resumable} because every (re)start loads that
 state.  \texttt{BaseTrainer.train} writes \texttt{latest.pt} at~the~end
-of~each epoch through a~temp-file-and-\texttt{rename}, so the~on-disk
+of~each epoch through a~temp-file-and-rename, so the~on-disk
 checkpoint is~always a~whole epoch, never a~half-written file.  Stopping
 a~job is~therefore just killing its~container
 (\S\ref{sec:worker-lifecycle}): the~in-progress epoch is~discarded,
 every completed epoch is~durable.  The~next dispatch~--- on~the~same node
 or~another~--- reconstructs the~trainer, which loads \texttt{latest.pt},
 restores the~model, optimiser, and~\texttt{current\_epoch}, and~continues
-the~loop (Figure~\ref{fig:seq-resume}).  No~scheduler state mirrors
-training progress; the~checkpoint file is~the~single source of~truth for
-how far a~job has~run.
+the~loop (Figure~\ref{fig:seq-resume}).  The~scheduler does~keep a
+\texttt{progress} string per~row, but only as~a~display-and-heuristic cache
+(the~latest \texttt{Epoch x/y}); it~is~allowed to~lag and~is~never read to
+decide resumption.  Where a~(re)started job continues from~is~determined
+solely by~\texttt{latest.pt}~--- the~checkpoint file is~the~single source
+of~truth for~how far a~job has~actually run.
 
 \begin{figure}[H]
 \centering
 \footnotesize
 \setlength{\unitlength}{0.7cm}
-\resizebox{0.85\textwidth}{!}{%
+\resizebox{0.9\textwidth}{!}{%
 \begin{sequencediagram}
-  \newthread{r1}{Trainer run --- node A}
-  \newinst[2.4]{fs}{latest.pt (shared FS)}
-  \newinst[2.4]{r2}{Trainer run --- node B}
+  \newinst{r1}{Training container --- node A}
+  \newinst[2.6]{fs}{Shared FS (\texttt{latest.pt})}
+  \newinst[2.6]{r2}{Training container --- node B}
 
   \begin{callself}{r1}{epoch $k$: train + evaluate}{}
   \end{callself}
@@ -536,45 +694,104 @@ how far a~job has~run.
   \end{call}
   \begin{callself}{r1}{epoch $k{+}1$: training\ldots\ container killed}{}
   \end{callself}
-  \begin{call}{r2}{load $\Rightarrow$ epoch $k$, model + optimiser (strict=False)}{fs}{state}
+  \begin{call}{r2}{load $\Rightarrow$ epoch $k$: model + optimiser (strict=False)}{fs}{state}
   \end{call}
   \begin{callself}{r2}{resume from epoch $k{+}1$}{}
   \end{callself}
 \end{sequencediagram}}
-\caption{Stop and~resume.  The~trainer checkpoints after each epoch with
-a~temp-file-and-\texttt{rename}, so \texttt{latest.pt} is~never
-half-written.  A~stop kills the~container mid-epoch; the~next run~--- here
-on~a~different node, possibly a~different torch version~--- loads
-\texttt{latest.pt} and~continues.  Only the~interrupted epoch~$k{+}1$
-is~recomputed.}
+\caption{Stop and~resume across nodes.  Each lifeline is~the~training
+\emph{container} (the~trainer process the~worker launched via~\texttt{docker
+run}) on~its~node.  The~container checkpoints after each epoch with~a
+temp-file-and-rename, so \texttt{latest.pt} is~never half-written; a~stop
+kills it~mid-epoch, and~the~next run~--- here on~a~different node, possibly
+a~different torch version~--- loads \texttt{latest.pt} and~continues, so only
+the~interrupted epoch~$k{+}1$ is~recomputed.}
 \label{fig:seq-resume}
 \end{figure}
 
-Two GPU generations coexist, so a~resume must survive a~change of~torch
-version mid-job.  The~\texttt{matemagician} node is~pinned to~driver~418.x
-(CUDA~10.1 max), so it~runs a~separate \texttt{:legacy} image built
-on~PyTorch~1.5.1 and~Python~3.7; the~remaining nodes run the~default
-\texttt{:latest} image on~PyTorch~2.6 and~CUDA~12.4.  Both images write
-the~checkpoint in~the~legacy pre-1.6 \texttt{torch.save} format, and~the
-load is~deliberately lenient: \texttt{strict=False} tolerates state-dict
-key differences between versions, and~a~failed optimiser-state load
-restarts Adam from~scratch rather than aborting the~resume~--- the~model
-weights are~what matter, and~a~few epochs of~optimiser warmup are
-invisible at~scenario timescales.  This is~what lets \texttt{cnn\_big}
-migrate between a~modern A40 and~a~legacy P600 without losing progress.
+\subsection{The shared checkpoint filesystem}
 
-The shared \texttt{data/} directory is~mounted on~every node via~rclone
-over SFTP.  It~contains:
+Cross-node resume has~a~hard prerequisite: a~checkpoint written on~one node
+must be~byte-for-byte readable on~every other node.  IJM meets it with~a~single
+shared \texttt{data/} tree that~every node FUSE-mounts via~rclone over SSH/SFTP
+(\texttt{rclone mount \ldots\ --vfs-cache-mode writes}); the~worker bind-mounts
+the~per-job slices of~that tree into each container (Table~\ref{tab:shared-fs}).
+Because all~nodes see the~same files, the~\texttt{latest.pt} written on~the~A40
+node is~exactly the~one the~P600 node loads when the~job migrates.  Without one
+shared namespace the~next dispatch would find no~checkpoint and~silently restart
+from~epoch~0~--- so the~mount is~not~an~optimisation but~the~substrate the~whole
+stop/migrate/resume story rests on.
+
+\begin{table}[H]
+\centering\small
+\begin{tabularx}{\textwidth}{@{}l l >{\raggedright\arraybackslash}X@{}}
+\toprule
+\textbf{Shared path} & \textbf{In container} & \textbf{Contents} \\
+\midrule
+\texttt{data/checkpoints/\{job\_id\}/} & \texttt{/checkpoints}     & \texttt{latest.pt}; a~\texttt{.profiling/} subdir isolates profile runs \\
+\texttt{data/runs/\{job\_id\}/}        & \texttt{/runs}           & captured \texttt{output.log} and~TensorBoard artifacts \\
+\texttt{data/shared/data/}             & \texttt{/runs/data} (ro) & dataset cache (MNIST, CIFAR-10), staged once \\
+\texttt{data/pg/}                      & ---                      & PostgreSQL volume; node-local, \emph{not} on~the~rclone mount \\
+\bottomrule
+\end{tabularx}
+\caption{The~shared \texttt{data/} tree and~where each slice mounts.}\label{tab:shared-fs}
+\end{table}
+
+A~networked, multi-writer mount breaks three assumptions that~hold on~a~local
+disk; each forces a~specific measure:
 
 \begin{itemize}
-  \item \texttt{data/checkpoints/\{job\_id\}/}~--- per-job checkpoints,
-        mounted into the~container at~\texttt{/checkpoints};
-  \item \texttt{data/runs/\{job\_id\}/}~--- captured stdout
-        (\texttt{output.log}) and~TensorBoard artifacts, mounted at
-        \texttt{/runs};
-  \item \texttt{data/shared/data/}~--- read-only dataset cache (MNIST,
-        CIFAR-10), mounted at~\texttt{/runs/data}.
+  \item \textbf{Partial reads.}  A~peer must never see a~half-written
+        checkpoint, so the~trainer writes a~temp file and~atomically
+        \texttt{rename}s it~over \texttt{latest.pt}~--- on~the~mount the~rename
+        publishes the~whole file or~nothing.
+  \item \textbf{\texttt{mmap} over FUSE.}  \texttt{torch.load} memory-maps and
+        seeks the~file, which an~rclone/SFTP mount rejects with~\texttt{EPERM};
+        the~loader therefore pre-reads the~bytes into memory
+        (\texttt{io.BytesIO(path.read\_bytes())}) and~deserialises from~there.
+  \item \textbf{Cross-UID ownership.}  Rootful Docker on~one node and~rootless
+        on~another map container-root to~\emph{different} host UIDs, so
+        a~\texttt{0600} file written on~one node is~unreadable through SFTP
+        on~the~other.  The~worker pins \texttt{--user <uid>:<gid>} to~the~host
+        owner of~\texttt{data/}, so every node writes checkpoints as~the~same
+        user.
 \end{itemize}
+
+\subsection{Surviving a~torch-version change}
+
+A~migration can~move a~job between nodes on~\emph{different} PyTorch builds~---
+the~A40 node on~PyTorch~2.6 (CUDA~12.4) and~the~legacy \texttt{matemagician}
+node, pinned to~driver~418.x and~therefore to~PyTorch~1.5.1 on~Python~3.7.
+A~checkpoint is~normally version-locked, so resume across that~gap is~not~free;
+four incompatibilities each have~to~be~neutralised, for~a~concrete reason:
+
+\begin{itemize}
+  \item \textbf{Serialization format.}  PyTorch switched \texttt{torch.save} to
+        a~zip container at~1.6, which 1.5.1 cannot read.  The~trainer always
+        saves in~the~old tar+pickle format
+        (\texttt{\_use\_new\_zipfile\_serialization=False}, with~a~fallback for
+        torch${<}$1.6 where the~kwarg does~not~exist), so either build loads the~file.
+  \item \textbf{Load-API drift.}  The~loader tries \texttt{weights\_only=True}
+        (added in~torch~1.13) and~falls back when absent, and~always passes
+        \texttt{map\_location=device} so tensors land on~the~target GPU
+        regardless of~where they were saved.
+  \item \textbf{State-dict keys.}  Parameter naming and~\texttt{DataParallel}
+        \texttt{module.} prefixes drift between versions, so the~model loads
+        with~\texttt{strict=False}~--- tolerating key differences while still
+        re-raising on~a~real tensor-shape mismatch, which would mean the~weights
+        are~genuinely incompatible.
+  \item \textbf{Optimiser state.}  Adam's step counters and~momentum buffers are
+        the~most version-fragile part, so their~load is~wrapped in
+        \texttt{try/except}: on~failure Adam restarts from~scratch, losing only
+        a~few epochs of~learning-rate warmup~--- invisible at~scenario
+        timescales~--- while the~model weights, which actually matter, are~kept.
+\end{itemize}
+
+One precondition makes all~of~this reachable: the~trainer module must \emph{import}
+under Python~3.7 in~the~legacy image, so \texttt{runtime/base.py} uses
+\texttt{from~\_\_future\_\_ import annotations} to~keep modern type-hint syntax
+from~being evaluated at~import time.  Together these let \texttt{cnn\_big} migrate
+between a~modern A40 and~a~legacy P600 mid-training without losing progress.
 
 Two worker-side environment variables let the~same
 \texttt{nodes\_config.json} drive heterogeneous nodes.

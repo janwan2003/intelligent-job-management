@@ -10,18 +10,19 @@ no~notion of~per-job energy budgets or~deadline-aware preemption.
 The ANDREAS project~\cite{andreas} at~Politecnico di~Milano demonstrated
 that a~cost-aware optimiser, fed with~profile measurements of~each job
 type on~each hardware bundle, can~plan placements that beat the~typical
-operator's intuition.  ANDREAS, however, is~a~single-host prototype: it
-runs every container on~the~machine that hosts the~API, has~no~remote
-worker, and~assumes one homogeneous GPU pool.  Real laboratories~--- the
-two-node MIM~UW / Polimi cluster used in~this work being a~representative
-example~--- run jobs across nodes with~different driver generations,
-must resume preempted training across CUDA versions, and~want to~consume
-a~standalone optimiser as~an~HTTP service rather than ship it~inside
-the~scheduler.
+operator's intuition.  ANDREAS ran on~the~ARMIDA cluster~--- uniform
+Tesla~V100 nodes~--- dispatching containers to~them through SLURM, and~its
+implementation is~not~available to~reuse.  The~two-node Polimi cluster
+targeted here is~instead \emph{heterogeneous}: an~A40 node alongside
+a~legacy QuadroP600 node on~different CUDA and~torch generations.  A~job
+preempted on~one node must therefore resume across torch versions when
+it~migrates to~the~other, and~the~scheduler must consume a~standalone
+optimiser (GPUspb~\cite{filippini2023pathrelinking,filippini2024stochastic})
+as~an~HTTP service rather than embed one.
 
-This report describes Intelligent Job~Management (IJM), a~scheduler that
-extends the~ANDREAS model to~a~distributed cluster.  The~control plane
-is~a~single FastAPI service that hosts the~profiling scheduler, the
+This report describes Intelligent Job~Management (IJM), an~independent
+reimplementation of~the~ANDREAS approach as~a~distributed control plane.
+The~control plane is~a~single FastAPI service that hosts the~profiling scheduler, the
 optimiser client, and~the~per-node slot semaphores.  Each GPU node runs
 a~lightweight worker that owns the~local Docker daemon.  The~two are
 glued together by~plain HTTP over SSH~tunnels, so the~same code runs on
@@ -30,23 +31,34 @@ machine.  IJM integrates the~GPUspb optimiser as~the~external decision
 maker for~standard-run placement.  Before any instance is~placed as~a
 standard run, the~scheduler first executes a~small number of~profile
 runs for~it on~previously-unmeasured (node, GPU-count) cells, so the
-optimiser is~never asked to~score an~unmeasured bundle.  Checkpoints
-are written in~a~format that loads across torch versions, allowing
-a~job to~migrate between an~A40 node and~a~legacy P600 node
-mid-training.
+optimiser is~never asked to~score an~unmeasured bundle.  Migration between
+the~A40 and~legacy P600 nodes mid-training is~what makes such placement
+worthwhile, and~it~is~not~free: a~PyTorch checkpoint is~normally locked to
+the~version that~wrote it, and~the~two nodes can~only exchange one through
+a~shared filesystem.  IJM closes both gaps~--- a~deliberately
+version-tolerant checkpoint format and~an~rclone-mounted shared store~---
+and~asks of~each training job only that~it~honour a~small
+\emph{contract}; the~solution and~its reasoning are~detailed in
+\S\ref{sec:checkpoints} and~the~contract in~Chapter~\ref{ch:config}.
 
-We validate the~design with~two end-to-end scenarios on~the~two-node
-cluster.  Scenario~1 submits five \texttt{cnn\_big} jobs to~probe the
-profile sweep and~the~deadline-driven URGENT migration sequence on~an
-under-subscribed cluster.  Scenario~2 mixes two job types and~fills
-every slot, pitting URGENT against priority-5 pins on~A40 and~slack
-lstm-small patients on~P600.  Together they separate two behaviours of
-the~upstream GPUspb proxy: Scenario~1 exposes its \emph{horizon-myopia}
-(an~urgent job parked on~slow but~free hardware), while Scenario~2 shows
-that on~a~full cluster the~right outcome still emerges from~its~stateless
-cost minimisation: the~cheapest slack work is~omitted from~the~plan
-(realised as~a~preemption) and, once an~equal-priority pin finishes, the
-urgent job migrates onto the~freed fast~A40 and~meets its deadline.
+We validate IJM with~two end-to-end scenarios on~the~two-node cluster,
+each exercising the~full job lifecycle and~checking that the~system
+faithfully realises the~optimiser's decisions.  Scenario~1
+(under-subscribed) submits five instances of~\texttt{cnn\_big}, a
+compute-heavy synthetic CNN: four loose-deadline ``patient'' jobs and~one
+tight-deadline ``urgent'' job.  It~drives the~profile sweep, single- and
+dual-GPU placement, and~an~urgent job that~migrates across nodes~--- off
+the~legacy P600 onto~the~A40~--- resuming its checkpoint across torch
+versions.  Scenario~2 fills the~cluster and~mixes types (\texttt{cnn\_big}
+pins on~A40, slack \texttt{lstm-small} patients~--- a~small LSTM~--- on
+P600), adding deadline-driven preemption of~the~cheapest slack work and~a
+second cross-node migration.  Together they confirm that profiling,
+placement, preemption, and~cross-version resume behave correctly and~stay
+consistent with~the~optimiser's plan.  (As a~secondary observation, the
+runs also expose a~\emph{horizon-myopia} in~the~GPUspb \texttt{method=RG}
+proxy~--- an~urgent job parked on~slow-but-free hardware~--- which
+Chapter~\ref{ch:e2e} characterises but~which does not~affect IJM's own
+correctness.)
 
 Chapter~\ref{ch:architecture} describes the~deployment topology, the
 scheduling pipeline, the~state machine, the~persistent state, and~the

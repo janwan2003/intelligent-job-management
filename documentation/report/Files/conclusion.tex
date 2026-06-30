@@ -1,48 +1,53 @@
 \section{Summary of contributions}
 
-IJM extends the~ANDREAS prototype from a~single-host scheduler into
-a~distributed control plane: one FastAPI service drives per-node
-workers over SSH-tunnelled HTTP, and~an~external GPUspb optimiser is
-consumed as~a~peer service rather than embedded in~the~scheduler.  On
-top of~that topology the~report names three substantive
-contributions.  A~\emph{profile-always} policy keyed by~the~unique
-index on~\texttt{(job\_id, gpu\_config)}~--- so~that profile
-measurements are atomically shared across instances of~the~same job
-type.  \emph{Cross-version checkpoint resume} between
-PyTorch~1.5.1 (CUDA~10.1, \texttt{matemagician}) and~PyTorch~2.6
-(CUDA~12.4, \texttt{polimi-gpu}), enabling an~in-flight job to~migrate
-between heterogeneous GPU generations without losing progress
-(\S\ref{sec:checkpoints}).  And
-an~empirical characterisation of~GPUspb's \texttt{method=RG} proxy
-(Chapter~\ref{ch:e2e}).  Scenario~1 isolates its \emph{horizon-myopia}~---
-tardiness scored at~the~next-event horizon, so~an~urgent job is~parked
-on~a~slow but~\emph{free} bundle whose deadline overrun the~proxy cannot
-see~--- while Scenario~2 shows the~same myopia on~a~\emph{full} cluster: with
-no~preemptible bundle fast enough to~meet the~urgent job's deadline, the
-stateless cost minimisation drops the~cheapest slack work and~parks the
-arrival on~the~cheapest \emph{slow} bundle, and~the~deadline is~recovered
-only when a~pin finishes and~the~job migrates onto~freed fast hardware.
-The priority-aware \emph{outcome}~--- evicting slack prio-1 work but~never
-an~equal-or-higher-priority job, and~still hitting the~deadline~--- is
-emergent from the~unscheduled-job penalty (multiplier $\lambda{=}100$)
-plus IJM's migrate-on-free-slot behaviour, not~a~preemption or~deadline
-policy in~the~optimiser.
+IJM is~an~independent reimplementation of~the~ANDREAS approach as~a
+distributed control plane: one FastAPI service drives per-node workers over
+SSH-tunnelled HTTP, and~an~external GPUspb optimiser is~consumed as~a~peer
+service rather than embedded in~the~scheduler.  On~that topology the~report
+makes three contributions.  First, a~\emph{profile-always} policy keyed
+by~the~unique index on~\texttt{(job\_id, gpu\_config)}, so~profile
+measurements are atomically shared across instances of~the~same job type.
+Second, \emph{cross-version checkpoint resume} between PyTorch~1.5.1
+(CUDA~10.1, \texttt{matemagician}) and~PyTorch~2.6 (CUDA~12.4,
+\texttt{polimi-gpu}), letting an~in-flight job migrate between heterogeneous
+GPU generations without losing progress (\S\ref{sec:checkpoints}).  Third,
+a~control plane that~realises the~optimiser's plan \emph{coherently}~---
+profiling, single- and~dual-GPU placement, deadline-driven preemption,
+and~cross-node migration, with~slot accounting that~stays free of
+oversubscription and~underflow~--- demonstrated end-to-end by~the~two
+scenarios (Chapter~\ref{ch:e2e}).  The~claim throughout is~\emph{coherence},
+not~optimality: the~scenarios show that~IJM faithfully realises whatever plan
+the~optimiser returns.  Benchmarking that~plan against FIFO, EDF,
+or~priority-only scheduling~--- or~assessing the~optimiser's own solution
+quality~--- is~deliberately out of~scope, a~concern of~the~upstream
+optimiser~\cite{filippini2023pathrelinking,filippini2024stochastic} rather
+than of~the~control plane built here.
+
+Along the~way the~scenarios also surface a~\emph{horizon-myopia} in~the
+upstream GPUspb \texttt{method=RG} proxy: tardiness scored at~the~next-event
+horizon lets an~urgent job be~parked on~slow-but-free hardware, and~on~a~full
+cluster the~same myopia picks the~cheapest preemptible bundle rather than
+the~least-tardy one.  This is~a~property of~the~optimiser we~consume,
+not~of~IJM (Appendix~\ref{app:proxy}); IJM stayed correct regardless~--- it
+realised whatever plan the~proxy returned, and~the~urgent job still met its
+deadline via migration.
 
 \section{Limitations}
 
 The reference deployment uses GPUspb's \texttt{method=RG}, whose proxy
 is~horizon-myopic; the~deadline-aware \texttt{method=PR} variant
-exists upstream but is~not the~default and~has not been validated end
-to~end against the~IJM control plane.  The~report contains
-no~baseline-algorithm comparison~--- IJM's behaviour is~documented
-against the~idealised full-run yardstick, but not yet against FIFO, EDF,
-or~priority-only baselines on~the~same workloads.  Worker-side coverage
+(Path Relinking~\cite{filippini2023pathrelinking}) exists upstream but
+is~not the~default and~has not been validated end
+to~end against the~IJM control plane.  Worker-side coverage
 is~almost entirely end-to-end~--- \texttt{worker/tests/} holds only
 a~regression test for~the~per-epoch profiler measurement; only two GPU
 generations (A40 and~QuadroP600) have been validated; and~the~cluster
 used throughout Chapter~\ref{ch:e2e} is~two nodes with~four GPU slots
 in~total, so the~scaling properties of~the~four-phase pass at~tens
-of~nodes are an~open question.
+of~nodes are an~open question.  Finally, cross-node resume assumes
+a~shared filesystem across the~nodes (here rclone-over-SFTP,
+\S\ref{sec:checkpoints})~--- a~deployment dependency rather than
+a~property of~the~control plane itself.
 
 \section{Future work}
 

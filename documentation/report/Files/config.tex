@@ -151,6 +151,37 @@ first run will be~a~profile or~a~standard execution.
 }
 \end{lstlisting}
 
+\subsection{Job image requirements (the trainer contract)}
+
+The fields above describe what the~API \emph{stores}; they say nothing about
+what the~container must \emph{do}.  Any image is~schedulable, but it~becomes
+\emph{stoppable, resumable, and~migratable} only if~its entrypoint honours
+a~small contract.  Every training image in~this project satisfies it by
+subclassing \texttt{BaseTrainer} (\texttt{runtime/base.py}) and~implementing
+just three hooks~--- \texttt{\_create\_model}, \texttt{\_load\_datasets},
+and~\texttt{\_preprocess\_batch}; the~base class supplies everything in
+Table~\ref{tab:job-contract}, whose mechanism is~detailed
+in~\S\ref{sec:checkpoints}.
+
+\begin{table}[H]
+\centering\small
+\begin{tabularx}{\textwidth}{@{}l >{\raggedright\arraybackslash}X >{\raggedright\arraybackslash}X@{}}
+\toprule
+\textbf{The~image must\ldots} & \textbf{How \texttt{BaseTrainer} does it} & \textbf{Why IJM needs it} \\
+\midrule
+checkpoint after every epoch & writes \texttt{/checkpoints/latest.pt} via~a~temp-file-and-rename & the~checkpoint is~the~\emph{only} record of~progress, so a~job can~be~killed at~any~instant \\
+resume on~start & loads \texttt{/checkpoints/latest.pt} (model, optimiser, epoch) before training & makes (re)dispatch idempotent: the~same image re-run on~another node continues rather than restarts \\
+report progress on~stdout & logs \texttt{Epoch x/y - Loss: \ldots\ - Acc: \ldots\% - <s>s} once per~epoch & the~worker parses the~line for~live progress, and~the~trailing seconds is~the~per-epoch compute the~profiler records \\
+take config from~the~environment & reads \texttt{EPOCHS\_TOTAL}, \texttt{BATCH\_SIZE} (and~\texttt{CHECKPOINT\_DIR}) & lets the~worker set the~epoch budget per~run~--- \texttt{profilingEpochsNo} for~a~profile, \texttt{epochsTotal} for~a~standard run \\
+use all~assigned GPUs & wraps the~model in~\texttt{nn.DataParallel} across the~$N$ GPUs the~worker exposes & a~2-GPU placement only pays off if~the~job actually shards its~batch over both \\
+tolerate \texttt{SIGKILL} & no~signal handler~--- a~kill just ends the~process & stopping a~job is~plain \texttt{docker kill}; safety comes from~the~epoch-boundary checkpoint, not~graceful shutdown \\
+\bottomrule
+\end{tabularx}
+\caption{The~training-job contract.  An~image that~ignores it~still~\emph{runs},
+but is~not~stoppable or~resumable: a~kill loses all~progress and~the~scheduler
+cannot migrate it.}\label{tab:job-contract}
+\end{table}
+
 \section{Full API overview}
 
 Table~\ref{tab:api-endpoints} lists every endpoint.  Interactive
@@ -185,12 +216,16 @@ documentation is~available at~\texttt{/docs} (Swagger~UI) and
 \caption{API endpoints.}\label{tab:api-endpoints}
 \end{table}
 
-Three architectural choices set the~API apart from ANDREAS.
-First, scheduling, profiling, and~dispatch are consolidated into a
-single FastAPI service, in~contrast to~ANDREAS's split between a~Java
-Jobs Manager and~a~C++ Jobs Optimiser.
+Three architectural choices set IJM's control plane apart from ANDREAS.
+First, the~\emph{job-management} logic~--- scheduling, profiling, and~dispatch~---
+is~consolidated into a~single FastAPI service, where ANDREAS used a~separate
+Java Jobs Manager.  The~cost-aware optimiser itself is~\emph{not}
+reimplemented: IJM consumes the~GPUspb
+solver~\cite{filippini2023pathrelinking,filippini2024stochastic}~--- the~same
+line of~work as~ANDREAS's optimiser~--- as~an~external service, so what~is
+consolidated is~the~job manager, not~the~optimiser.
 Second, execution lives in~per-node \emph{workers}~--- also FastAPI~---
-that the~API reaches over HTTP through SSH tunnels; the~external GPUspb
+that the~API reaches over HTTP through SSH tunnels; that same GPUspb
 optimiser is~reached the~same way and~owns every standard-run placement
 decision.
 Third, IJM exposes explicit \texttt{stop}, \texttt{resume},
