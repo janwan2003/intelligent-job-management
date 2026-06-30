@@ -68,7 +68,7 @@ Feature (IJM realises) & Shown in & How you see it work \\\midrule
 Profile-always sweep & S1, S2 & all four \texttt{(node,GPU)} cells measured in~\texttt{profiles\_*.json}; hatched profile bars precede each type's first standard run \\
 Single- and~dual-GPU placement & S1, S2 & jobs run on~$\times$1 and~$\times$2 bundles (taller ``$\times2$'' bars); the~per-epoch table (Table~\ref{tab:e2e-bundle-costs}) is~the~2-GPU speedup IJM exploits \\
 Deadline-driven preemption & S2 & the~plan drops the~cheapest slack job; IJM stops it (\texttt{drop-preempt}) and~re-queues it~--- a~gap then resume in~the~timeline \\
-Cross-node, cross-version resume & S1, S2 & a~job migrates P600$\leftrightarrow$A40 (torch~1.5$\leftrightarrow$2.6); the~worker logs ``Resumed from~epoch~$k$'' and~training continues \\
+Cross-node, cross-version resume & S1, S2 & a~job migrates P600$\rightarrow$A40 (torch~1.5$\rightarrow$2.6); the~worker logs ``Resumed from~epoch~$k$'' and~training continues \\
 Coherent slot accounting & S1, S2 & \texttt{GET /admin/slots} reports zero oversubscription and~zero underflow over the~run; the~drift heartbeat auto-reconciles \\
 Accurate profiling $\Rightarrow$ prediction & S1, S2 & the~optimiser's predicted finish (orange~$\blacktriangledown$) lands within a~few minutes of~each bar's real end \\\bottomrule
 \end{tabularx}

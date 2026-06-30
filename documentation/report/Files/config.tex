@@ -250,7 +250,7 @@ process at~startup.
 \texttt{OPTIMIZER\_METHOD}              & \texttt{RG} & GPUspb solver method passed in~the~request body \\
 \texttt{OPTIMIZER\_VERBOSE}             & 0 & Per-call log verbosity (0--3) \\
 \texttt{PROFILING\_CONFIGS\_PER\_JOB}   & 2 & How many distinct GPU configurations a~single instance profiles before falling through to~a~standard run \\
-\texttt{IJM\_DRIFT\_HEARTBEAT\_S}       & 15 & Period of~the~slot-tracker drift heartbeat that reconciles \texttt{mem\_used} against \texttt{db\_used} per~node \\
+\texttt{IJM\_DRIFT\_HEARTBEAT\_S}       & 15 & Period of~the~slot-tracker drift heartbeat that reconciles the~in-memory slot count against the~database-authoritative count per~node \\
 \texttt{WORKER\_GPU\_MODE}              & \texttt{runtime} & Worker-side; how Docker exposes GPUs to~training containers (\texttt{runtime} / \texttt{cdi} / \texttt{none}) \\
 \texttt{IMAGE\_TAG\_OVERRIDE}           & unset & Worker-side; rewrites \texttt{:latest} to~the~given tag.  Used on~\texttt{matemagician} to~pick the~CUDA-10.1-compatible \texttt{:legacy} image \\
 \texttt{HOST\_ROOT}, \texttt{HOST\_PROJECT\_ROOT} & \texttt{/host} & Resolve container-internal vs.~host paths for~Docker bind mounts; \texttt{HOST\_PROJECT\_ROOT} falls back to \texttt{HOST\_ROOT} when unset \\
