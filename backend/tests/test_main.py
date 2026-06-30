@@ -576,17 +576,124 @@ def test_node_status_resources_is_list(client: TestClient) -> None:
 # ---------------------------------------------------------------------------
 
 
-class FakeAsyncCursor:
-    """Async cursor that returns query-pattern-based responses."""
+# --- in-memory model of the profiling_results claim flow -------------------
+# schedule_job derives ``is_profiling_run`` from owning an unmeasured
+# ``profiling_results`` claim (INSERT … RETURNING, then the in-flight /
+# profiled / count SELECTs), so the fake DB round-trips the claim flow rather
+# than stubbing every profiling_results query to ``[]``.
 
-    def __init__(self, responses: dict[str, list[tuple[Any, ...]]] | None = None) -> None:
+
+def _pr_ck(cfg: dict[str, int] | None) -> tuple[tuple[str, int], ...]:
+    return tuple(sorted((cfg or {}).items()))
+
+
+def _pr_unwrap(v: Any) -> Any:
+    """Unwrap a psycopg ``Json(...)`` param to its underlying dict."""
+    return getattr(v, "obj", v)
+
+
+def _pr_insert(store: list[dict[str, Any]], params: tuple[Any, ...]) -> list[tuple[Any, ...]]:
+    """Model ``INSERT INTO profiling_results … ON CONFLICT DO NOTHING
+    RETURNING gpu_config, node_id`` (six params per row)."""
+    inserted: list[tuple[Any, ...]] = []
+    plist = list(params)
+    for i in range(0, len(plist), 6):
+        chunk = plist[i : i + 6]
+        if len(chunk) < 6:
+            break
+        _id, job_id, instance_id, cfg_param, node_id, _created = chunk
+        cfg = _pr_unwrap(cfg_param)
+        if any(r["job_id"] == job_id and _pr_ck(r["gpu_config"]) == _pr_ck(cfg) for r in store):
+            continue  # ON CONFLICT DO NOTHING
+        store.append(
+            {
+                "job_id": job_id,
+                "instance_id": instance_id,
+                "gpu_config": cfg,
+                "node_id": node_id,
+                "duration_seconds": None,
+            }
+        )
+        inserted.append((cfg, node_id))
+    return inserted
+
+
+def _pr_select(store: list[dict[str, Any]], query: str, params: tuple[Any, ...]) -> list[tuple[Any, ...]]:
+    """Model the profiling_results SELECTs schedule_job issues."""
+    if "JOIN" in query:  # cross-instance usage join — not exercised here
+        return []
+    if "COUNT(*)" in query:  # _count_profiled_this_round
+        inst = params[0] if params else None
+        return [(sum(1 for r in store if r["instance_id"] == inst),)]
+    if "DISTINCT gpu_config" in query:  # get_profiled_configs (claimed or completed)
+        jid = params[0] if params else None
+        seen: set[Any] = set()
+        out: list[tuple[Any, ...]] = []
+        for r in store:
+            key = _pr_ck(r["gpu_config"])
+            if r["job_id"] == jid and key not in seen:
+                seen.add(key)
+                out.append((r["gpu_config"],))
+        return out
+    if "duration_seconds IS NULL" in query and "instance_id" in query:  # _get_in_flight_claims
+        inst = params[0] if params else None
+        return [
+            (r["gpu_config"], r["node_id"]) for r in store if r["instance_id"] == inst and r["duration_seconds"] is None
+        ]
+    return []
+
+
+def _pr_seed_measured(store: list[dict[str, Any]], job_id: str, gpu_config: dict[str, int], duration: float) -> None:
+    """Seed a *measured* (completed) profiling_results row for a type.
+
+    Modelling "config already profiled": its key shows up in
+    ``get_profiled_configs(job_id)`` so the scheduler skips re-claiming it, and
+    its NULL-free duration means it is not an in-flight claim.
+    """
+    store.append(
+        {
+            "job_id": job_id,
+            "instance_id": f"measured-{job_id}",
+            "gpu_config": gpu_config,
+            "node_id": None,
+            "duration_seconds": duration,
+        }
+    )
+
+
+class FakeAsyncCursor:
+    """Async cursor modelling the jobs GPU-usage query plus the profiling_results
+    claim store.
+
+    Dispatch precedence: injected ``responses`` win, then the profiling_results
+    store, then ``gpu_usage_rows`` for the jobs usage query, else ``[]``.
+    """
+
+    def __init__(
+        self,
+        responses: dict[str, list[tuple[Any, ...]]] | None = None,
+        pr_store: list[dict[str, Any]] | None = None,
+        gpu_usage_rows: list[tuple[Any, ...]] | None = None,
+    ) -> None:
         self._responses = responses or {}
+        self._pr_store = pr_store if pr_store is not None else []
+        self._gpu_usage_rows = gpu_usage_rows or []
         self._last_query = ""
+        self._last_params: tuple[Any, ...] = ()
+        self._returning: list[tuple[Any, ...]] | None = None
         self.queries: list[tuple[str, tuple[Any, ...]]] = []
 
     async def execute(self, query: str, params: tuple[Any, ...] = ()) -> None:
         self.queries.append((query, params))
         self._last_query = query
+        self._last_params = params
+        if any(pattern in query for pattern in self._responses):
+            self._returning = None
+            return
+        if "profiling_results" in query and "INSERT" in query.upper():
+            self._returning = _pr_insert(self._pr_store, params)
+        else:
+            self._returning = None
 
     async def fetchone(self) -> tuple[Any, ...] | None:
         rows = self._get_rows()
@@ -599,6 +706,13 @@ class FakeAsyncCursor:
         for pattern, rows in self._responses.items():
             if pattern in self._last_query:
                 return rows
+        if "profiling_results" in self._last_query:
+            if self._returning is not None:
+                return self._returning
+            return _pr_select(self._pr_store, self._last_query, self._last_params)
+        # get_node_gpu_usage jobs query (3 columns: id, assigned_node, config)
+        if "FROM jobs" in self._last_query and "assigned_gpu_config" in self._last_query:
+            return self._gpu_usage_rows
         return []
 
     async def __aenter__(self) -> "FakeAsyncCursor":
@@ -611,8 +725,13 @@ class FakeAsyncCursor:
 class FakeAsyncConn:
     """Async connection that uses FakeAsyncCursor."""
 
-    def __init__(self, responses: dict[str, list[tuple[Any, ...]]] | None = None) -> None:
-        self._cursor = FakeAsyncCursor(responses)
+    def __init__(
+        self,
+        responses: dict[str, list[tuple[Any, ...]]] | None = None,
+        gpu_usage_rows: list[tuple[Any, ...]] | None = None,
+    ) -> None:
+        self.profiling_results: list[dict[str, Any]] = []
+        self._cursor = FakeAsyncCursor(responses, self.profiling_results, gpu_usage_rows)
 
     def cursor(self) -> FakeAsyncCursor:
         return self._cursor
@@ -648,7 +767,12 @@ async def test_schedule_job_exploration_mode() -> None:
 
 
 async def test_schedule_job_standard_mode_after_all_profiled() -> None:
-    """schedule_job switches to standard mode when all configs are profiled."""
+    """schedule_job switches to standard mode when all configs are profiled.
+
+    Standard placement is now deferred to the optimizer, so schedule_job
+    returns mode='standard' with no config/node — only the profiling decision
+    lives here.
+    """
     cluster.nodes = [
         {
             "id": "n1",
@@ -657,41 +781,26 @@ async def test_schedule_job_standard_mode_after_all_profiled() -> None:
             "resources": [{"gpu_type": "A40", "gpu_count": 1}],
         },
     ]
-    call_count = 0
 
-    class StandardCursor(FakeAsyncCursor):
-        async def fetchall(self) -> list[tuple[Any, ...]]:
-            if "SELECT DISTINCT" in self._last_query:
-                return [({"A40": 1},)]
-            if "ORDER BY duration_seconds" in self._last_query:
-                return [({"A40": 1}, 42.5)]
-            return []
+    conn = FakeAsyncConn()
+    # The single valid config (A40:1) is already profiled → nothing left to claim.
+    _pr_seed_measured(conn.profiling_results, "job-done", {"A40": 1}, 42.5)
 
-        async def fetchone(self) -> tuple[Any, ...] | None:
-            nonlocal call_count
-            call_count += 1
-            return None
-
-    class StandardConn(FakeAsyncConn):
-        def __init__(self) -> None:
-            self._cursor = StandardCursor()
-
-        def cursor(self) -> FakeAsyncCursor:
-            return self._cursor
-
-    conn = StandardConn()
     sched = ProfilingScheduler()
     result = await sched.schedule_job(conn, "job-done")
     assert result.mode == "standard"
     assert result.is_profiling_run is False
-    assert result.gpu_config == {"A40": 1}
-    assert result.node_id == "n1"
+    # Standard runs carry no scheduler-chosen placement (optimizer decides).
+    assert result.gpu_config is None
+    assert result.node_id is None
 
 
 async def test_schedule_job_standard_mode_profiling_node_can_run_standard() -> None:
-    """With only a profiling-designated node, standard runs still land on it.
+    """A type whose only config is already profiled drops to standard mode even
+    when the cluster has only a profiling-designated node.
 
-    All nodes can run standard jobs (isForProfiling only gates profiling runs).
+    Standard placement is the optimizer's job, so schedule_job returns
+    mode='standard' with no scheduler-chosen config/node here.
     """
     cluster.nodes = [
         {
@@ -702,35 +811,26 @@ async def test_schedule_job_standard_mode_profiling_node_can_run_standard() -> N
         },
     ]
 
-    class ProfiledCursor(FakeAsyncCursor):
-        async def fetchall(self) -> list[tuple[Any, ...]]:
-            if "SELECT DISTINCT" in self._last_query:
-                return [({"A40": 1},)]
-            if "ORDER BY duration_seconds" in self._last_query:
-                return [({"A40": 1}, 30.0)]
-            return []
+    conn = FakeAsyncConn()
+    _pr_seed_measured(conn.profiling_results, "job-fb", {"A40": 1}, 30.0)
 
-        async def fetchone(self) -> tuple[Any, ...] | None:
-            return None
-
-    class ProfiledConn(FakeAsyncConn):
-        def __init__(self) -> None:
-            self._cursor = ProfiledCursor()
-
-        def cursor(self) -> FakeAsyncCursor:
-            return self._cursor
-
-    conn = ProfiledConn()
     sched = ProfilingScheduler()
     result = await sched.schedule_job(conn, "job-fb")
     assert result.mode == "standard"
     assert result.is_profiling_run is False
-    assert result.node_id == "prof-only"
-    assert result.gpu_config == {"A40": 1}
+    assert result.node_id is None
+    assert result.gpu_config is None
 
 
-async def test_schedule_job_skips_fully_allocated_nodes() -> None:
-    """schedule_job must prefer a node with remaining GPU capacity over a fully allocated one."""
+def test_schedule_job_skips_fully_allocated_nodes() -> None:
+    """Node-fit must prefer a node with remaining GPU capacity over a fully
+    allocated one.
+
+    Placement is GPU-usage-aware via ``_find_node_for_config`` (the surviving
+    placement primitive; standard *dispatch* is the optimizer's job).  With
+    full-node's 2 A40s already allocated, fitting another A40:1 must land on
+    free-node.
+    """
     cluster.nodes = [
         {
             "id": "full-node",
@@ -746,35 +846,18 @@ async def test_schedule_job_skips_fully_allocated_nodes() -> None:
         },
     ]
 
-    class BusyNodeCursor(FakeAsyncCursor):
-        async def fetchall(self) -> list[tuple[Any, ...]]:
-            # GPU usage query — full-node has all 2 A40s allocated
-            if "assigned_node" in self._last_query and "assigned_gpu_config" in self._last_query:
-                return [("full-node", {"A40": 2})]
-            # profiling results query — all profiled
-            if "SELECT DISTINCT" in self._last_query:
-                return [({"A40": 1},), ({"A40": 2},)]
-            return []
-
-        async def fetchone(self) -> tuple[Any, ...] | None:
-            return None
-
-    class BusyNodeConn(FakeAsyncConn):
-        def __init__(self) -> None:
-            self._cursor = BusyNodeCursor()
-
-        def cursor(self) -> FakeAsyncCursor:
-            return self._cursor
-
-    conn = BusyNodeConn()
     sched = ProfilingScheduler()
-    result = await sched.schedule_job(conn, "job-x")
-    assert result.mode == "standard"
-    assert result.node_id == "free-node"
+    node = sched._find_node_for_config({"A40": 1}, is_for_profiling=False, node_gpu_usage={"full-node": {"A40": 2}})
+    assert node is not None
+    assert node.id == "free-node"
 
 
-async def test_schedule_job_packs_onto_partially_used_node() -> None:
-    """schedule_job should assign to a node that still has remaining GPUs."""
+def test_schedule_job_packs_onto_partially_used_node() -> None:
+    """Node-fit should assign to a node that still has remaining GPUs.
+
+    ``_find_node_for_config`` subtracts current usage: with 2 of 4 A40s used,
+    an A40:1 config still fits on the same partially-used node.
+    """
     cluster.nodes = [
         {
             "id": "partial-node",
@@ -784,32 +867,10 @@ async def test_schedule_job_packs_onto_partially_used_node() -> None:
         },
     ]
 
-    class PartialCursor(FakeAsyncCursor):
-        async def fetchall(self) -> list[tuple[Any, ...]]:
-            # GPU usage query — 2 of 4 A40s already allocated
-            if "assigned_node" in self._last_query and "assigned_gpu_config" in self._last_query:
-                return [("partial-node", {"A40": 2})]
-            # profiling results — config {"A40": 1} profiled
-            if "SELECT DISTINCT" in self._last_query:
-                return [({"A40": 1},)]
-            return []
-
-        async def fetchone(self) -> tuple[Any, ...] | None:
-            return None
-
-    class PartialConn(FakeAsyncConn):
-        def __init__(self) -> None:
-            self._cursor = PartialCursor()
-
-        def cursor(self) -> FakeAsyncCursor:
-            return self._cursor
-
-    conn = PartialConn()
     sched = ProfilingScheduler()
-    result = await sched.schedule_job(conn, "job-y")
-    assert result.mode == "standard"
-    assert result.node_id == "partial-node"
-    assert result.gpu_config == {"A40": 1}
+    node = sched._find_node_for_config({"A40": 1}, is_for_profiling=False, node_gpu_usage={"partial-node": {"A40": 2}})
+    assert node is not None
+    assert node.id == "partial-node"
 
 
 # ---------------------------------------------------------------------------
@@ -840,44 +901,29 @@ async def test_one_config_per_submit_then_standard() -> None:
         },
     ]
 
-    profiled: list[tuple[dict[str, int]]] = []
-
-    class IncrementalCursor(FakeAsyncCursor):
-        async def fetchall(self) -> list[tuple[Any, ...]]:
-            if "SELECT DISTINCT" in self._last_query:
-                return list(profiled)
-            if "ORDER BY duration_seconds" in self._last_query:
-                return [(config, 30.0) for (config,) in profiled]
-            return []
-
-        async def fetchone(self) -> tuple[Any, ...] | None:
-            # Used only by _estimate_duration in the profiling exploration branch
-            if "duration_seconds" in self._last_query:
-                return (30.0,) if profiled else None
-            return None
-
-    class IncrementalConn(FakeAsyncConn):
-        def __init__(self) -> None:
-            self._cursor = IncrementalCursor()
-
-        def cursor(self) -> FakeAsyncCursor:
-            return self._cursor
-
-    conn = IncrementalConn()
+    conn = FakeAsyncConn()
     sched = ProfilingScheduler()
     sched.configs_per_job = 999  # profile all configs in this test
 
     all_configs = sched.get_valid_configurations()
     assert len(all_configs) == 3
 
-    for i in range(3):
-        result = await sched.schedule_job(conn, f"job-{i}")
+    # Same job type each round; simulate the worker measuring the *dispatched*
+    # cell between submissions so the next round advances to the next config.
+    profiled: list[dict[str, int]] = []
+    for _i in range(3):
+        result = await sched.schedule_job(conn, "job-type")
         assert result.is_profiling_run is True
         assert result.mode == "profiling"
         assert result.gpu_config is not None
-        profiled.append((result.gpu_config,))
+        assert result.gpu_config not in profiled
+        profiled.append(result.gpu_config)
+        # Worker completes the profile for the dispatched config.
+        for row in conn.profiling_results:
+            if row["duration_seconds"] is None and row["gpu_config"] == result.gpu_config:
+                row["duration_seconds"] = 30.0
 
-    result = await sched.schedule_job(conn, "job-final")
+    result = await sched.schedule_job(conn, "job-type")
     assert result.is_profiling_run is False
     assert result.mode == "standard"
 
@@ -893,30 +939,16 @@ async def test_profiling_skipped_when_all_configs_already_tested() -> None:
         },
     ]
 
-    class AlreadyProfiledCursor(FakeAsyncCursor):
-        async def fetchall(self) -> list[tuple[Any, ...]]:
-            if "SELECT DISTINCT" in self._last_query:
-                return [({"A40": 1},)]
-            if "ORDER BY duration_seconds" in self._last_query:
-                return [({"A40": 1}, 25.0)]
-            return []
+    conn = FakeAsyncConn()
+    # The type's only config (A40:1) is already measured → nothing to profile.
+    _pr_seed_measured(conn.profiling_results, "job-resubmit", {"A40": 1}, 25.0)
 
-        async def fetchone(self) -> tuple[Any, ...] | None:
-            return None
-
-    class AlreadyProfiledConn(FakeAsyncConn):
-        def __init__(self) -> None:
-            self._cursor = AlreadyProfiledCursor()
-
-        def cursor(self) -> FakeAsyncCursor:
-            return self._cursor
-
-    conn = AlreadyProfiledConn()
     sched = ProfilingScheduler()
     result = await sched.schedule_job(conn, "job-resubmit")
     assert result.is_profiling_run is False
     assert result.mode == "standard"
-    assert result.gpu_config == {"A40": 1}
+    # Standard placement is the optimizer's job; schedule_job leaves it unset.
+    assert result.gpu_config is None
 
 
 async def test_profiling_explores_all_configs_exhaustively() -> None:
@@ -969,3 +1001,74 @@ def test_require_runner_returns_503_when_not_initialized(client: TestClient) -> 
     """POST /jobs returns 503 when job runner is not initialized."""
     response = client.post("/jobs", json={"job_id": "test", "dockerImage": "test", "command": ["python"]})
     assert response.status_code == 503
+
+
+# ---------------------------------------------------------------------------
+# Profile-preempt victim selection (_cheapest_cover)
+# ---------------------------------------------------------------------------
+# ``ranked`` tuples are (id, priority, progress, gpu_config); the helper assumes
+# they are already ordered cheapest-to-evict first, so only id and config drive
+# the result here.
+
+
+def test_cheapest_cover_spares_redundant_victim() -> None:
+    """Regression: a cheap small victim is not evicted when a larger one alone covers.
+
+    need 2x A40, with a cheap A40x1 ranked first and an A40x2 second.  The old
+    greedy took both (A40x1 then A40x2 = 3 GPUs); the minimum cover takes only
+    the A40x2 job, sparing the A40x1 job's progress.
+    """
+    ranked = [
+        ("cheap-1gpu", 1, "0", {"A40": 1}),
+        ("pricier-2gpu", 2, "0", {"A40": 2}),
+    ]
+    assert ProfilingScheduler._cheapest_cover(ranked, {"A40": 2}) == ["pricier-2gpu"]
+
+
+def test_cheapest_cover_takes_both_when_each_holds_one() -> None:
+    """need 2x A40 with two A40x1 victims requires evicting both (Scenario-2 shape)."""
+    ranked = [
+        ("lstm-a", 1, "0", {"A40": 1}),
+        ("lstm-b", 2, "0", {"A40": 1}),
+    ]
+    assert ProfilingScheduler._cheapest_cover(ranked, {"A40": 2}) == ["lstm-a", "lstm-b"]
+
+
+def test_cheapest_cover_prefers_cheapest_single() -> None:
+    """When several single victims each cover, the cheapest-ranked one wins."""
+    ranked = [
+        ("cheap", 1, "0", {"A40": 1}),
+        ("dear", 5, "0", {"A40": 1}),
+    ]
+    assert ProfilingScheduler._cheapest_cover(ranked, {"A40": 1}) == ["cheap"]
+
+
+def test_cheapest_cover_prefers_cheap_pair_over_one_expensive() -> None:
+    """Two cheap victims are evicted in preference to a single pricier one of equal size."""
+    ranked = [
+        ("cheap-a", 1, "0", {"A40": 1}),
+        ("cheap-b", 2, "0", {"A40": 1}),
+        ("expensive", 9, "0", {"A40": 2}),
+    ]
+    assert ProfilingScheduler._cheapest_cover(ranked, {"A40": 2}) == ["cheap-a", "cheap-b"]
+
+
+def test_cheapest_cover_ignores_wrong_gpu_type() -> None:
+    """A victim holding only an unneeded GPU type never covers an A40 shortfall."""
+    ranked = [("l40s-job", 1, "0", {"L40S": 2})]
+    assert ProfilingScheduler._cheapest_cover(ranked, {"A40": 1}) == []
+
+
+def test_cheapest_cover_infeasible_returns_empty() -> None:
+    """No subset can free enough GPUs -> empty list (caller moves to the next node)."""
+    ranked = [("only-1gpu", 1, "0", {"A40": 1})]
+    assert ProfilingScheduler._cheapest_cover(ranked, {"A40": 2}) == []
+
+
+def test_cheapest_cover_multi_type_need() -> None:
+    """A multi-type shortfall needs victims covering every type."""
+    ranked = [
+        ("a40-job", 1, "0", {"A40": 1}),
+        ("l40s-job", 2, "0", {"L40S": 1}),
+    ]
+    assert ProfilingScheduler._cheapest_cover(ranked, {"A40": 1, "L40S": 1}) == ["a40-job", "l40s-job"]

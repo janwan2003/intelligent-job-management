@@ -7,6 +7,8 @@ Also includes regression tests for multi-job concurrent execution and
 profiling-before-running enforcement.
 """
 
+import contextlib
+import json
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime
@@ -39,22 +41,274 @@ class FakeResult:
         return self._rows
 
 
+# --- in-memory model of the profiling_results claim flow -------------------
+# The scheduler derives ``is_profiling_run`` from whether an instance owns an
+# unmeasured ``profiling_results`` claim, so the fake DB has to round-trip the
+# claim INSERT and the in-flight / profiled / count SELECTs instead of stubbing
+# every profiling_results query to ``[]``.
+
+
+def _pr_ck(cfg: dict[str, int] | None) -> tuple[tuple[str, int], ...]:
+    return tuple(sorted((cfg or {}).items()))
+
+
+def _pr_unwrap(v: Any) -> Any:
+    """Unwrap a psycopg ``Json(...)`` param to its underlying dict."""
+    return getattr(v, "obj", v)
+
+
+def _pr_insert(store: list[dict[str, Any]], params: list[Any]) -> list[Any]:
+    """Model ``INSERT INTO profiling_results ... ON CONFLICT (job_id, gpu_config)
+    DO NOTHING RETURNING gpu_config, node_id`` (six params per row)."""
+    inserted: list[Any] = []
+    for i in range(0, len(params), 6):
+        chunk = params[i : i + 6]
+        if len(chunk) < 6:
+            break
+        _id, job_id, instance_id, cfg_param, node_id, _created = chunk
+        cfg = _pr_unwrap(cfg_param)
+        if any(r["job_id"] == job_id and _pr_ck(r["gpu_config"]) == _pr_ck(cfg) for r in store):
+            continue  # ON CONFLICT DO NOTHING
+        store.append(
+            {
+                "job_id": job_id,
+                "instance_id": instance_id,
+                "gpu_config": cfg,
+                "node_id": node_id,
+                "duration_seconds": None,
+            }
+        )
+        inserted.append((cfg, node_id))
+    return inserted
+
+
+def _pr_select(store: list[dict[str, Any]], query: str, params: tuple[Any, ...]) -> list[Any]:
+    """Model the profiling_results SELECTs the scheduler issues."""
+    if "JOIN" in query:  # cross-instance usage join — single-instance tests don't need it
+        return []
+    if "COUNT(*)" in query:  # _count_profiled_this_round
+        inst = params[0] if params else None
+        return [(sum(1 for r in store if r["instance_id"] == inst),)]
+    if "DISTINCT gpu_config" in query:  # get_profiled_configs (claimed or completed)
+        jid = params[0] if params else None
+        seen: set[Any] = set()
+        out: list[Any] = []
+        for r in store:
+            key = _pr_ck(r["gpu_config"])
+            if r["job_id"] == jid and key not in seen:
+                seen.add(key)
+                out.append((r["gpu_config"],))
+        return out
+    if "duration_seconds IS NULL" in query and "instance_id" in query:  # _get_in_flight_claims
+        inst = params[0] if params else None
+        return [
+            (r["gpu_config"], r["node_id"]) for r in store if r["instance_id"] == inst and r["duration_seconds"] is None
+        ]
+    return []
+
+
+# --- in-memory model of the jobs table -------------------------------------
+# create -> stop -> resume -> delete must transition *real* state for the
+# TestComplexLifecycle scenarios, so the fake persists a jobs table keyed by id
+# and replays the exact query shapes the refactored endpoints issue.
+
+_JOB_COLUMNS = (
+    "id",
+    "job_id",
+    "image",
+    "command",
+    "script_path",
+    "directory_to_mount",
+    "status",
+    "created_at",
+    "updated_at",
+    "priority",
+    "deadline",
+    "batch_size",
+    "epochs_total",
+    "profiling_epochs_no",
+)
+
+
+def _jobs_is_jobs_query(query: str) -> bool:
+    """True iff *query* touches the jobs table (and not profiling_results)."""
+    return " jobs" in query and "profiling_results" not in query
+
+
+def _jobs_is_dml(query: str) -> bool:
+    """True for jobs statements that mutate the in-memory table."""
+    head = query.lstrip()[:6].upper()
+    return head in ("INSERT", "UPDATE", "DELETE")
+
+
+def _jobs_table_backed(jobs: dict[str, dict[str, Any]], query: str) -> bool:
+    """Whether to satisfy *query* from the in-memory jobs table.
+
+    DML always mutates the table.  Reads use the table only once it holds rows
+    (created via the create_job path); otherwise the caller falls back to the
+    injected ``default_rows`` mechanism the read-only tests rely on.
+    """
+    return _jobs_is_dml(query) or bool(jobs)
+
+
+def _jobs_insert(jobs: dict[str, dict[str, Any]], params: tuple[Any, ...]) -> None:
+    """Model the 14-param ``INSERT INTO jobs (...)`` from create_job."""
+    row = dict(zip(_JOB_COLUMNS, params, strict=True))
+    # ``command`` arrives as a json.dumps(...) string — store the decoded list.
+    cmd = row["command"]
+    if isinstance(cmd, str):
+        with contextlib.suppress(TypeError, ValueError):
+            row["command"] = json.loads(cmd)
+    row.setdefault("container_name", None)
+    row.setdefault("exit_code", None)
+    row.setdefault("progress", None)
+    row["assigned_node"] = None
+    row["assigned_gpu_config"] = None
+    row["is_profiling_run"] = False
+    jobs[row["id"]] = row
+
+
+def _jobs_execute(jobs: dict[str, dict[str, Any]], query: str, params: tuple[Any, ...]) -> list[Any]:
+    """Apply a jobs query against the in-memory table, returning result rows.
+
+    Tuple-row results for the targeted SELECT/UPDATE shapes; dict rows are
+    produced separately by the cursor when ``SELECT *`` is read with a
+    dict_row factory (see ``_jobs_select_star``).
+    """
+    if "INSERT INTO jobs" in query:
+        _jobs_insert(jobs, params)
+        return []
+
+    if "UPDATE jobs" in query and "SET assigned_node" in query:
+        # scheduler._persist_assignment: assigned_node, gpu_config, is_profiling_run, updated_at, id
+        node_id, gpu_cfg, is_prof, updated, jid = params
+        row = jobs.get(jid)
+        if row is not None:
+            row["assigned_node"] = node_id
+            row["assigned_gpu_config"] = _pr_unwrap(gpu_cfg)
+            row["is_profiling_run"] = is_prof
+            row["updated_at"] = updated
+        return []
+
+    if "UPDATE jobs SET status" in query and "RETURNING" in query:
+        # resume: status, updated_at, id, status-list ; RETURNING id, job_id
+        new_status, _updated, jid = params[0], params[1], params[2]
+        allowed = params[3]
+        row = jobs.get(jid)
+        if row is not None and row["status"] in allowed:
+            row["status"] = new_status
+            row["assigned_node"] = None
+            row["assigned_gpu_config"] = None
+            return [(row["id"], row["job_id"])]
+        return []
+
+    if "UPDATE jobs SET status" in query:
+        # stop: status, updated_at, id
+        new_status, _updated, jid = params
+        row = jobs.get(jid)
+        if row is not None:
+            row["status"] = new_status
+        return []
+
+    if "SELECT status FROM jobs" in query:
+        jid = params[0] if params else None
+        row = jobs.get(jid)
+        return [(row["status"],)] if row is not None else []
+
+    if "SELECT id, assigned_node, assigned_gpu_config FROM jobs" in query:
+        # get_node_gpu_usage.  By established fake contract, GPU usage is empty
+        # unless a test injects it via a `responses` override (the GPU-accounting
+        # tests do exactly that) — so freshly-created QUEUED+assigned rows are
+        # NOT auto-counted as cluster usage here.
+        return []
+
+    if "SELECT assigned_node, id FROM jobs" in query:
+        # list_nodes busy check — overridden via `responses` when a test cares
+        # (see test_list_nodes_marks_busy_when_running_job); empty otherwise.
+        return []
+
+    if "SELECT id, assigned_node FROM jobs" in query:
+        # logs endpoint
+        jid = params[0] if params else None
+        row = jobs.get(jid)
+        return [(row["id"], row["assigned_node"])] if row is not None else []
+
+    if "SELECT id FROM jobs WHERE status" in query:
+        # clear-all active ids
+        statuses = set(params[0]) if params else set()
+        return [(r["id"],) for r in jobs.values() if r["status"] in statuses]
+
+    if "DELETE FROM jobs WHERE id" in query:
+        jid = params[0] if params else None
+        jobs.pop(jid, None)
+        return []
+
+    if query.strip() == "DELETE FROM jobs":
+        jobs.clear()
+        return []
+
+    return []
+
+
+def _jobs_select_star(jobs: dict[str, dict[str, Any]], query: str, params: tuple[Any, ...]) -> list[dict[str, Any]]:
+    """Model ``SELECT * FROM jobs ...`` reads (dict rows for Job.model_validate)."""
+    if "WHERE id" in query:
+        jid = params[0] if params else None
+        row = jobs.get(jid)
+        return [dict(row)] if row is not None else []
+    # list_jobs: ORDER BY created_at DESC LIMIT %s OFFSET %s
+    ordered = sorted(jobs.values(), key=lambda r: r["created_at"], reverse=True)
+    limit = params[0] if len(params) > 0 else len(ordered)
+    offset = params[1] if len(params) > 1 else 0
+    return [dict(r) for r in ordered[offset : offset + limit]]
+
+
 class FakeCursor:
-    """Async cursor with query-pattern-based responses."""
+    """Async cursor with query-pattern-based responses.
+
+    Dispatch precedence (shared with ``FakeConn.execute``): injected
+    ``responses`` always win, then the in-memory jobs table, then the
+    profiling_results store, then the plain ``rows`` fallback.
+    """
 
     def __init__(
         self,
         rows: list[Any] | None = None,
         responses: dict[str, list[Any]] | None = None,
+        pr_store: list[dict[str, Any]] | None = None,
+        jobs: dict[str, dict[str, Any]] | None = None,
+        conn_queries: list[tuple[str, tuple[Any, ...]]] | None = None,
     ) -> None:
         self.rows = rows or []
         self._responses = responses or {}
+        self._pr_store = pr_store if pr_store is not None else []
+        self._jobs = jobs if jobs is not None else {}
+        # Shared with the owning FakeConn so cursor-path queries (e.g. the
+        # DELETE statements inside delete_job's transaction) are visible to
+        # tests that inspect ``conn.queries``.
+        self._conn_queries = conn_queries
         self.queries: list[tuple[str, tuple[Any, ...]]] = []
         self._last_query = ""
+        self._last_params: tuple[Any, ...] = ()
+        self._row_factory: Any = None
+        self._returning: list[Any] | None = None
 
     async def execute(self, query: str, params: tuple[Any, ...] = ()) -> None:
         self.queries.append((query, params))
+        if self._conn_queries is not None:
+            self._conn_queries.append((query, params))
         self._last_query = query
+        self._last_params = params
+        # Injected responses take precedence; don't mutate any store for them.
+        if any(pattern in query for pattern in self._responses):
+            self._returning = None
+            return
+        if "profiling_results" in query and "INSERT" in query.upper():
+            self._returning = _pr_insert(self._pr_store, list(params))
+        elif _jobs_is_jobs_query(query) and "SELECT *" not in query and _jobs_table_backed(self._jobs, query):
+            self._returning = _jobs_execute(self._jobs, query, params)
+        else:
+            self._returning = None
 
     async def fetchone(self) -> Any | None:
         rows = self._resolve()
@@ -67,8 +321,19 @@ class FakeCursor:
         for pattern, resp_rows in self._responses.items():
             if pattern in self._last_query:
                 return resp_rows
+        if _jobs_is_jobs_query(self._last_query):
+            if "SELECT *" in self._last_query:
+                if self._jobs:
+                    return _jobs_select_star(self._jobs, self._last_query, self._last_params)
+                return self.rows
+            if self._returning is not None:
+                return self._returning
+            # Empty jobs table: fall back to injected default rows.
+            return self.rows
         if "profiling_results" in self._last_query:
-            return []
+            if self._returning is not None:
+                return self._returning
+            return _pr_select(self._pr_store, self._last_query, self._last_params)
         return self.rows
 
     async def __aenter__(self) -> "FakeCursor":
@@ -88,23 +353,27 @@ class FakeConn:
     ) -> None:
         self._rows = rows or []
         self._responses = responses or {}
-        self._cursor = FakeCursor(self._rows, self._responses)
+        self.profiling_results: list[dict[str, Any]] = []
+        self.jobs: dict[str, dict[str, Any]] = {}
         self.queries: list[tuple[str, tuple[Any, ...]]] = []
+        self._cursor = FakeCursor(self._rows, self._responses, self.profiling_results, self.jobs, self.queries)
 
     async def execute(self, query: str, params: tuple[Any, ...] = ()) -> FakeResult:
         self.queries.append((query, params))
-        return FakeResult(self._resolve(query))
-
-    def cursor(self, row_factory: Any = None) -> FakeCursor:
-        return self._cursor
-
-    def _resolve(self, query: str) -> list[Any]:
         for pattern, resp_rows in self._responses.items():
             if pattern in query:
-                return resp_rows
+                return FakeResult(resp_rows)
+        if _jobs_is_jobs_query(query) and "SELECT *" not in query and _jobs_table_backed(self.jobs, query):
+            return FakeResult(_jobs_execute(self.jobs, query, params))
         if "profiling_results" in query:
-            return []
-        return self._rows
+            if "INSERT" in query.upper():
+                return FakeResult(_pr_insert(self.profiling_results, list(params)))
+            return FakeResult(_pr_select(self.profiling_results, query, params))
+        return FakeResult(self._rows)
+
+    def cursor(self, row_factory: Any = None) -> FakeCursor:
+        self._cursor._row_factory = row_factory
+        return self._cursor
 
     @asynccontextmanager
     async def transaction(self) -> AsyncGenerator[None]:
@@ -165,7 +434,7 @@ class TestStopJob:
 
     def test_stop_queued_job_sets_preempted_directly(self) -> None:
         """Stopping a QUEUED job should set it to PREEMPTED without runner.stop."""
-        client, _conn, fake_runner = _make_client(responses={"RETURNING": [("test-id-1", "test-type")]})
+        client, _conn, fake_runner = _make_client(responses={"SELECT status": [("QUEUED",)]})
 
         response = client.post("/jobs/test-id-1/stop")
         assert response.status_code == 202
@@ -287,7 +556,10 @@ class TestRapidStopResume:
 
     def test_stop_then_resume_queued(self) -> None:
         """Stop a QUEUED job, then resume it."""
-        client, _conn, _ = _make_client(responses={"RETURNING": [("test", "test-type")]})
+        # stop reads SELECT status (stoppable); resume succeeds via RETURNING.
+        client, _conn, _ = _make_client(
+            responses={"SELECT status": [("QUEUED",)], "RETURNING": [("test", "test-type")]}
+        )
         resp = client.post("/jobs/test/stop")
         assert resp.status_code == 202
 
@@ -296,7 +568,9 @@ class TestRapidStopResume:
 
     def test_stop_resume_stop_resume(self) -> None:
         """Multiple stop/resume cycles should all succeed."""
-        client, _conn, _ = _make_client(responses={"RETURNING": [("test", "test-type")]})
+        client, _conn, _ = _make_client(
+            responses={"SELECT status": [("QUEUED",)], "RETURNING": [("test", "test-type")]}
+        )
 
         resp = client.post("/jobs/test/stop")
         assert resp.status_code == 202
@@ -312,7 +586,8 @@ class TestRapidStopResume:
 
     def test_double_stop_returns_409(self) -> None:
         """Stopping an already stopped job returns 409."""
-        conn = FakeConn(responses={"RETURNING": [("test", "test-type")]})
+        # First stop sees a stoppable status; second sees PREEMPTED (set below).
+        conn = FakeConn(responses={"SELECT status": [("QUEUED",)]})
         app.router.lifespan_context = _noop_lifespan
         fake_runner = AsyncMock()
         state_module.get_conn = _mock_get_conn(conn)
@@ -360,7 +635,9 @@ class TestRapidStopResume:
 
     def test_ten_stop_resume_cycles(self) -> None:
         """Ten rapid stop/resume cycles should all work."""
-        client, _conn, _ = _make_client(responses={"RETURNING": [("test", "test-type")]})
+        client, _conn, _ = _make_client(
+            responses={"SELECT status": [("QUEUED",)], "RETURNING": [("test", "test-type")]}
+        )
 
         for i in range(10):
             resp = client.post("/jobs/test/stop")
@@ -771,7 +1048,8 @@ class TestComplexLifecycle:
 
     def test_create_then_stop_queued(self) -> None:
         """Create a job, then immediately stop it while still QUEUED."""
-        conn = FakeConn(responses={"RETURNING": [("some-id", "some-type")]})
+        # No response mocks — drive real state through the in-memory jobs table.
+        conn = FakeConn()
         fake_runner = AsyncMock()
         app.router.lifespan_context = _noop_lifespan
         state_module.get_conn = _mock_get_conn(conn)
@@ -789,7 +1067,8 @@ class TestComplexLifecycle:
 
     def test_create_stop_resume_full_cycle(self) -> None:
         """Create -> stop -> resume -> verify runner calls."""
-        conn = FakeConn(responses={"RETURNING": [("some-id", "some-type")]})
+        # No response mocks — drive real state through the in-memory jobs table.
+        conn = FakeConn()
         fake_runner = AsyncMock()
         app.router.lifespan_context = _noop_lifespan
         state_module.get_conn = _mock_get_conn(conn)
@@ -980,12 +1259,15 @@ class TestMultiJobRegression:
         assert fake_runner.dispatch_with_slot.call_count == 6
 
     def test_all_jobs_enqueued_after_submission(self) -> None:
+        # Four independent job types: each starts its own profiling cycle, so
+        # each submission is placed and dispatched under its own instance id.
         client, _conn, fake_runner = _make_rich_client(cluster_nodes=_REAL_CLUSTER_NODES)
 
         job_ids: list[str] = []
-        for _i in range(4):
+        for i in range(4):
             resp = client.post(
-                "/jobs", json={"job_id": "test", "dockerImage": "img:latest", "command": ["python", "train.py"]}
+                "/jobs",
+                json={"job_id": f"test-{i}", "dockerImage": "img:latest", "command": ["python", "train.py"]},
             )
             assert resp.status_code == 201
             job_ids.append(resp.json()["id"])
@@ -1013,32 +1295,22 @@ class TestMultiJobRegression:
         # Allow profiling ALL configs before switching to standard
         sched.configs_per_job = len(all_configs)
 
-        profiled: list[tuple[dict[str, int]]] = []
+        conn = FakeConn()
 
-        class CycleCursor(FakeCursor):
-            def _resolve(self) -> list[Any]:
-                if "SELECT DISTINCT" in self._last_query:
-                    return list(profiled)
-                if "ORDER BY duration_seconds" in self._last_query:
-                    return [(config, 30.0) for (config,) in profiled]
-                if "duration_seconds" in self._last_query:
-                    return [(30.0,)] if profiled else []
-                return []
-
-        class CycleConn(FakeConn):
-            def __init__(self) -> None:
-                super().__init__()
-                self._cursor = CycleCursor()
-
-        conn = CycleConn()
-
+        # Same instance each round; the worker measuring the dispatched cell
+        # between rounds advances the scheduler to the next config until all
+        # are profiled, after which it drops to a standard run.
+        profiled: list[dict[str, int]] = []
         for _i in range(len(all_configs)):
             result = await sched.schedule_job(conn, "job-regression")
             assert result.is_profiling_run is True
             config = result.gpu_config
             assert config is not None
-            assert (config,) not in profiled
-            profiled.append((config,))
+            assert config not in profiled
+            profiled.append(config)
+            for row in conn.profiling_results:
+                if row["duration_seconds"] is None and row["gpu_config"] == config:
+                    row["duration_seconds"] = 30.0
 
         result = await sched.schedule_job(conn, "job-regression")
         assert result.is_profiling_run is False
@@ -1050,54 +1322,33 @@ class TestMultiJobRegression:
         sched = ProfilingScheduler()
         all_configs = sched.get_valid_configurations()
         assert len(all_configs) > 1, "Need multiple configs for this test"
-        assert sched.configs_per_job == 1
+        # Exercise the one-config-per-round limit explicitly (the cluster
+        # default is now 2 configs per round — see DEFAULT_PROFILING_CONFIGS_PER_JOB).
+        sched.configs_per_job = 1
 
-        profiled: list[tuple[dict[str, int]]] = []
-        instance_claims: dict[str, int] = {}  # instance_id → count of claims
+        conn = FakeConn()
 
-        class CycleCursor(FakeCursor):
-            def _resolve(self) -> list[Any]:
-                if "SELECT DISTINCT" in self._last_query:
-                    return list(profiled)
-                if "ORDER BY duration_seconds" in self._last_query:
-                    return [(config, 30.0) for (config,) in profiled]
-                if "instance_id" in self._last_query and "COUNT" in self._last_query:
-                    # _count_profiled_this_round: return count for instance
-                    instance_id = self.queries[-1][1][0] if self.queries else ""
-                    return [(instance_claims.get(instance_id, 0),)]
-                if "duration_seconds" in self._last_query:
-                    return [(30.0,)] if profiled else []
-                return []
-
-            async def execute(self, query: str, params: tuple[Any, ...] = ()) -> None:
-                await super().execute(query, params)
-                # Track INSERT into profiling_results to count per-instance claims
-                if "INSERT INTO profiling_results" in query and params:
-                    instance_id = params[2]  # (id, job_id, instance_id, ...)
-                    instance_claims[instance_id] = instance_claims.get(instance_id, 0) + 1
-
-        class CycleConn(FakeConn):
-            def __init__(self) -> None:
-                super().__init__()
-                self._cursor = CycleCursor()
-
-        conn = CycleConn()
-
-        # Round start: should profile first config
+        # Round start: this instance profiles its one (budget=1) config.
         result = await sched.schedule_job(conn, "job-limit")
         assert result.is_profiling_run is True
         assert result.gpu_config is not None
-        profiled.append((result.gpu_config,))
+        first_config = result.gpu_config
+        # Worker completes the profile for this instance's claim.
+        for row in conn.profiling_results:
+            if row["instance_id"] == "job-limit" and row["duration_seconds"] is None:
+                row["duration_seconds"] = 30.0
 
-        # Same instance, post-profiling: round limit reached → standard run
+        # Same instance, post-profiling: round budget (1) is spent → standard.
         result = await sched.schedule_job(conn, "job-limit")
         assert result.is_profiling_run is False
         assert result.mode == "standard"
 
-        # Different instance: should profile next config (independent round)
+        # Different instance of the same type: independent round → profiles the
+        # next still-unprofiled config.
         result = await sched.schedule_job(conn, "job-limit-2", job_type_id="job-limit")
         assert result.is_profiling_run is True
         assert result.gpu_config is not None
+        assert result.gpu_config != first_config
 
     async def test_multiple_jobs_independent_profiling_cycles(self) -> None:
         """Different jobs have independent profiling state."""
@@ -1117,39 +1368,27 @@ class TestMultiJobRegression:
         ]
         sched = ProfilingScheduler()
 
-        class EmptyCursor(FakeCursor):
-            def _resolve(self) -> list[Any]:
-                return []
-
-        class EmptyConn(FakeConn):
-            def __init__(self) -> None:
-                super().__init__()
-                self._cursor = EmptyCursor()
-
-        conn_a = EmptyConn()
+        # Independent connections → independent profiling stores: A and B each
+        # start a fresh profiling cycle and claim the single valid config.
+        conn_a = FakeConn()
         result_a = await sched.schedule_job(conn_a, "job-A")
         assert result_a.is_profiling_run is True
 
-        conn_b = EmptyConn()
+        conn_b = FakeConn()
         result_b = await sched.schedule_job(conn_b, "job-B")
         assert result_b.is_profiling_run is True
 
-        class ProfiledCursor(FakeCursor):
-            def _resolve(self) -> list[Any]:
-                if "SELECT DISTINCT" in self._last_query:
-                    return [({"A40": 1},)]
-                if "ORDER BY duration_seconds" in self._last_query:
-                    return [({"A40": 1}, 25.0)]
-                if "duration_seconds" in self._last_query:
-                    return [(25.0,)]
-                return []
-
-        class ProfiledConn(FakeConn):
-            def __init__(self) -> None:
-                super().__init__()
-                self._cursor = ProfiledCursor()
-
-        conn_c = ProfiledConn()
+        # C's type already has its only config measured → standard, no profiling.
+        conn_c = FakeConn()
+        conn_c.profiling_results.append(
+            {
+                "job_id": "job-C",
+                "instance_id": "measured-job-C",
+                "gpu_config": {"A40": 1},
+                "node_id": None,
+                "duration_seconds": 25.0,
+            }
+        )
         result_c = await sched.schedule_job(conn_c, "job-C")
         assert result_c.is_profiling_run is False
 
@@ -1164,10 +1403,18 @@ class TestMultiJobRegression:
         fake_runner.stop.assert_called_once()
 
     def test_resume_preserves_profiling_and_profiles_next(self) -> None:
-        client, conn, fake_runner = _make_rich_client(
-            responses={"RETURNING": [("resume-job", "lstm-type")]},
-            cluster_nodes=_REAL_CLUSTER_NODES,
-        )
+        client, conn, fake_runner = _make_rich_client(cluster_nodes=_REAL_CLUSTER_NODES)
+        # Seed a stopped job to resume; resume must NOT wipe profiling results.
+        conn.jobs["resume-job"] = {
+            "id": "resume-job",
+            "job_id": "lstm-type",
+            "status": "PREEMPTED",
+            "created_at": datetime.now(UTC),
+            "updated_at": datetime.now(UTC),
+            "assigned_node": None,
+            "assigned_gpu_config": None,
+            "is_profiling_run": False,
+        }
 
         resp = client.post("/jobs/resume-job/resume")
         assert resp.status_code == 202
@@ -1202,9 +1449,11 @@ class TestSchedulerGpuAccounting:
         sched = ProfilingScheduler()
         conn = FakeConn(
             responses={
-                "assigned_node": [
-                    ("gpu-node", {"A40": 1}),
-                    ("gpu-node", {"A40": 1}),
+                # key matches only the jobs SELECT, not the cross-instance
+                # profiling_results JOIN (which must return no claims here)
+                "FROM jobs": [
+                    ("j", "gpu-node", {"A40": 1}),
+                    ("j", "gpu-node", {"A40": 1}),
                 ]
             }
         )
@@ -1219,8 +1468,8 @@ class TestSchedulerGpuAccounting:
         conn = FakeConn(
             responses={
                 "assigned_node": [
-                    ("gpu-node", {"A40": 1}),
-                    ("gpu-node", {"A40": 1}),
+                    ("j", "gpu-node", {"A40": 1}),
+                    ("j", "gpu-node", {"A40": 1}),
                 ],
             }
         )
@@ -1233,7 +1482,7 @@ class TestSchedulerGpuAccounting:
         sched = ProfilingScheduler()
         conn = FakeConn(
             responses={
-                "assigned_node": [("gpu-node", {"A40": 1})],
+                "assigned_node": [("j", "gpu-node", {"A40": 1})],
             }
         )
         result = await sched.schedule_job(conn, "new-job", job_type_id="lstm-small")
