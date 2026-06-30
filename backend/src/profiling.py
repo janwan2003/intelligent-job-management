@@ -21,6 +21,12 @@ from src.utils.gpu import config_key
 
 logger = logging.getLogger(__name__)
 
+# A single node holds only a handful of GPUs, hence a handful of concurrent
+# jobs, so the exact 2^n victim-subset scan in ``try_preempt_for_profile`` is
+# cheap.  Cap defensively so a misconfigured node can never trigger a blowup;
+# at the cluster's scale this is never reached.
+_PREEMPT_CANDIDATE_CAP = 16
+
 
 class ProfilingScheduler:
     """Incremental profiling strategy scheduler.
@@ -288,36 +294,76 @@ class ProfilingScheduler:
             )
         return deleted
 
+    @staticmethod
+    def _cheapest_cover(
+        ranked: list[tuple[str, Any, Any, dict[str, int] | None]],
+        need: dict[str, int],
+    ) -> list[str]:
+        """Smallest feasible victim subset over a cheapest-first ranking.
+
+        ``ranked`` lists candidate victims ordered cheapest-to-evict first
+        (priority ascending, then progress ascending) as
+        ``(id, priority, progress, gpu_config)`` tuples.  Returns the victim
+        ids of the minimum bitmask whose combined GPUs cover every entry of
+        ``need`` (empty list if no subset covers).
+
+        Scoring each subset as a bitmask over the ranking and taking the
+        smallest feasible integer means a higher-ranked (more important)
+        victim is chosen only when no lower-ranked set covers, and no redundant
+        victim is ever included — dropping one would yield a smaller feasible
+        bitmask.  See ``try_preempt_for_profile`` for the rationale.
+        """
+        ranked = ranked[:_PREEMPT_CANDIDATE_CAP]
+        for mask in range(1, 1 << len(ranked)):
+            freed: dict[str, int] = dict.fromkeys(need, 0)
+            for i, (_cid, _prio, _prog, cfg) in enumerate(ranked):
+                if not mask & (1 << i):
+                    continue
+                for gt, cnt in (cfg or {}).items():
+                    if gt in freed:
+                        freed[gt] += int(cnt)
+            if all(freed[gt] >= need[gt] for gt in need):
+                return [str(ranked[i][0]) for i in range(len(ranked)) if mask & (1 << i)]
+        return []
+
     async def try_preempt_for_profile(
         self,
         conn: psycopg.AsyncConnection[Any],
         instance_id: str,
         type_id: str,
     ) -> tuple[list[str], str | None, dict[str, int] | None]:
-        """Find the minimum set of running jobs to evict so this unprofiled
-        config can fit on a profiling-capable node.
+        """Find the cheapest *minimal* set of running jobs to evict so this
+        unprofiled config can fit on a profiling-capable node.
 
         Used by the scheduler loop's Phase 1c when a config is still
         unprofiled for a job type and the cluster has no idle slot big enough
-        for it.  The user's policy is "profiling always wins": evict the
-        cheapest set of low-priority non-profiling jobs on a node whose
-        *total* capacity could host the target config, then let the next
-        scheduling round dispatch the profile run into the freed slots.
+        for it.  The policy is "profiling always wins": evict low-priority
+        non-profiling jobs on a node whose *total* capacity could host the
+        target config, then let the next scheduling round dispatch the profile
+        run into the freed slots.
 
         Returns the **list** of victim instance_ids (possibly empty if no
         feasible eviction).  Multi-victim is required when the target config
         wants more GPUs than any single victim holds — e.g. profiling
         ``A40×2`` while both A40 slots on polimi-gpu are held by separate
-        ``A40×1`` jobs needs both jobs evicted.  The earlier single-victim
-        version was a silent ceiling on profile coverage: 2-GPU configs
-        could never claim slots once 1-GPU configs had each grabbed one.
+        ``A40×1`` jobs needs both jobs evicted.
+
+        Victim selection is an exact minimum-cost cover, not a one-pass
+        greedy.  Candidates are ranked cheapest-first (priority ascending,
+        then progress ascending) and every subset that covers the shortfall
+        is scored as a bitmask over that ranking; the **smallest feasible
+        bitmask** wins.  Minimising the integer (a) spares the most important
+        work — a higher-ranked victim is chosen only when no lower-ranked set
+        covers — and (b) never includes a redundant victim, because dropping
+        one lowers the bitmask.  This fixes the old greedy, which could evict a
+        cheap small job and *then* a larger one that alone would have sufficed,
+        throwing away the small job's progress for nothing.
 
         HARD RULES (unchanged):
         - Never evict ``status='PROFILING'`` rows (the filter is
           ``status='RUNNING'`` only; defensive guard in
           ``_preempt_and_release`` repeats the check).
         - Only consider nodes whose *total* capacity could fit the target.
-        - Pick the cheapest set: lowest priority first, then least progress.
         """
         all_configs = self.get_valid_configurations()
         profiled = await self.get_profiled_configs(conn, type_id)
@@ -354,21 +400,13 @@ class ProfilingScheduler:
                 )
                 candidates = await cur.fetchall()
 
-            chosen: list[str] = []
-            freed = dict.fromkeys(need, 0)
-            for cid, _prio, _prog, cfg in candidates:
-                cfg = cfg or {}
-                # Skip victims that hold no GPU of any still-needed type.
-                if not any(cfg.get(gt, 0) > 0 and freed[gt] < need[gt] for gt in need):
-                    continue
-                chosen.append(str(cid))
-                for gt, cnt in cfg.items():
-                    if gt in freed:
-                        freed[gt] += int(cnt)
-                if all(freed[gt] >= need[gt] for gt in need):
-                    break
-
-            if all(freed[gt] >= need[gt] for gt in need):
+            # Candidates arrive cheapest-first; pick the smallest feasible
+            # victim subset (see _cheapest_cover / the docstring above).
+            chosen = self._cheapest_cover(
+                [(str(cid), prio, prog, cfg) for cid, prio, prog, cfg in candidates],
+                need,
+            )
+            if chosen:
                 logger.info(
                     "Profile-preempt: evicting %d victim(s) on %s to free %s for unprofiled %s (target=%s)",
                     len(chosen),
