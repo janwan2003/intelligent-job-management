@@ -1,18 +1,32 @@
-These two end-to-end scenarios validate that IJM executes the~optimiser's
-plan correctly across the~full job lifecycle: it~profiles each new job type,
-places jobs on~single- or~dual-GPU bundles, preempts the~cheapest work
-to~admit an~urgent job, and~migrates a~preempted job across nodes~---
-resuming its checkpoint across torch versions~--- all while keeping its slot
-accounting coherent.  Both runs are driven only by~\texttt{POST /jobs} on~the
-two-node cluster (\texttt{matemagician}: 2$\times$QuadroP600;
-\texttt{polimi-gpu}: 2$\times$A40).  Placement decisions come from~the~external
-GPUspb optimiser (\texttt{method=RG}), which IJM consumes but~does not
-implement; Appendix~\ref{app:proxy} documents that proxy's cost model and~a
-\emph{horizon-myopia} it~exhibits~--- which explains why an~urgent job is
-sometimes parked on~slow-but-free hardware~--- but~that is~a~property of~the
-upstream optimiser, orthogonal to~IJM's own correctness.
+IJM is~verified at~two complementary levels, both covered in~this chapter:
+fast \emph{unit and~invariant tests} that~drive the~control plane's atomic
+claims and~recovery paths against \emph{injected} faults, and~two
+\emph{end-to-end scenarios} that~run the~full job lifecycle on~the~real
+two-node cluster.  Together they show that~IJM realises the~optimiser's plan
+correctly and~keeps its slot accounting coherent under both~normal and~adverse
+conditions.
 
-\section{Setup: cluster and job types}
+\section{Test strategy}
+\label{sec:test-strategy}
+
+The~two levels answer different questions.  The~\emph{unit and~invariant tests}
+(\S\ref{sec:unit-tests}) ask whether each concurrency invariant of
+Chapter~\ref{ch:architecture} survives the~specific race or~failure it~is~meant
+to~guard against~--- two~claims racing one~row, a~dropped slot-freed
+\texttt{NOTIFY}, an~orphaned dispatch~--- by~injecting that~fault directly
+against a~live database and~asserting the~outcome.  The~\emph{end-to-end
+scenarios} (\S\ref{sec:e2e-scenarios}) ask whether the~assembled system
+realises a~real optimiser plan across the~whole lifecycle: profile, place
+on~one~or~two~GPUs, preempt, and~migrate across nodes~--- resuming checkpoints
+across torch versions~--- all driven only by~\texttt{POST /jobs} on~the~two-node
+cluster (\texttt{matemagician}: 2$\times$QuadroP600; \texttt{polimi-gpu}:
+2$\times$A40).  Throughout, the~claim is~\emph{coherence with~the~optimiser},
+not~optimality of~the~plan itself: placement decisions come from~the~external
+GPUspb optimiser (\texttt{method=RG}), which IJM consumes but~does
+not~implement, and~Appendix~\ref{app:proxy} documents a~\emph{horizon-myopia}
+in~that~proxy~--- orthogonal to~IJM's own correctness.
+
+\section{Cluster and job-type setup}
 \label{sec:e2e-setup}
 
 The cluster is~two profiling-capable nodes, four GPU slots total:
@@ -54,13 +68,103 @@ dominates).  These are the~per-epoch costs IJM measures and~the~optimiser
 consumes.}\label{tab:e2e-bundle-costs}
 \end{table}
 
-\section{Features under test}
+\section{Unit and~invariant tests}
+\label{sec:unit-tests}
+
+\subsection{The backend test suite}
+
+The~control plane carries a~pytest suite of~over~150 tests under
+\texttt{backend/tests/} covering the~data model and~request validation, the
+cluster and~cost-table loaders, the~scheduling and~profiling logic (including
+the~minimum-cost profile-preempt cover), the~\texttt{NodeSlots} semaphore,
+and~the~job-lifecycle endpoints.  Most run against in-memory fakes and~need
+no~services; the~few that~must observe real row-locking
+(\texttt{test\_sql\_integration}, \texttt{test\_fault\_injection}) connect to~a
+live PostgreSQL and~\emph{skip} cleanly when none is~reachable, so~the~suite
+is~green offline (\texttt{cd backend \&\& uv run pytest}) and~exhaustive in~CI
+against the~compose stack.  The~rest of~this section covers the~fault-injection
+layer, which turns the~concurrency invariants of~Chapter~\ref{ch:architecture}
+from~asserted prose into~observed recovery.
+
+\subsection{Invariants under injected faults}
+\label{sec:fault-injection}
+
+These tests validate the~other half of~correctness~--- that the~control
+plane's concurrency invariants (Chapter~\ref{ch:architecture}) hold under
+\emph{induced} faults, not~just on~the~happy path~--- at~two levels.  At~the
+\emph{assertion} level, a~fault-injection suite drives the~actual
+conditional-\texttt{UPDATE} claims and~recovery functions against a~live
+PostgreSQL: it~races two placement claims for~one row, races two worker
+Phase-1 claims, clears an~assignment underneath an~in-flight claim, fires the
+stuck-dispatch reaper at~an~orphaned row, and~forces the~in-memory slot count
+to~disagree with~the~database in~both directions.  At~the~\emph{run} level,
+a~live API instance was~driven through the~same divergence while \texttt{GET
+/admin/slots} was~polled: Figure~\ref{fig:fault-drift} shows the~drift
+heartbeat reconciling in~real time~--- acquiring when the~database knows of
+more occupied slots than memory does, releasing leaked permits when it~knows
+of~fewer~--- with~no~oversubscription at~any point.
+Table~\ref{tab:fault-evidence} maps each invariant to~the~fault that~exercises
+it and~the~observed outcome, turning the~``coherent slot accounting'' row of
+Table~\ref{tab:e2e-features} from~an~incidental scenario observation into
+a~direct, repeatable test.
+
+\begin{table}[H]\centering\scriptsize\setlength{\tabcolsep}{3pt}
+\renewcommand{\arraystretch}{1.2}%
+\begin{tabularx}{\textwidth}{@{}>{\raggedright\arraybackslash}p{2.9cm} >{\raggedright\arraybackslash}X >{\raggedright\arraybackslash}X >{\raggedright\arraybackslash}p{3.5cm}@{}}\toprule
+Invariant & Fault injected & Observed outcome & Checked by \\\midrule
+No double placement (atomic claim) & two optimiser applies race one \textsc{queued} row & exactly one claim wins; the~other matches zero rows & \texttt{test\_optimizer\_\newline claim\_is\_exclusive} \\\addlinespace
+No duplicate container (worker Phase~1) & two dispatch claims race the~same row & exactly one container starts & \texttt{test\_worker\_phase1\_\newline claim\_is\_exclusive} \\\addlinespace
+No phantom \textsc{running} (reaper/claim race) & reaper clears \texttt{assigned\_node} during a~claim & the~claim misses; row stays \textsc{queued}, no~slot held & \texttt{test\_reaper\_clear\_\newline makes\_worker\_claim\_miss} \\\addlinespace
+Leaked slot reclaimed (stuck-dispatch reaper) & orphaned \textsc{queued}+assigned row, no~live task & assignment reset; permit reclaimed by~drift-recover & \texttt{test\_reaper\_resets\_\newline orphaned\_assignment} \\\addlinespace
+Database is~authoritative (drift reconcile, both directions) & in-memory \texttt{used} forced $\neq$ DB count & heartbeat acquires/releases to~the~DB count; idempotent & \texttt{test\_drift\_recovers\_\newline \{leaked,missed\}} \\\addlinespace
+Capacity never inflates (over-release backstop) & one kill emits two slot-freed \textsc{notify}s & second release capped and~flagged; available\,$\le$\,total & \texttt{test\_double\_release\_\newline is\_bounded\_and\_flagged} \\\bottomrule
+\end{tabularx}
+\caption{Each control-plane invariant, the~fault injected to~exercise it,
+and~the~observed outcome.  All tests run real SQL against PostgreSQL
+(\texttt{backend/tests/test\_fault\_injection.py}; the~last row lives
+in~\texttt{test\_node\_slots.py}) and~skip cleanly when no~database
+is~reachable, so they run in~CI against the~compose stack and~stay green
+offline.}\label{tab:fault-evidence}
+\end{table}
+
+\begin{figure}[H]\centering
+\resizebox{0.9\linewidth}{!}{\input{Files/chart_faults.tex}}
+\caption{The~drift heartbeat reconciling an~injected divergence, from~a~live
+API run (\texttt{IJM\_DRIFT\_HEARTBEAT\_S}{=}2, one 2-GPU node).  The~database
+count (\textbf{solid}) is~the~authority; the~in-memory permit count
+(\textbf{dashed}) follows it.  Shaded bands are~the~windows where the~two
+disagree (\texttt{drift}{=}true).  \textbf{B}: two \textsc{running} rows the~API
+never acquired are~inserted (an~API restart with~an~in-flight container, or~the
+acquire-side of~a~lost event); the~heartbeat \emph{acquires} ($+1$,~$+1$).
+\textbf{C}: both rows complete without~a~\texttt{ijm\_slot\_freed} \textsc{notify}
+(the~tunnel-reset case); the~heartbeat \emph{releases} the~two leaked permits
+($-2$).  No~\texttt{SLOT-OVERSUB}/\texttt{SLOT-OVERRELEASE} line appears in~the
+log at~any point.  Artifacts under
+\texttt{documentation/report/e2e\_runs/fault\_injection/}.}\label{fig:fault-drift}
+\end{figure}
+
+These cover the~slot-conservation, atomic-claim, and~drift-reconcile invariants.
+The~worker-side \emph{exactly-once} release~--- the~Phase-4 /
+\texttt{\_persist\_stop} mutual exclusion of~\S\ref{sec:worker-lifecycle}~---
+and~the~full cross-node migration path remain exercised by~the~end-to-end scenarios (\S\ref{sec:e2e-scenarios})
+rather than these unit faults; the~table's last row verifies only the
+API-side \emph{backstop} that~caps an~over-release, not~that mutual exclusion
+itself.
+
+\section{End-to-end scenarios}
+\label{sec:e2e-scenarios}
+
+Both scenarios below are~one end-to-end run each, driven only by~\texttt{POST
+/jobs} on~the~cluster of~\S\ref{sec:e2e-setup}; \S\ref{sec:e2e-features} lists
+the~capabilities they~exercise before the~per-scenario walkthroughs.
+
+\subsection{Features under test}
 \label{sec:e2e-features}
 
 IJM's job is~to~realise the~optimiser's plan~--- profile, place, preempt,
 migrate~--- correctly and~atomically.  Table~\ref{tab:e2e-features} lists the
 capabilities the~two scenarios exercise and~the~observable signal for~each;
-the~per-scenario sections then walk the~timelines that produce those signals.
+the~per-scenario subsections then walk the~timelines that produce those signals.
 
 \begin{table}[H]\centering\small
 \begin{tabularx}{\textwidth}{@{}l l X@{}}\toprule
@@ -77,8 +181,7 @@ signal for~each.  Each scenario is~one end-to-end run driven only by~\texttt{POS
 /jobs}.}\label{tab:e2e-features}
 \end{table}
 
-% ---------------------------------------------------------------------------
-\section{Scenario 1 --- single type, under-subscribed}
+\subsection{Scenario 1 --- single type, under-subscribed}
 \label{sec:e2e-s1}
 
 We submit five \texttt{cnn\_big} instances (Table~\ref{tab:e2e-s1-jobs}): four
@@ -147,8 +250,7 @@ The~one decision that~looks odd~--- URGENT on~slow P600~--- is~the~upstream
 proxy's choice, not~a~placement IJM made; it~realised that~plan faithfully and
 then migrated URGENT onto~A40 the~moment a~slot freed.
 
-% ---------------------------------------------------------------------------
-\section{Scenario 2 --- two types, full cluster}
+\subsection{Scenario 2 --- two types, full cluster}
 \label{sec:e2e-s2}
 
 Scenario~2 fills the~cluster and~adds a~second type (Table~\ref{tab:e2e-s2-jobs}):
@@ -214,7 +316,6 @@ choices themselves (P600$\times$1, evict one) follow the~proxy's
 cost minimisation (Appendix~\ref{app:proxy}); IJM's contribution is~realising
 them without dropping a~slot or~losing progress.
 
-% ---------------------------------------------------------------------------
 \section{Reproducibility}
 
 All figures and~tables derive from the~2026-06-25 run snapshots committed
@@ -234,4 +335,11 @@ under \texttt{documentation/report/e2e\_runs/2026-06-25/\{s1,s2\}/}:
   \item \textbf{Drivers}: \texttt{infra/e2e\_scenario.sh},
     \texttt{infra/e2e\_scenario\_2types.sh}; slots at~\texttt{GET /admin/slots};
     API logs via \texttt{docker logs ijm-api} (stack up~by~\texttt{infra/ijm up}).
+  \item \textbf{Fault-injection evidence} (\S\ref{sec:fault-injection}):
+    the~invariant tests in~\texttt{backend/tests/test\_fault\_injection.py}
+    and~the~live drift-reconcile run under
+    \texttt{documentation/report/e2e\_runs/fault\_injection/}
+    (\texttt{run.py}, \texttt{slots\_timeline.csv}, \texttt{api.log};
+    Figure~\ref{fig:fault-drift} generated by~\texttt{infra/generate\_fault\_chart.py}).
 \end{itemize}
+

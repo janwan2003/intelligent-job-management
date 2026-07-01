@@ -152,15 +152,42 @@ first run will be~a~profile or~a~standard execution.
 \end{lstlisting}
 
 \subsection{Job image requirements (the trainer contract)}
+\label{sec:job-contract}
 
-The fields above describe what the~API \emph{stores}; they say nothing about
-what the~container must \emph{do}.  Any image is~schedulable, but it~becomes
-\emph{stoppable, resumable, and~migratable} only if~its entrypoint honours
-a~small contract.  Every training image in~this project satisfies it by
-subclassing \texttt{BaseTrainer} (\texttt{runtime/base.py}) and~implementing
-just three hooks~--- \texttt{\_create\_model}, \texttt{\_load\_datasets},
-and~\texttt{\_preprocess\_batch}; the~base class supplies everything in
-Table~\ref{tab:job-contract}, whose mechanism is~detailed
+The fields above describe what the~API \emph{stores}; this subsection is~the
+\emph{specification} a~container author implements so~a~job is~not~merely
+runnable but~\emph{stoppable, resumable, and~migratable}.  A~job image is~a
+container whose entrypoint instantiates a~subclass of~\texttt{BaseTrainer}
+(\texttt{runtime/base.py}) and~calls \texttt{.train()}; subclassing \emph{is}
+the~contract, and~in~return the~stop/resume/migrate machinery
+of~\S\ref{sec:checkpoints} comes for~free.
+
+\paragraph{What you implement.}  A~subclass provides up~to~three hooks
+(Table~\ref{tab:trainer-hooks}).  For~a~dataset bundled with~the~runtime you
+implement only \texttt{\_create\_model}: subclass one of~the~ready-made
+mixins~--- \texttt{MNISTTrainer}, \texttt{MNISTSequenceTrainer}, or
+\texttt{CIFAR10Trainer}~--- which already supply the~other two.
+
+\begin{table}[H]
+\centering\small
+\begin{tabularx}{\textwidth}{@{}l >{\raggedright\arraybackslash}X@{}}
+\toprule
+\textbf{Hook (you override)} & \textbf{Signature and~contract} \\
+\midrule
+\texttt{\_create\_model}     & \texttt{(self) -> nn.Module}.  Return the~model.  \texttt{BaseTrainer} moves it~to~the~device and, on~a~multi-GPU node, wraps it~in~\texttt{nn.DataParallel} automatically. \\
+\addlinespace
+\texttt{\_load\_datasets}    & \texttt{(self) -> tuple[Dataset, Dataset]}.  Return \texttt{(train, test)} \emph{datasets}~--- not~\texttt{DataLoader}s; \texttt{BaseTrainer} builds the~loaders itself (train: \texttt{BATCH\_SIZE}, shuffled, \texttt{drop\_last}; test: \texttt{min(256, BATCH\_SIZE)}). \\
+\addlinespace
+\texttt{\_preprocess\_batch} & \texttt{(self, images, labels) -> tuple[Tensor, Tensor]}.  Reshape or~move a~batch before the~forward pass (e.g.\ \texttt{images.squeeze(1)} to~feed an~LSTM); return \texttt{(inputs, labels)}. \\
+\bottomrule
+\end{tabularx}
+\caption{The~three trainer hooks.  With~a~bundled dataset only the~first
+is~required~--- the~mixin supplies the~other two.}\label{tab:trainer-hooks}
+\end{table}
+
+\paragraph{What you get for~free.}  In~exchange for~honouring the~hooks,
+\texttt{BaseTrainer} supplies the~behaviours the~scheduler relies
+on~(Table~\ref{tab:job-contract}); the~mechanism behind each is~detailed
 in~\S\ref{sec:checkpoints}.
 
 \begin{table}[H]
@@ -181,6 +208,70 @@ tolerate \texttt{SIGKILL} & no~signal handler~--- a~kill just ends the~process &
 but is~not~stoppable or~resumable: a~kill loses all~progress and~the~scheduler
 cannot migrate it.}\label{tab:job-contract}
 \end{table}
+
+\paragraph{Scope of~the~built-in loop.}  The~supplied loop assumes
+\emph{supervised single-label classification}: it~pairs an~\texttt{Adam}
+optimiser ($\text{lr}=10^{-3}$) with~\texttt{CrossEntropyLoss}, feeds each
+batch as~\texttt{(inputs, labels)}, and~scores top-1 accuracy.  A~workload that
+fits this shape needs only the~hooks above.  One that~does~not~--- a~regression
+target, a~custom loss, a~language-model objective~--- overrides \texttt{train}
+or~\texttt{\_train\_one\_epoch} while still inheriting the~checkpoint and
+progress contract, so it~stays stoppable and~resumable.  An~image that~bypasses
+\texttt{BaseTrainer} altogether still runs, but~forfeits those guarantees.
+
+\paragraph{A~complete job.}  The~following \texttt{train.py} is~a~full,
+runnable IJM job in~its entirety~--- a~CNN on~CIFAR-10, using the~bundled
+mixin so only \texttt{\_create\_model} is~written:
+
+\begin{lstlisting}[language=Python, numbers=none]
+# train.py
+import torch.nn as nn
+from base import CIFAR10Trainer        # bundled dataset mixin
+
+class Net(nn.Module):
+    def __init__(self, num_classes=10):
+        super().__init__()
+        self.body = nn.Sequential(
+            nn.Conv2d(3, 32, 3, padding=1), nn.ReLU(),
+            nn.AdaptiveAvgPool2d(1))
+        self.head = nn.Linear(32, num_classes)
+
+    def forward(self, x):
+        return self.head(self.body(x).flatten(1))
+
+class Trainer(CIFAR10Trainer):         # data + batch wiring inherited
+    def _create_model(self) -> nn.Module:
+        return Net()
+
+if __name__ == "__main__":
+    Trainer().train()   # stop/resume/progress: automatic
+\end{lstlisting}
+
+\paragraph{Packaging and~runtime inputs.}  The~image bundles \texttt{base.py}
+beside the~script and~runs it~as~the~entrypoint:
+
+\begin{lstlisting}[language={}, numbers=none]
+FROM python:3.13-slim
+RUN pip install torch torchvision
+COPY base.py train.py ./
+CMD ["python", "-u", "train.py"]
+\end{lstlisting}
+
+At~dispatch the~worker sets \texttt{EPOCHS\_TOTAL} and~\texttt{BATCH\_SIZE}
+(a~profile run passes \texttt{profilingEpochsNo} as~\texttt{EPOCHS\_TOTAL},
+Table~\ref{tab:job-create}) and~bind-mounts the~per-job checkpoint directory
+at~the~default \texttt{CHECKPOINT\_DIR}\,=\,\texttt{/checkpoints}.
+The~legacy P600 node, pinned to~CUDA~10.1 / PyTorch~1.5.1, is~served by~a
+parallel \texttt{Dockerfile.legacy} selected through \texttt{IMAGE\_TAG\_OVERRIDE}
+(\S\ref{sec:checkpoints}); the~only constraint this~adds is~that~the~trainer
+module must \emph{import} under Python~3.7.
+
+\paragraph{Datasets.}  The~bundled mixins fetch MNIST and~CIFAR-10 into~the
+shared cache at~\texttt{/runs/data} (Table~\ref{tab:shared-fs}), staged once
+and~mounted read-only on~every node.  A~custom dataset must currently be~baked
+into~the~image or~added to~that~shared cache: the~\texttt{directoryToMount}
+submission field is~retained for~ANDREAS compatibility but~is~not~bind-mounted
+by~the~present worker.
 
 \section{Full API overview}
 

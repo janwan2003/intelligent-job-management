@@ -1,0 +1,9 @@
+[
+  {
+    "id": "polimi-gpu",
+    "isForProfiling": true,
+    "workerUrl": "http://127.0.0.1:59999",
+    "cost": 0.30,
+    "resources": [{ "gpu_type": "A40", "gpu_count": 2 }]
+  }
+]

@@ -166,6 +166,8 @@ Wake-ups are coalesced through a~single
 five~seconds, so the~cluster has time to~apply the~previous plan before
 the~next one is~computed.
 
+\subsection{The four phases of a~scheduling pass}
+
 The pass runs four phases, all guarded by~a~single
 \texttt{schedule\_lock} except the~optimiser's HTTP call (phase~2),
 which is~made outside the~lock so its timeout cannot stall concurrent
@@ -237,6 +239,8 @@ unmeasured configuration remains~--- \texttt{is\_profiling\_run} is~derived
 as~\texttt{FALSE} and~the~row falls through to~the~optimiser for~standard
 placement.
 
+\subsection{Dispatching the~plan and~releasing slots}
+
 Once the~lock is~released, the~plan is~executed asynchronously: each
 preempt and~each dispatch runs as~an~independent task, so a~slow stop
 on~one node never delays placements on~another.  Before launching a~job,
@@ -263,6 +267,8 @@ still executing.  Only that case suppresses the~re-plan, and~doing so
 is~safe because independent watchdogs~--- a~drift heartbeat, the
 stuck-dispatch reaper, and~a~periodic queue watcher~--- re-wake the
 scheduler if~a~planned dispatch ever fails to~land.
+
+\subsection{Walking a~job through the~pipeline}
 
 The figures follow a~job through that~lifecycle in~order:
 Figure~\ref{fig:seq-submit} submission and~the~first (profiling) pass,
@@ -658,6 +664,13 @@ a~caller bug~--- a~fail-loud assertion guarding the~invariant, not~the~primary
 mechanism.  Profile-preempt (phase~4) likewise considers only
 \texttt{status='RUNNING'} victims, never \texttt{PROFILING} ones.  Only an
 explicit user stop can~cancel an~in-flight measurement.
+
+These three invariants are~not only defended in~code but~verified empirically
+under induced faults: Chapter~\ref{ch:e2e} (\S\ref{sec:fault-injection}) races
+the~placement and~Phase-1 claims, collides the~reaper with~an~in-flight claim,
+and~forces the~in-memory slot count to~diverge from~the~database in~both
+directions, then~shows the~drift heartbeat reconciling in~real time with~no
+oversubscription.
 
 \section{Stoppable, resumable, cross-node training}\label{sec:checkpoints}
 

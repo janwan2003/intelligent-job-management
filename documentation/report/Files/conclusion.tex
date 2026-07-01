@@ -38,9 +38,12 @@ The reference deployment uses GPUspb's \texttt{method=RG}, whose proxy
 is~horizon-myopic; the~deadline-aware \texttt{method=PR} variant
 (Path Relinking~\cite{filippini2023pathrelinking}) exists upstream but
 is~not the~default and~has not been validated end
-to~end against the~IJM control plane.  Worker-side coverage
-is~almost entirely end-to-end~--- \texttt{worker/tests/} holds only
-a~regression test for~the~per-epoch profiler measurement; only two GPU
+to~end against the~IJM control plane.  The~control-plane invariants are~now
+backed by~a~real-SQL fault-injection suite (\S\ref{sec:fault-injection}),
+but~worker-side coverage is~still almost entirely end-to-end~---
+\texttt{worker/tests/} holds only a~regression test for~the~per-epoch profiler
+measurement, so the~worker's exactly-once release and~the~cross-node migration
+path are~validated only by~the~scenarios; only two GPU
 generations (A40 and~QuadroP600) have been validated; and~the~cluster
 used throughout Chapter~\ref{ch:e2e} is~two nodes with~four GPU slots
 in~total, so the~scaling properties of~the~four-phase pass at~tens
