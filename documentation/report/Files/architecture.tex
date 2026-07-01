@@ -625,33 +625,25 @@ measurement is~shared by~every subsequent instance of~that type.
 
 The control plane relies on~three invariants, each defended in~code.
 
-\textbf{No GPU oversubscription.}  \texttt{NodeSlots} is~a~\emph{counting}
-semaphore per~node: its capacity is~the~node's total GPU count, and~every
-dispatch calls \texttt{acquire(node\_id,\,n)} to~reserve \texttt{n} permits.
-It~bounds \emph{how many} GPUs are concurrently in~use on~a~node, not~\emph{which}
-ones~--- the~concrete physical GPU indices a~container binds to~are chosen by~the
-worker at~launch (Phase~2, distinct indices), not~by~\texttt{acquire}.  Matching
-the~\emph{type} of~GPU is~handled upstream, at~placement: the~optimiser and~the
-\texttt{ProfilingScheduler} only put a~\texttt{(node, gpu\_config)} where that
-node has~free GPUs of~that type, computed per~type from~the~database
-(\texttt{get\_node\_gpu\_usage}).  In~the~supported cluster each node exposes
-a~single GPU type, so the~per-node permit count and~the~per-type free capacity
-coincide; a~mixed-type node would rely on~that placement check, not~on~the
-counting semaphore, to~avoid per-type oversubscription.  The~semaphore is~not~a
-second source of~truth~--- the~database is, and~the~atomic row claim of~the~next
-invariant already stops two~containers sharing one~\emph{job}; it~earns its~keep
-because neither of~those bounds \emph{per-node} concurrency once the~schedule
-lock is~released and~dispatch tasks run in~parallel.  \texttt{acquire} caps
-concurrent dispatches at~the~node's capacity and, crucially, lets a~dispatch
-\emph{block} until a~slot frees~--- a~migrate waiting for~an~in-flight preempt
-to~vacate its~GPU~--- which a~stateless database check cannot do~without polling.
-On~startup the
-semaphores are reconciled from~the~database: only rows in~\textsc{running}
-or~\textsc{profiling} pre-acquire their permits, since a~\textsc{queued}
-row with~an~assigned node has~no~live container yet (its dispatch task
-acquires the~permit just before posting \texttt{/run}).  A~periodic drift
-watcher recomputes the~authoritative count at~the~\texttt{IJM\_DRIFT\_HEARTBEAT\_S}
-cadence (default 15~s) and~corrects any divergence.
+\textbf{No GPU oversubscription.}  Each node has a~counting semaphore
+(\texttt{NodeSlots}) sized to~its GPU count, and~every dispatch calls
+\texttt{acquire(node\_id,\,n)} to~take \texttt{n} permits.  It~limits \emph{how
+many} GPUs run at~once on~a~node, not~\emph{which}~--- the~worker picks the
+physical indices at~launch.  GPU \emph{type} is~matched earlier, at~placement:
+the~optimiser and~the~\texttt{ProfilingScheduler} only target a~node with~free
+GPUs of~the~right type, read from~the~database (\texttt{get\_node\_gpu\_usage}).
+Each supported node exposes one type, so the~permit count and~the~free-of-that
+type count are~the~same number.
+
+Why keep a~semaphore when the~database already tracks occupancy?  The~database
+stays the~source of~truth; the~semaphore is~a~fast in-process gate for~the~window
+after the~schedule lock releases and~several dispatch tasks run in~parallel.
+It~caps those parallel dispatches at~the~node's capacity, and~lets one~\emph{wait}
+for~a~slot to~free~--- a~migrate whose target is~still being vacated by~a
+preempt~--- instead of~polling the~database.  The~semaphore is~reconciled,
+not~trusted: at~startup only \textsc{running} and~\textsc{profiling} rows
+pre-acquire permits, and~a~drift watcher recomputes the~authoritative count
+every \texttt{IJM\_DRIFT\_HEARTBEAT\_S} (15~s), correcting any divergence.
 
 \textbf{No duplicate containers per job instance.}  Both the~worker (Phase~1
 claim, \texttt{running\_jobs[job\_id]} check) and~the~API
