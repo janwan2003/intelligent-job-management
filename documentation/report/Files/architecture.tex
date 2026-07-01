@@ -143,8 +143,7 @@ which reaches the~API through the~database, never by~an~HTTP call to~the
 control plane.  The~thick worker\,$\rightarrow$\,PostgreSQL arrows are~the
 \emph{heavy} per-epoch status and~progress writes~--- the~reason PostgreSQL
 is~co-located with~the~workers on~a~GPU node rather than placed by~the~control
-host.  The~training containers read and~write the~shared checkpoint store, so
-a~checkpoint written on~one node is~visible from~the~other.}
+host.}
 \label{fig:prototype}
 \end{figure}
 
@@ -166,9 +165,7 @@ profiling run finishes, or~a~slot is~freed; a~60-minute watchdog
 (\texttt{\_queue\_watcher}) is~only a~safety net for~missed notifications.
 Wake-ups are coalesced through a~single \texttt{asyncio.Event} and~rate-limited
 to~one pass every five~seconds, so the~cluster can~apply a~plan before the~next
-is~computed.  The~limit defers, never drops: the~event latches and~every pass
-reads committed rows, so a~wake-up arriving mid-interval~--- a~job finishing,
-say~--- is~serviced by~the~next pass, at~worst one interval later.
+is~computed.
 
 \subsection{The four phases of a~scheduling pass}
 
@@ -178,11 +175,10 @@ which is~made outside the~lock so its timeout cannot stall concurrent
 scheduler work.  The~optimiser runs \emph{before} the~profiling phases by
 design: it~is~a~slow external solver, so it~reasons over one snapshot taken
 at~the~start of~the~pass, and~the~cheap profiling phases run afterwards,
-reading its~assignments so they~preempt \emph{around} that~plan.  This does
-not~subordinate profiling~--- a~profile-owing row is~invisible to~the~optimiser,
-and~when no~slot is~free phase~4 evicts a~standard job and~reserves the~freed
-slot~--- so profiling keeps precedence regardless of~order.  The~four phases
-are:
+reading its~assignments so they~preempt \emph{around} that~plan.  Profiling
+still keeps precedence: a~profile-owing row is~invisible to~the~optimiser, and
+phase~4 below evicts a~standard job when a~profile run needs its~slot.  The~four
+phases are:
 
 \begin{enumerate}[leftmargin=*,itemsep=2pt,topsep=4pt]
   \item \textbf{Reset stuck assignments.}
@@ -687,9 +683,8 @@ restores the~model, optimiser, and~\texttt{current\_epoch}, and~continues
 the~loop (Figure~\ref{fig:seq-resume}).  The~scheduler does~keep a
 \texttt{progress} string per~row, but only as~a~display-and-heuristic cache
 (the~latest \texttt{Epoch x/y}); it~is~allowed to~lag and~is~never read to
-decide resumption.  Where a~(re)started job continues from~is~determined
-solely by~\texttt{latest.pt}~--- the~checkpoint file is~the~single source
-of~truth for~how far a~job has~actually run.
+decide resumption~--- \texttt{latest.pt} is~the~single source of~truth for~how
+far a~job has~actually run.
 
 \begin{figure}[H]
 \centering
@@ -729,11 +724,9 @@ must be~byte-for-byte readable on~every other node.  IJM meets it with~a~single
 shared \texttt{data/} tree that~every node FUSE-mounts via~rclone over SSH/SFTP
 (\texttt{rclone mount \ldots\ --vfs-cache-mode writes}); the~worker bind-mounts
 the~per-job slices of~that tree into each container (Table~\ref{tab:shared-fs}).
-Because all~nodes see the~same files, the~\texttt{latest.pt} written on~the~A40
-node is~exactly the~one the~P600 node loads when the~job migrates.  Without one
-shared namespace the~next dispatch would find no~checkpoint and~silently restart
-from~epoch~0~--- so the~mount is~not~an~optimisation but~the~substrate the~whole
-stop/migrate/resume story rests on.
+Without one shared namespace the~next dispatch would find no~checkpoint and
+silently restart from~epoch~0~--- so the~mount is~not~an~optimisation but~the
+substrate the~whole stop/migrate/resume story rests on.
 
 \begin{table}[H]
 \centering\small
