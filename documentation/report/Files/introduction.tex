@@ -3,22 +3,28 @@ training jobs compete for a~small number of~expensive accelerators.
 Operators are expected to~place each job on~the~hardware that meets its
 deadline at~the~lowest cost, despite per-GPU prices that vary by~more
 than an~order of~magnitude between generations.  Manual scheduling
-quickly becomes the~bottleneck, and~off-the-shelf cluster managers
-(Kubernetes, plain SLURM) treat GPU bundles as~interchangeable and~have
-no~notion of~per-job energy budgets or~deadline-aware preemption.
+quickly becomes the~bottleneck, and~general-purpose cluster managers such
+as~Kubernetes and~SLURM optimise for~utilisation and~fairness rather than
+cost: out of~the~box they~model neither the~differing energy cost of~each
+GPU generation nor a~per-job deadline, and~their preemption is~priority-based,
+not~deadline-driven~--- so choosing the~cheapest hardware that~still meets
+a~job's deadline is~left to~the~operator.
 
 The ANDREAS project~\cite{andreas} at~Politecnico di~Milano demonstrated
 that a~cost-aware optimiser, fed with~profile measurements of~each job
 type on~each hardware bundle, can~plan placements that beat the~typical
-operator's intuition.  ANDREAS ran on~the~ARMIDA cluster~--- uniform
-Tesla~V100 nodes~--- dispatching containers to~them through SLURM, and~its
-implementation is~not~available to~reuse.  The~two-node Polimi cluster
-targeted here is~instead \emph{heterogeneous}: an~A40 node alongside
-a~legacy QuadroP600 node on~different CUDA and~torch generations.  A~job
-preempted on~one node must therefore resume across torch versions when
-it~migrates to~the~other, and~the~scheduler must consume a~standalone
-optimiser (GPUspb~\cite{filippini2023pathrelinking,filippini2024stochastic})
-as~an~HTTP service rather than embed one.
+operator's intuition.  ANDREAS is~itself designed for~heterogeneous
+hardware~--- its node configuration and~energy-cost model are~keyed by~GPU
+type, and~it~can migrate a~job across GPUs~--- but~its ARMIDA testbed was~a
+uniform Tesla~V100 cluster dispatched through SLURM, so every node ran the~same
+CUDA and~torch stack and~a~migration never crossed a~checkpoint-serialization
+boundary.  The~two-node Polimi cluster targeted here is~heterogeneous in~that
+second dimension too: an~A40 node alongside a~legacy QuadroP600 node on~different
+CUDA and~torch generations.  A~job preempted on~one node must therefore resume
+\emph{across torch versions} when it~migrates to~the~other~--- a~case a~uniform
+cluster never exercises~--- and~the~scheduler must consume a~standalone optimiser
+(GPUspb~\cite{filippini2023pathrelinking,filippini2024stochastic}) as~an~HTTP
+service rather than embed one.
 
 This report describes Intelligent Job~Management (IJM), an~independent
 reimplementation of~the~ANDREAS approach as~a~distributed control plane.
@@ -57,15 +63,18 @@ placement, preemption, and~cross-version resume behave correctly and~stay
 consistent with~the~optimiser's plan.  (As a~secondary observation, the
 runs also expose a~\emph{horizon-myopia} in~the~GPUspb \texttt{method=RG}
 proxy~--- an~urgent job parked on~slow-but-free hardware~--- which
-Chapter~\ref{ch:e2e} characterises but~which does not~affect IJM's own
+Appendix~\ref{app:proxy} characterises but~which does not~affect IJM's own
 correctness.)
 
 Chapter~\ref{ch:architecture} describes the~deployment topology, the
 scheduling pipeline, the~state machine, the~persistent state, and~the
 invariants that protect the~control plane from concurrency hazards.
 Chapter~\ref{ch:config} documents the~cluster and~job configuration
-files, the~submission API, and~the~runtime knobs.
-Chapter~\ref{ch:e2e} presents the~two scenarios and~the~cost model used
-by~the~optimiser.
+files, the~submission API and~the~trainer contract, and~the~runtime knobs.
+Chapter~\ref{ch:e2e} covers testing and~evaluation: unit and~invariant tests
+that~exercise the~control plane's concurrency guarantees under injected faults,
+and~the~two end-to-end scenarios on~the~cluster.
 Chapter~\ref{ch:conclusion} summarises the~contributions, the~limitations,
 and~the~follow-up work that has concrete entry points in~the~codebase.
+Appendix~\ref{app:proxy} documents the~GPUspb proxy's objective and~cost model
+and~the~horizon-myopia the~scenarios surface.

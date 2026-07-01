@@ -3,33 +3,38 @@ scheduling pipeline that drives every dispatch decision, the~worker
 execution lifecycle that~runs and~stops each container, the~job state
 machine, the~persistent state held in~PostgreSQL, and~the~concurrency
 invariants that keep the~control plane consistent under racing API
-calls and~worker notifications.  Table~\ref{tab:components} separates
-the~five processes that~make up~a~deployment from~the~modules that~run
-inside the~API process.
+calls and~worker notifications.  Table~\ref{tab:processes} lists the~five
+processes that~make up~a~deployment, and~Table~\ref{tab:api-components} the
+components that~run inside the~API process.
 
 \begin{table}[H]
 \centering\small
 \begin{tabularx}{\textwidth}{@{}l l X@{}}
 \toprule
-\textbf{Component} & \textbf{Binary / host} & \textbf{Responsibility} \\
+\textbf{Process} & \textbf{Binary / host} & \textbf{Responsibility} \\
 \midrule
-\multicolumn{3}{@{}l}{\textit{Deployable processes}}\\[2pt]
 API              & \texttt{ijm-api} (FastAPI)     & HTTP frontend; hosts the~scheduling and~dispatch loops \\
 Worker           & \texttt{ijm-worker} (FastAPI)  & One per~GPU node; owns the~local Docker daemon, runs the~container, emits slot-freed notifications \\
 PostgreSQL       & \texttt{postgres} (a~GPU node) & Source of~truth for~job rows and~profile measurements, and~the~message bus (\texttt{LISTEN}/\texttt{NOTIFY}) \\
 GPUspb optimiser & external HTTP                  & Cost-aware standard-run placement (reached via~\texttt{OPTIMIZER\_URL}) \\
 SPA              & static (Vite)                 & Operator UI; polls the~API every 3--5~s \\
-\addlinespace
-\multicolumn{3}{@{}l}{\textit{Modules inside the~API process}}\\[2pt]
-\texttt{ProfilingScheduler} & --- & Picks the~next unmeasured \texttt{(node, GPU-count)} cell for~profile-owing rows \\
-\texttt{JobDispatcher}      & --- & Acquires the~destination's \texttt{NodeSlots} permit, then~POSTs \texttt{/jobs/\{id\}/run} to~the~target worker \\
-\texttt{NodeSlots}          & --- & Per-node GPU-permit semaphore; reconciled with the~DB by~a~periodic drift heartbeat \\
-\texttt{ClusterManager}     & --- & Loads \texttt{nodes\_config.json} and~exposes node and~GPU resources \\
-Optimizer client            & --- & Packages the~GPUspb request, parses the~returned assignments and~preempts \\
 \bottomrule
 \end{tabularx}
-\caption{IJM components: five deployable processes and~the~modules that~run
-inside the~API process.}\label{tab:components}
+\caption{IJM's five deployable processes.}\label{tab:processes}
+\end{table}
+
+\begin{table}[H]
+\centering\small
+\begin{tabularx}{\textwidth}{@{}l X@{}}
+\toprule
+\textbf{Component} & \textbf{Responsibility} \\
+\midrule
+\texttt{ProfilingScheduler} & Picks the~next unmeasured \texttt{(node, GPU-count)} cell for~profile-owing rows \\
+\texttt{JobDispatcher}      & Acquires the~destination node's GPU permit~--- a~per-node semaphore (\texttt{NodeSlots}) reconciled with~the~DB by~a~drift heartbeat~--- then~POSTs \texttt{/jobs/\{id\}/run} to~the~target worker \\
+Optimizer client            & Packages the~GPUspb request, parses the~returned assignments and~preempts \\
+\bottomrule
+\end{tabularx}
+\caption{The~components that~run inside the~API process.}\label{tab:api-components}
 \end{table}
 
 \section{Deployment topology}
@@ -37,8 +42,9 @@ inside the~API process.}\label{tab:components}
 IJM runs as~a~small distributed system.  The~FastAPI \emph{API} runs on
 a~control host~--- the~operator's laptop in~our prototype, though nothing
 stops it~from running on~a~dedicated node or~in~a~cluster~--- and~hosts the
-\texttt{ProfilingScheduler}, the~\texttt{JobDispatcher}, the~\texttt{NodeSlots}
-semaphores, and~the~optimiser client.  A~lightweight FastAPI \emph{worker}
+\texttt{ProfilingScheduler}, the~\texttt{JobDispatcher}, and~the~optimiser
+client, backed by~the~per-node \texttt{NodeSlots} semaphores and~the~cluster
+config it~loads at~startup.  A~lightweight FastAPI \emph{worker}
 runs on~every GPU node and~owns the~local Docker daemon.  PostgreSQL runs
 on~one of~the~GPU nodes, deliberately close to~the~workers
 (Figure~\ref{fig:prototype}): the~per-epoch status and~progress writes from
@@ -62,16 +68,16 @@ and~the~scheduling wake-ups they~imply}~--- a~run reaching a~terminal state,
 a~GPU slot coming free, a~profile finishing~--- travel the~opposite way,
 worker\,$\rightarrow$\,API, as~a~committed row write paired with~a
 \texttt{NOTIFY}; a~worker never issues an~HTTP call back to~the~control
-plane.  Keeping the~two~directions on~two~transports lets the~workers stay
-ignorant of~the~control host's address~--- they~open only a~database
-connection~--- and~leaves every cross-process fact to~be~read from~its
-committed row rather than trusted to~a~message still in~flight.
+plane.
 
 PostgreSQL doubles as~the~message bus, so IJM needs no~separate broker.
 Components coordinate by~writing a~row and~issuing \texttt{NOTIFY} on~one of
 two channels in~the~same transaction~--- \texttt{ijm\_schedule} to~wake the
 scheduler, \texttt{ijm\_slot\_freed} when a~GPU slot is~released~--- while
-their peers \texttt{LISTEN}.  Because each notification commits in~the~same
+their peers \texttt{LISTEN}.  The~API wakes its~own in-process scheduler the
+same way: a~submission commits its~row and~\texttt{NOTIFY}s rather than calling
+the~scheduler directly, so local and~worker-originated wakes share one path.
+Because each notification commits in~the~same
 transaction as~the~state change it~announces, a~committed change is~never
 left unsignalled; the~watchdogs of~\S\ref{sec:sched-pipeline} recover only
 the~rare notification dropped by~a~connection reset.
@@ -144,85 +150,82 @@ a~checkpoint written on~one node is~visible from~the~other.}
 
 \section{Scheduling pipeline}\label{sec:sched-pipeline}
 
-The pipeline is~shaped by~a~single governing assumption: \emph{profiling
-is~always worth its cost}.  A~deep-learning job runs for~hours, whereas
-profiling one GPU~configuration takes minutes; leaving a~configuration
-unmeasured risks overlooking the~placement that~would have saved hours
-of~computation, or~missing a~hard deadline.  The~scheduler therefore
-treats profiling as~privileged work that~may preempt running jobs,
-rather than as~best-effort measurement deferred until the~cluster falls
-idle.  How~aggressively the~system profiles is~a~tunable policy:
-\texttt{PROFILING\_CONFIGS\_PER\_JOB} (default~2) sets how~many
-configurations each instance must measure before it~is~handed to~the
-cost-aware optimiser for~standard placement.
+The pipeline is~shaped by~one governing assumption: \emph{profiling is~always
+worth its cost}.  A~deep-learning job runs for~hours; profiling one GPU
+configuration takes minutes, so leaving a~configuration unmeasured risks missing
+the~placement that~would have saved hours~--- or~a~hard deadline.  The~scheduler
+therefore treats profiling as~privileged work that~may preempt running jobs,
+not~best-effort measurement deferred until the~cluster falls idle.
+\texttt{PROFILING\_CONFIGS\_PER\_JOB} (default~2) sets how~many configurations
+an~instance must measure before it~is~handed to~the~cost-aware optimiser for
+standard placement.
 
-A~single scheduling pass~--- \texttt{\_schedule\_waiting\_jobs} in
-\texttt{app.py}~--- handles every dispatch decision.  It is~invoked
-whenever a~job is~submitted, a~profiling run finishes, or~a~slot is
-freed.  A~60-minute watchdog (\texttt{\_queue\_watcher}) serves as~a
-safety net for~missed notifications, not as~the~main wake source.
-Wake-ups are coalesced through a~single
-\texttt{asyncio.Event} and~rate-limited to~at~most one pass every
-five~seconds, so the~cluster has time to~apply the~previous plan before
-the~next one is~computed.
+A~single pass~--- \texttt{\_schedule\_waiting\_jobs} in \texttt{app.py}~---
+handles every dispatch decision, invoked whenever a~job is~submitted, a
+profiling run finishes, or~a~slot is~freed; a~60-minute watchdog
+(\texttt{\_queue\_watcher}) is~only a~safety net for~missed notifications.
+Wake-ups are coalesced through a~single \texttt{asyncio.Event} and~rate-limited
+to~one pass every five~seconds, so the~cluster can~apply a~plan before the~next
+is~computed.  The~limit defers, never drops: the~event latches and~every pass
+reads committed rows, so a~wake-up arriving mid-interval~--- a~job finishing,
+say~--- is~serviced by~the~next pass, at~worst one interval later.
 
 \subsection{The four phases of a~scheduling pass}
 
 The pass runs four phases, all guarded by~a~single
 \texttt{schedule\_lock} except the~optimiser's HTTP call (phase~2),
 which is~made outside the~lock so its timeout cannot stall concurrent
-scheduler work:
+scheduler work.  The~optimiser runs \emph{before} the~profiling phases by
+design: it~is~a~slow external solver, so it~reasons over one snapshot taken
+at~the~start of~the~pass, and~the~cheap profiling phases run afterwards,
+reading its~assignments so they~preempt \emph{around} that~plan.  This does
+not~subordinate profiling~--- a~profile-owing row is~invisible to~the~optimiser,
+and~when no~slot is~free phase~4 evicts a~standard job and~reserves the~freed
+slot~--- so profiling keeps precedence regardless of~order.  The~four phases
+are:
 
 \begin{enumerate}[leftmargin=*,itemsep=2pt,topsep=4pt]
   \item \textbf{Reset stuck assignments.}
     A~row can be~left \texttt{QUEUED} with~\texttt{assigned\_node} set but~no
-    container behind it: a~dispatch the~optimiser pass (or~a~pending migrate)
-    planned, but~that~never landed because the~image pull failed, the~worker
-    was~unreachable, or~the~API restarted between writing the~assignment and
-    posting \texttt{/run}.  Such a~row would otherwise stay pinned to~a~node
-    forever, holding a~slot the~optimiser believes is~occupied.  This phase
-    clears the~assignment of~any \texttt{QUEUED} row stale for~$\geq 30$~s
-    with~no~live dispatch task~--- well above the~sub-second latency of~a
-    healthy \texttt{/run}~--- and~reclaims its~leaked slot, so a~later phase
-    can re-place it.  It~is~recovery for~a~lost dispatch, not~a~routine step:
-    in~steady state it~resets nothing.
+    container behind it~--- a~dispatch the~optimiser (or~a~pending migrate)
+    planned that~never landed: the~image pull failed, the~worker was
+    unreachable, or~the~API restarted between writing the~assignment and
+    posting \texttt{/run}.  Left alone it~pins the~row to~a~node forever,
+    holding a~slot the~optimiser believes is~occupied.  This phase clears any
+    \texttt{QUEUED} row stale for~$\geq 30$~s with~no~live dispatch task~---
+    well above a~healthy \texttt{/run}'s sub-second latency~--- and~reclaims
+    the~leaked slot for~a~later phase to~re-place.  In~steady state it~resets
+    nothing.
   \item \textbf{Optimiser pass.}
-    The~optimiser is~an~external HTTP service bounded only by~a~30~s timeout,
-    so the~call is~made \emph{outside} \texttt{schedule\_lock}: holding the
-    lock across a~network round-trip that~slow would stall every other
-    scheduling activity~--- slot-freed handling, new submissions, the~drift
-    sweep~--- for~as~long as~the~optimiser takes.  The~lock is~re-acquired
-    only to~apply the~returned assignments, through a~conditional
-    \texttt{UPDATE \ldots WHERE assigned\_node IS NULL} (so a~suggestion for~a
-    row already claimed since the~call simply does~not~match), while~collecting
-    the~optimiser's preempt list.  The~optimiser only ever scores rows with
-    \texttt{is\_profiling\_run = FALSE}~--- rows still owing a~profile
-    run are invisible to~it.
+    Bounded only by~a~30~s timeout, the~optimiser call runs outside
+    \texttt{schedule\_lock} (as~above); the~lock is~re-acquired only to~apply
+    the~returned assignments, through a~conditional \texttt{UPDATE \ldots WHERE
+    assigned\_node IS NULL}~--- a~suggestion for~a~row claimed since the~call
+    simply does~not~match~--- while~collecting the~optimiser's preempt list.
+    The~optimiser only ever scores rows with \texttt{is\_profiling\_run =
+    FALSE}; rows still owing a~profile are~invisible to~it.
   \item \textbf{Profile placement.}
-    For~\texttt{QUEUED} rows that still owe a~profile run, the
-    \texttt{ProfilingScheduler} atomically reserves the~instance's
-    outstanding unmeasured \texttt{(node, GPU-count)} cells~--- up to~its
-    \texttt{PROFILING\_CONFIGS\_PER\_JOB} budget (default~2)~--- and
-    dispatches one of~them this pass, choosing the~node by~best fit
-    on~remaining capacity; the~rest follow on~later passes as~slots
-    free.  This is~the~mechanism behind the~\emph{profile-always}
-    policy: an~instance must complete all~its profile runs before
-    it~becomes a~candidate for~the optimiser-driven standard placement
-    above.
+    For~\texttt{QUEUED} rows still owing a~profile, the
+    \texttt{ProfilingScheduler} atomically reserves the~instance's outstanding
+    unmeasured \texttt{(node, GPU-count)} cells~--- up to~its
+    \texttt{PROFILING\_CONFIGS\_PER\_JOB} budget~--- and~dispatches one this
+    pass by~best fit on~remaining capacity; the~rest follow as~slots free.
+    This enforces \emph{profile-always}: an~instance must finish its~profile
+    runs before it~is~a~candidate for~standard placement.
   \item \textbf{Profile-preempt.}
-    If~a~profile-owing row still has~no~slot after the~placement pass, the
-    scheduler evicts the~cheapest \emph{minimal} set of~\texttt{RUNNING} jobs
-    that~frees enough GPUs for~the~next unmeasured configuration.  On~each
-    profiling-capable node whose \emph{total} capacity could host the
-    configuration it~ranks the~\texttt{RUNNING} jobs cheapest-first (priority
-    ascending, then~progress ascending) and~picks the~smallest victim subset
-    that~covers the~shortfall~--- choosing a~higher-ranked victim only when
-    no~cheaper set covers, and~never an~over-large one: it~will not~evict
-    a~small job and~then~a~larger one that~alone would have sufficed.  A
-    \texttt{PROFILING} row is~never a~victim.  The~first node where such a~set
-    exists wins; its~victims are~evicted and~the~freed slots claimed on~the
-    next pass.
+    If~placement leaves a~profile-owing row without a~slot, the~scheduler
+    evicts the~cheapest \emph{minimal} set of~\texttt{RUNNING} jobs that~frees
+    enough GPUs for~the~next unmeasured configuration.  On~each profiling-capable
+    node whose \emph{total} capacity could host it, it~ranks the~\texttt{RUNNING}
+    jobs cheapest-first (priority ascending, then~progress ascending) and~picks
+    the~smallest victim subset covering the~shortfall~--- a~higher-ranked victim
+    only when no~cheaper set covers, and~never an~over-large one (it~will
+    not~evict a~small job and~then~a~larger one that~alone would have sufficed).
+    A~\texttt{PROFILING} row is~never a~victim.  The~first node with~such a~set
+    wins; its~victims are~evicted and~the~freed slots claimed next pass.
 \end{enumerate}
+
+\subsection{Selecting which configurations to~profile}
 
 Which configurations an~instance profiles is~deterministic, not~opportunistic.
 The~valid configurations for~a~job type are~the~GPU bundles common to~the
@@ -232,22 +235,20 @@ name; an~instance profiles the~first \texttt{PROFILING\_CONFIGS\_PER\_JOB}
 atomic and~shared: each \texttt{(job\_id, gpu\_config)} cell is~claimed under
 the~unique index of~\S\ref{sec:persistent-state}, so two instances of~the~same
 type never measure the~same cell and~one instance's measurement is~reused
-by~all~the~others.  There is~no~separate ``profiling finished'' flag to~keep
-in~sync: an~instance is~in~profiling mode \emph{iff} it~still owns an~unmeasured
-claim, so once its~budget is~spent and~its~claims are~recorded~--- or~no
-unmeasured configuration remains~--- \texttt{is\_profiling\_run} is~derived
-as~\texttt{FALSE} and~the~row falls through to~the~optimiser for~standard
-placement.
+by~all~the~others.  No~separate ``profiling finished'' flag is~kept in~sync:
+an~instance is~in~profiling mode \emph{iff} it~still owns an~unmeasured claim,
+so once its~budget is~spent~--- or~no unmeasured configuration remains~---
+\texttt{is\_profiling\_run} derives as~\texttt{FALSE} and~the~row falls through
+to~the~optimiser.
 
 \subsection{Dispatching the~plan and~releasing slots}
 
-Once the~lock is~released, the~plan is~executed asynchronously: each
-preempt and~each dispatch runs as~an~independent task, so a~slow stop
-on~one node never delays placements on~another.  Before launching a~job,
-the~dispatcher must acquire a~permit from the~destination node's
-\texttt{NodeSlots} semaphore, whose count is~that node's GPU~capacity;
-the~permit is~what bounds the~number of~concurrent jobs per~node and
-arbitrates between tasks competing for~the~last free slot.
+Once the~lock is~released, the~plan is~executed asynchronously: each preempt
+and~each dispatch runs as~an~independent task, so a~slow stop on~one node never
+delays placements on~another.  Before launching a~job, the~dispatcher acquires
+a~permit from the~destination node's \texttt{NodeSlots} semaphore, whose count
+is~that node's GPU~capacity; the~permit bounds concurrent jobs per~node and
+arbitrates the~last free slot.
 
 Permits are released asynchronously, because a~job's GPUs are not free
 the~instant the~API decides to~stop it~--- only once the~worker has
@@ -637,7 +638,15 @@ node has~free GPUs of~that type, computed per~type from~the~database
 (\texttt{get\_node\_gpu\_usage}).  In~the~supported cluster each node exposes
 a~single GPU type, so the~per-node permit count and~the~per-type free capacity
 coincide; a~mixed-type node would rely on~that placement check, not~on~the
-counting semaphore, to~avoid per-type oversubscription.  On~startup the
+counting semaphore, to~avoid per-type oversubscription.  The~semaphore is~not~a
+second source of~truth~--- the~database is, and~the~atomic row claim of~the~next
+invariant already stops two~containers sharing one~\emph{job}; it~earns its~keep
+because neither of~those bounds \emph{per-node} concurrency once the~schedule
+lock is~released and~dispatch tasks run in~parallel.  \texttt{acquire} caps
+concurrent dispatches at~the~node's capacity and, crucially, lets a~dispatch
+\emph{block} until a~slot frees~--- a~migrate waiting for~an~in-flight preempt
+to~vacate its~GPU~--- which a~stateless database check cannot do~without polling.
+On~startup the
 semaphores are reconciled from~the~database: only rows in~\textsc{running}
 or~\textsc{profiling} pre-acquire their permits, since a~\textsc{queued}
 row with~an~assigned node has~no~live container yet (its dispatch task
