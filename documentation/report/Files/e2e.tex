@@ -46,10 +46,12 @@ Type & Architecture & Dataset \\\midrule
 \texttt{efficientnet}  & MBConv EfficientNet                                   & CIFAR-10            \\
 \texttt{cnn\_big}      & 10-block CNN, $3{\to}\ldots{\to}512$ channels         & synthetic $128{\times}128{\times}3$ \\\bottomrule
 \end{tabular}
-\caption{Training containers under \texttt{runtime/}.  All share the
-same checkpoint contract (legacy pre-1.6 \texttt{torch.save}, loaded
-with~\texttt{strict=False}), so any job can resume across nodes
-regardless of~the~destination's torch version.}\label{tab:e2e-types}
+\caption{Training containers under \texttt{runtime/}~--- the~two scenarios
+exercise \texttt{cnn\_big} and~\texttt{lstm-small}; the~other three ship
+in~\texttt{runtime/} but~are~unused here.  All share the same checkpoint
+contract (legacy pre-1.6 \texttt{torch.save}, loaded with~\texttt{strict=False}),
+so any job can resume across nodes regardless of~the~destination's torch
+version.}\label{tab:e2e-types}
 \end{table}
 
 \begin{table}[H]\centering\small
@@ -197,10 +199,12 @@ JOB1 & \texttt{cnn\_big} & 4 & $+30$\,min & 75  & $t=0$\,s    \\
 JOB2 & \texttt{cnn\_big} & 4 & $+30$\,min & 75  & $t=5$\,s    \\
 JOB3 & \texttt{cnn\_big} & 2 & $+2$\,h    & 50  & $t=10$\,s   \\
 JOB4 & \texttt{cnn\_big} & 1 & $+2$\,h    & 25  & $t=15$\,s   \\
-URGENT$^{\star}$ & \texttt{cnn\_big} & 5 & $+10$\,min & 200 & $t{=}7.5$\,min \\\bottomrule
+URGENT$^{\star}$ & \texttt{cnn\_big} & 5 & $+10$\,min & 200 & $t{\approx}7.7$\,min \\\bottomrule
 \end{tabular}
-\caption{Scenario~1 submissions: four patients and~one urgent
-job.}\label{tab:e2e-s1-jobs}
+\caption{Scenario~1 submissions: four patients and~one urgent job.  The
+\emph{Submitted at} column is~measured from~run start ($t{=}0$ at~first dispatch),
+the~same clock as~the~decision log (Table~\ref{tab:e2e-s1-decisions}) and
+Figure~\ref{fig:e2e-s1}.}\label{tab:e2e-s1-jobs}
 \end{table}
 
 \begin{figure}[H]\centering

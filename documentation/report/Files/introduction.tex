@@ -22,8 +22,9 @@ boundary.  The~two-node Polimi cluster targeted here is~heterogeneous in~that
 second dimension too: an~A40 node alongside a~legacy QuadroP600 node on~different
 CUDA and~torch generations.  A~job preempted on~one node must therefore resume
 \emph{across torch versions} when it~migrates to~the~other~--- a~case a~uniform
-cluster never exercises~--- and~the~scheduler must consume a~standalone optimiser
-(GPUspb~\cite{filippini2023pathrelinking,filippini2024stochastic}) as~an~HTTP
+cluster never exercises~--- and~the~scheduler must consume a~standalone
+optimiser~--- GPUspb, the~cost-aware GPU-placement solver
+of~\cite{filippini2023pathrelinking,filippini2024stochastic}~--- as~an~HTTP
 service rather than embed one.
 
 This report describes Intelligent Job~Management (IJM), an~independent

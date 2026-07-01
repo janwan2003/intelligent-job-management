@@ -261,13 +261,12 @@ triggered by~an~event outside the~current plan~--- a~job finishing
 on~its own, an~operator stopping a~job, or~the~cleanup of~an~orphaned
 container~--- frees capacity the~optimiser did not foresee, and~so wakes
 a~fresh scheduling pass.  A~release caused by~the~scheduler's \emph{own}
-in-flight preempt is~the~one exception: the~plan that~issued the~preempt
-already contains the~dispatch that~will reclaim the~freed slot, so
-re-running the~optimiser at~that point would let it~rewrite a~plan it~is
-still executing.  Only that case suppresses the~re-plan, and~doing so
-is~safe because independent watchdogs~--- a~drift heartbeat, the
-stuck-dispatch reaper, and~a~periodic queue watcher~--- re-wake the
-scheduler if~a~planned dispatch ever fails to~land.
+in-flight preempt is~the~one exception.  The~plan that~issued the~preempt
+already contains the~dispatch that~will reclaim the~freed slot, so re-running
+the~optimiser then would let it~rewrite a~plan it~is~still executing; only that
+case suppresses the~re-plan.  That~is~safe because independent watchdogs~--- a
+drift heartbeat, the~stuck-dispatch reaper, and~a~periodic queue watcher~---
+re-wake the~scheduler if~a~planned dispatch ever fails to~land.
 
 \subsection{Walking a~job through the~pipeline}
 

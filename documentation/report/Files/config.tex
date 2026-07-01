@@ -85,7 +85,7 @@ placements.
 
 \begin{lstlisting}[language={}, numbers=none]
 {
-  "job_id": "LSTM-small",
+  "job_id": "lstm-small",
   "dockerImage": "ijm-lstm-small:dev",
   "scriptPath": "train.py",
   "directoryToMount": "/data/my-project",
@@ -124,7 +124,12 @@ When \texttt{scriptPath} is~provided the~container runs
 \texttt{python3 <scriptPath>}; otherwise the~image's default CMD is~used.
 Unlike ANDREAS, \texttt{Priority} and~\texttt{deadline} are optional,
 and~an~additional \texttt{command} field gives flexibility for
-non-standard workloads.
+non-standard workloads.  The~request mixes naming conventions~---
+\texttt{job\_id} (snake\_case) alongside camelCase \texttt{dockerImage},
+\texttt{scriptPath}, \texttt{batchSize}, and~a~capitalised \texttt{Priority}~---
+a~carry-over from~ANDREAS-compatible field names; the~API accepts them through
+Pydantic aliases and~normalises to~snake\_case internally, which is~why the
+stored object and~the~201 response below are~uniformly snake\_case.
 
 \subsection{Response (201 Created)}
 
@@ -135,7 +140,7 @@ first run will be~a~profile or~a~standard execution.
 \begin{lstlisting}[language={}, numbers=none]
 {
   "id": "a1b2c3d4-...",
-  "job_id": "LSTM-small",
+  "job_id": "lstm-small",
   "image": "ijm-lstm-small:dev",
   "command": ["python3", "train.py"],
   "status": "QUEUED",
