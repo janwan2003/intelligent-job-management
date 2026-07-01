@@ -240,3 +240,28 @@ async def test_detect_drift_flags_in_memory_leak() -> None:
     drift = await slots.detect_drift(_make_get_conn([]))
     assert "matemagician" in drift
     assert drift["matemagician"] == (1, 0)  # mem=1, db=0
+
+
+# ---------------------------------------------------------------------------
+# Capacity invariant survives an exactly-once-release violation upstream
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_double_release_is_bounded_and_flagged() -> None:
+    """If the worker's exactly-once guarantee ever broke and a single kill
+    emitted ``ijm_slot_freed`` twice, the BoundedSemaphore caps the release so
+    capacity can't inflate past the node total — the API-side backstop for the
+    "no oversubscription" invariant.  The over-release is counted so the leak
+    is operator-visible at ``/admin/slots`` rather than silent.
+    """
+    slots = NodeSlots(_make_cluster())
+    await slots.acquire("polimi-gpu", 1)
+    assert slots.available("polimi-gpu") == 1
+
+    # One kill, two slot-freed NOTIFYs (the fault we are guarding against).
+    slots.release("polimi-gpu", 1)
+    slots.release("polimi-gpu", 1)  # spurious second release
+
+    assert slots.available("polimi-gpu") == 2, "capacity must not exceed the node total"
+    assert slots.metrics()["release_underflow_count"] >= 1, "spurious release flagged"

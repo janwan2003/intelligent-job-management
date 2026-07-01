@@ -8,6 +8,7 @@ from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from typing import Any
 from uuid import uuid4
 
 import psycopg
@@ -66,6 +67,93 @@ def parse_slot_payload(raw: str | None) -> tuple[str, int, SlotFreedReason] | No
         logger.warning("unknown slot-freed reason in payload %r — defaulting to TERMINAL", payload)
         reason = SlotFreedReason.TERMINAL
     return node_id, n_gpus, reason
+
+
+# Threshold for considering an assigned QUEUED row as a silently-failed
+# dispatch (image pull failure, etc.).  Healthy /run is sub-second; 30 s
+# is well above the floor and won't race in-flight dispatches.
+_STUCK_DISPATCH_THRESHOLD_S = 30
+
+
+async def reset_stuck_queued_assignments(
+    get_conn: Any,
+    node_slots: Any,
+    dispatch_tasks: dict[str, asyncio.Task[None]],
+    *,
+    threshold_s: int = _STUCK_DISPATCH_THRESHOLD_S,
+    now: datetime | None = None,
+) -> bool:
+    """Clear assigned_node + release leaked slot for orphaned QUEUED rows.
+
+    A row can be left ``QUEUED`` with ``assigned_node`` set but no container
+    behind it (a dispatch the optimiser/migrate planned that never landed —
+    image pull failed, worker unreachable, API restarted between writing the
+    assignment and posting ``/run``).  Such a row would otherwise stay pinned
+    to a node forever, holding a slot the optimiser believes is occupied.
+
+    If an in-flight dispatch task is still alive (usually blocked on
+    ``acquire``) we skip the row — its own ``BaseException`` handler releases
+    the permit; releasing here too would double-release the semaphore.
+
+    Returns ``True`` if any row was reset (the caller should then wake the
+    scheduler so the optimiser re-places the now-unassigned row).  Hoisted out
+    of the lifespan closure so the recovery path is unit-testable against a
+    real connection; ``now`` is injectable so a test can control the cutoff.
+    """
+    now = now or datetime.now(UTC)
+    cutoff = now - timedelta(seconds=threshold_s)
+    needs_drift_recover = False
+    reset_any = False
+    async with get_conn() as conn:
+        # Ownership is decided in-process: a QUEUED row with assigned_node set
+        # is the API's responsibility iff ``dispatch_tasks[jid]`` is alive.  If
+        # no live task exists, the row is orphaned regardless of what the
+        # worker has written to container_name.
+        cur = await conn.execute(
+            """SELECT id, assigned_node, assigned_gpu_config FROM jobs
+               WHERE status = %s AND assigned_node IS NOT NULL
+                 AND updated_at < %s""",
+            (JobStatus.QUEUED, cutoff),
+        )
+        stuck = await cur.fetchall()
+        for jid, node, gpu_config in stuck:
+            inflight = dispatch_tasks.get(jid)
+            if inflight is not None and not inflight.done():
+                # Live dispatch task — the API still owns this row; leave it.
+                continue
+            n = sum(int(v) for v in (gpu_config or {}).values())
+            ucur = await conn.execute(
+                """UPDATE jobs
+                   SET assigned_node = NULL, assigned_gpu_config = NULL,
+                       updated_at = %s
+                   WHERE id = %s AND status = %s AND assigned_node = %s
+                   RETURNING id""",
+                (now, jid, JobStatus.QUEUED, node),
+            )
+            if not await ucur.fetchone():
+                continue
+            reset_any = True
+            # No live task: a direct release() would underflow if the slot was
+            # never acquired.  Defer to drift-recover which rebases _used from
+            # the DB authoritative count.
+            needs_drift_recover = True
+            logger.warning(
+                "Reset stuck QUEUED job %s on %s (%dx %s) — no dispatch task; queuing drift-recover sweep",
+                jid[:8],
+                node,
+                n,
+                gpu_config,
+            )
+        await conn.commit()
+
+    # Rebase _used from the DB authority for stuck rows with no live task.
+    if needs_drift_recover and node_slots is not None:
+        try:
+            await node_slots.recover_from_drift(get_conn)
+        except Exception:
+            logger.exception("Reaper drift-recover sweep failed")
+
+    return reset_any
 
 
 @asynccontextmanager
@@ -213,74 +301,21 @@ async def lifespan(_app: FastAPI) -> AsyncGenerator[None]:
         except Exception:
             logger.exception("Dispatch failed for job %s on %s", a.instance_id[:8], a.node_id)
 
-    # Threshold for considering an assigned QUEUED row as a silently-failed
-    # dispatch (image pull failure, etc.).  Healthy /run is sub-second; 30 s
-    # is well above the floor and won't race in-flight dispatches.
-    _STUCK_DISPATCH_THRESHOLD_S = 30
-
     async def _reset_stuck_queued_assignments() -> None:
-        """Clear assigned_node + release leaked slot for orphaned QUEUED rows.
+        """Reaper closure: reset orphaned QUEUED rows, then wake the scheduler.
 
-        If an in-flight dispatch task is still alive (usually blocked on
-        ``acquire``) we cancel it and let its own BaseException handler release
-        the permit — releasing here too would double-release the semaphore.
+        Delegates to the module-level ``reset_stuck_queued_assignments`` (unit-
+        testable) and, on any reset, wakes the optimiser so the now-unassigned
+        row is re-placed.  Without this wake the planned-channel preempt path
+        leaves the row idle forever (no other wake source after the reaper
+        clears the assignment).
         """
-        cutoff = datetime.now(UTC) - timedelta(seconds=_STUCK_DISPATCH_THRESHOLD_S)
-        async with state.get_conn() as conn:
-            # Ownership is decided in-process: a QUEUED row with assigned_node
-            # set is the API's responsibility iff ``_dispatch_tasks[jid]`` is
-            # alive.  If no live task exists, the row is orphaned regardless
-            # of what the worker has written to container_name.
-            cur = await conn.execute(
-                """SELECT id, assigned_node, assigned_gpu_config FROM jobs
-                   WHERE status = %s AND assigned_node IS NOT NULL
-                     AND updated_at < %s""",
-                (JobStatus.QUEUED, cutoff),
-            )
-            stuck = await cur.fetchall()
-            needs_drift_recover = False
-            reset_any = False
-            for jid, node, gpu_config in stuck:
-                inflight = _dispatch_tasks.get(jid)
-                if inflight is not None and not inflight.done():
-                    # Live dispatch task — the API still owns this row; leave it.
-                    continue
-                n = sum(int(v) for v in (gpu_config or {}).values())
-                ucur = await conn.execute(
-                    """UPDATE jobs
-                       SET assigned_node = NULL, assigned_gpu_config = NULL,
-                           updated_at = %s
-                       WHERE id = %s AND status = %s AND assigned_node = %s
-                       RETURNING id""",
-                    (datetime.now(UTC), jid, JobStatus.QUEUED, node),
-                )
-                if not await ucur.fetchone():
-                    continue
-                reset_any = True
-                # No live task: a direct release() would underflow if the slot
-                # was never acquired.  Defer to drift-recover which rebases
-                # _used from the DB authoritative count.
-                needs_drift_recover = True
-                logger.warning(
-                    "Reset stuck QUEUED job %s on %s (%dx %s) — no dispatch task; queuing drift-recover sweep",
-                    jid[:8],
-                    node,
-                    n,
-                    gpu_config,
-                )
-            await conn.commit()
-
-        # Rebase _used from the DB authority for stuck rows with no live task.
-        if needs_drift_recover and state.node_slots is not None:
-            try:
-                await state.node_slots.recover_from_drift(state.get_conn)
-            except Exception:
-                logger.exception("Reaper drift-recover sweep failed")
-
-        # Any reset means a QUEUED row now has no node — the optimiser must
-        # re-place it.  Without this the planned-channel preempt path leaves
-        # the row idle forever (no wake source after the reaper cancels the
-        # in-flight dispatch task).
+        reset_any = await reset_stuck_queued_assignments(
+            state.get_conn,
+            state.node_slots,
+            _dispatch_tasks,
+            threshold_s=_STUCK_DISPATCH_THRESHOLD_S,
+        )
         if reset_any:
             notify_event.set()
 
