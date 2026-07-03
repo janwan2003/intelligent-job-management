@@ -15,6 +15,13 @@ INFRA="$REPO_ROOT/infra"
 TUNNEL_HOST="${TUNNEL_HOST:-polimi}"
 COMPOSE_FILE="$INFRA/docker-compose.tunnel.yml"
 TUNNEL_PIDFILE="/tmp/ijm-tunnel.pid"
+# Remote deploy identity — the single source of truth for the account whose
+# name prefixes the containers and deploy path on the shared host.  Everything
+# below (REMOTE_DIR, container names) derives from it; override with a single
+# env var for a different account:  IJM_REMOTE_USER=alice bash infra/ijm deploy
+IJM_REMOTE_USER="${IJM_REMOTE_USER:-wangrat}"
+REMOTE_DIR="${REMOTE_DIR:-/home/$IJM_REMOTE_USER/ijm}"
+PG_CONTAINER="${IJM_REMOTE_USER}-ijm-postgres"
 
 c_red()   { printf "\033[1;31m%s\033[0m\n" "$*"; }
 c_green() { printf "\033[1;32m%s\033[0m\n" "$*"; }
@@ -77,7 +84,7 @@ cmd_up() {
     fi
 
     c_blue "[3/3] Local stack (API + optimizer + frontend)"
-    docker compose -f "$COMPOSE_FILE" up -d
+    HOST_PROJECT_ROOT="$REMOTE_DIR" docker compose -f "$COMPOSE_FILE" up -d
     for i in $(seq 1 15); do
         curl -sf -m 2 http://localhost:8000/health >/dev/null 2>&1 && break
         sleep 1
@@ -106,7 +113,7 @@ cmd_down() {
     fi
     if [[ "${1:-}" == "--workers" ]]; then
         c_blue "[3/2] Remote workers"
-        ssh "$TUNNEL_HOST" "cd /home/wangrat/ijm && docker-compose down" 2>&1 | tail -3 || true
+        ssh "$TUNNEL_HOST" "cd $REMOTE_DIR && docker-compose down" 2>&1 | tail -3 || true
         ssh polimi-gpu "ss -tlnpH 2>/dev/null | awk '\$4 ~ /:8001\$/ {print}' | grep -oE 'pid=[0-9]+' | head -1 | cut -d= -f2 | xargs -r kill" 2>/dev/null || true
         c_green "  ✓ remote workers stopped"
     else
@@ -142,23 +149,23 @@ cmd_deploy() {
     # code.  Must also re-pass all env here — the compose file uses
     # ${NODE_ID} / ${WORKER_GPU_MODE} / ${IMAGE_TAG_OVERRIDE} /
     # ${NODE_TOTAL_GPUS} which all resolve to empty without it.
-    "${ssh_reuse[@]}" "cd /home/wangrat/ijm && $mate_env docker-compose up --build -d --force-recreate --no-deps worker" 2>&1 | tail -5
+    "${ssh_reuse[@]}" "cd $REMOTE_DIR && $mate_env IJM_REMOTE_USER=$IJM_REMOTE_USER HOST_PROJECT_ROOT=$REMOTE_DIR docker-compose up --build -d --force-recreate --no-deps worker" 2>&1 | tail -5
 
     c_blue "[2/3] schema (apply to remote postgres if missing)"
     # Wait for postgres to be ready (just-started compose returns -d before
     # the healthcheck passes).
     for i in $(seq 1 30); do
-        "${ssh_reuse[@]}" "docker exec wangrat-ijm-postgres pg_isready -U postgres -q" 2>/dev/null && break
+        "${ssh_reuse[@]}" "docker exec $PG_CONTAINER pg_isready -U postgres -q" 2>/dev/null && break
         sleep 1
     done
     # Polimi-gpu worker queries jobs during reconcile() on startup; if
     # postgres is fresh (no API has run yet) this fails.  Apply schema
     # idempotently via the matemagician postgres container.
-    if "${ssh_reuse[@]}" "docker exec wangrat-ijm-postgres psql -U postgres -d ijm -c '\\dt' 2>/dev/null | grep -q jobs"; then
+    if "${ssh_reuse[@]}" "docker exec $PG_CONTAINER psql -U postgres -d ijm -c '\\dt' 2>/dev/null | grep -q jobs"; then
         c_green "  ✓ schema already present"
     else
         local err
-        err=$("${ssh_reuse[@]}" "docker exec -i wangrat-ijm-postgres psql -U postgres -d ijm -q -v ON_ERROR_STOP=1" < "$REPO_ROOT/backend/schema.sql" 2>&1) \
+        err=$("${ssh_reuse[@]}" "docker exec -i $PG_CONTAINER psql -U postgres -d ijm -q -v ON_ERROR_STOP=1" < "$REPO_ROOT/backend/schema.sql" 2>&1) \
             && c_green "  ✓ schema applied" \
             || { c_red "  ✗ schema apply failed:"; echo "$err" | head -5; exit 1; }
     fi

@@ -22,6 +22,7 @@ set -euo pipefail
 API="${API:-http://localhost:8000}"
 NODE_A="${NODE_A:-polimi}"
 NODE_B="${NODE_B:-polimi-gpu}"
+IJM_REMOTE_USER="${IJM_REMOTE_USER:-wangrat}"
 EPOCHS_SMALL="${EPOCHS_SMALL:-400}"
 EPOCHS_BIG="${EPOCHS_BIG:-40}"
 TERMINAL_TIMEOUT_S="${TERMINAL_TIMEOUT_S:-3600}"
@@ -70,7 +71,7 @@ curl -fsS "$API/health" >/dev/null || fail "API at $API not reachable"
 curl -sS -X DELETE "$API/jobs" >/dev/null
 ssh "$NODE_A" 'rm -rf ~/ijm/data/checkpoints/* ~/ijm/data/runs/*' 2>/dev/null || true
 curl -sS -X POST "$API/admin/reconcile-slots" >/dev/null
-ssh "$NODE_A" 'docker exec wangrat-ijm-postgres psql -U postgres -d ijm -c "DELETE FROM profiling_results WHERE job_id='"'"'convnet'"'"';"' >/dev/null
+ssh "$NODE_A" "docker exec ${IJM_REMOTE_USER}-ijm-postgres psql -U postgres -d ijm -c \"DELETE FROM profiling_results WHERE job_id='convnet';\"" >/dev/null
 pass "state cleared, convnet profile rows wiped"
 
 # Sanity: lstm-small and cnn_big must already be profiled (the previous

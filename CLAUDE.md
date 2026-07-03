@@ -99,8 +99,9 @@ Read these before making non-trivial scheduler or worker changes:
 ## Common pitfalls when making changes
 
 - Tests live in `backend/tests/` (real pytest suite, 6 files) and
-  `worker/tests/` (currently empty — covered only by `infra/e2e_scenario*.sh`).
-  Adding worker-side logic without an e2e to back it up is a known gap.
+  `worker/tests/` (thin — only `test_profiling_duration.py`; most
+  worker behaviour is covered by `infra/e2e_scenario*.sh`). Adding
+  worker-side logic without an e2e to back it up is a known gap.
 - Pre-commit hooks enforce ruff + mypy strict + deptry + eslint. See
   [.pre-commit-config.yaml](.pre-commit-config.yaml). Don't disable
   hooks; fix the cause.

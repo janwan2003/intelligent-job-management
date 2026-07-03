@@ -31,7 +31,11 @@ The production setup splits responsibilities: **workers** run on each GPU node (
 
 ### Bootstrap & lifecycle — `bash infra/ijm`
 
-After the SSH aliases are configured (see Prerequisites), one command brings the whole supported topology up:
+After the SSH aliases are configured (see Prerequisites), one command brings the whole supported topology up. The scripts default to deploying under the `wangrat` account (`/home/wangrat/ijm`, containers `wangrat-ijm-*`); to deploy under a different account, set `IJM_REMOTE_USER` once — `REMOTE_DIR` and the container names all derive from it:
+
+```bash
+IJM_REMOTE_USER=alice bash infra/ijm deploy   # deploys to /home/alice/ijm, containers alice-ijm-*
+```
 
 ```bash
 bash infra/ijm deploy    # one-time / when worker code changed: rsync, force-recreate
@@ -394,7 +398,8 @@ data/       Persistent data (pg/, checkpoints/, runs/)
 |---|---|---|---|
 | `DATABASE_URL` | API, worker | `postgresql://postgres:postgres@postgres:5432/ijm` | In tunnel mode the host is `localhost:5433`. |
 | `HOST_ROOT` | API | `/host` | Maps to repo root inside the API container. |
-| `HOST_PROJECT_ROOT` | API | `${PWD}/..` | Host-resolvable path used for Docker bind mounts. |
+| `HOST_PROJECT_ROOT` | API | `${PWD}/..` | Host-resolvable path used for Docker bind mounts. On the cluster the `infra/` scripts derive it from `IJM_REMOTE_USER`. |
+| `IJM_REMOTE_USER` | `infra/` scripts | `wangrat` | Account the remote deploy dir (`/home/$IJM_REMOTE_USER/ijm`) and the postgres/worker container names (`$IJM_REMOTE_USER-ijm-*`) are namespaced under. Set once to deploy under a different account — `REMOTE_DIR` and the container names all derive from it. |
 | `OPTIMIZER_URL` | API | `http://optimizer:8080` | Set to empty string to fall back to greedy FIFO scheduling. |
 | `OPTIMIZER_VERBOSE` | API | unset | Set to `1` for verbose optimizer-client diagnostic logs. |
 | `IJM_DRIFT_HEARTBEAT_S` | API | `15` | Period of the slot-tracker drift heartbeat (reconciles `mem_used` vs `db_used` per node). |

@@ -14,14 +14,15 @@
 # Usage:
 #   ./infra/deploy_native.sh polimi-gpu
 #
-# Requires: SSH alias ``$1`` reachable, python3.11+ on remote, /home/wangrat/ijm
-# pre-existing.
+# Requires: SSH alias ``$1`` reachable, python3.11+ on remote, and the deploy
+# dir ($REMOTE_DIR, default /home/$IJM_REMOTE_USER/ijm) pre-existing.
 
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 HOST="${1:-polimi-gpu}"
-REMOTE_DIR="${REMOTE_DIR:-/home/wangrat/ijm}"
+IJM_REMOTE_USER="${IJM_REMOTE_USER:-wangrat}"
+REMOTE_DIR="${REMOTE_DIR:-/home/$IJM_REMOTE_USER/ijm}"
 NODE_ID="${NODE_ID:-$HOST}"
 DB_URL="${DB_URL:-postgresql://postgres:postgres@matemagician.deib.polimi.it:5433/ijm}"
 # GPU access mode for ``docker run``:

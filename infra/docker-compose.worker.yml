@@ -6,7 +6,7 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
-    container_name: wangrat-ijm-worker
+    container_name: ${IJM_REMOTE_USER:-wangrat}-ijm-worker
     restart: unless-stopped
     # ``network_mode: host`` works only on **rootful Docker** (matemagician).
     # On rootless Docker (polimi-gpu) the container actually runs inside
@@ -27,7 +27,7 @@ services:
     environment:
       DATABASE_URL: postgresql://postgres:postgres@matemagician.deib.polimi.it:5433/ijm
       HOST_ROOT: /host
-      HOST_PROJECT_ROOT: /home/wangrat/ijm
+      HOST_PROJECT_ROOT: ${HOST_PROJECT_ROOT:-/home/wangrat/ijm}
       NODE_ID: ${NODE_ID}
       DOCKER_HOST: unix:///docker.sock
       # ``WORKER_GPU_MODE`` selects how the worker exposes GPUs to training

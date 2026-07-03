@@ -12,7 +12,7 @@
 # Once the tunnel is open, start the API with:
 #   cd backend && DATABASE_URL=postgresql://postgres:postgres@localhost:5433/ijm \
 #     NODES_CONFIG=config/nodes_config.tunnel.json \
-#     HOST_PROJECT_ROOT=/home/wangrat/ijm \
+#     HOST_PROJECT_ROOT=/home/$IJM_REMOTE_USER/ijm \
 #     uv run uvicorn src.app:app --port 8000
 
 set -euo pipefail
