@@ -22,8 +22,6 @@ from src.constants import (
 class NodeResources(BaseModel):
     """Hardware resources attached to a node (from config JSON)."""
 
-    model_config = ConfigDict(populate_by_name=True)
-
     gpu_type: str
     gpu_count: int
 
@@ -88,16 +86,18 @@ class JobCreate(BaseModel):
 
     @field_validator("deadline", mode="after")
     @classmethod
-    def _normalize_deadline_to_utc(cls, v: datetime | None) -> datetime | None:
-        # Wire format is expected to carry an offset (frontend now sends
-        # `.toISOString()`).  We accept naive values for backward compatibility
-        # and assume UTC, but the right answer is always to convert tz-aware
-        # values to UTC rather than re-label them — re-labeling would shift
-        # the absolute instant by the sender's offset.
+    def _require_tz_aware_deadline(cls, v: datetime | None) -> datetime | None:
+        # A deadline is an absolute instant, so the wire value must carry a
+        # timezone offset (the frontend sends `.toISOString()`; scripts send
+        # `…Z`).  Reject a naive value rather than guessing its zone — assuming
+        # UTC could silently shift the instant by the sender's offset, and the
+        # naive value would otherwise be interpreted in the DB session timezone
+        # on insert into the TIMESTAMPTZ column.  Aware values are converted to
+        # UTC (never re-labeled).
         if v is None:
             return v
         if v.tzinfo is None:
-            return v.replace(tzinfo=UTC)
+            raise ValueError("deadline must include a timezone offset (e.g. '2026-01-01T00:00:00Z')")
         return v.astimezone(UTC)
 
 

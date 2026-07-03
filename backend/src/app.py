@@ -38,10 +38,10 @@ logger = logging.getLogger(__name__)
 def parse_slot_payload(raw: str | None) -> tuple[str, int, SlotFreedReason] | None:
     """Parse a slot-freed NOTIFY payload.
 
-    New format: ``"<node_id>:<n_gpus>:<reason>"``.
-    Legacy    : ``"<node_id>:<n_gpus>"`` — default reason ``TERMINAL``
-    (safe — wakes the optimiser), so rolling worker deploys don't drop
-    slot-release events mid-upgrade.
+    Primary form: ``"<node_id>:<n_gpus>:<reason>"`` — what every emitter
+    sends.  A 2-field ``"<node_id>:<n_gpus>"`` is also accepted and
+    defaults to ``TERMINAL`` (safe — wakes the optimiser, never drops a
+    slot release) as a defensive fallback against a truncated reason.
 
     Hoisted to module scope so the unit tests can exercise it directly
     without instantiating the FastAPI lifespan.
@@ -655,6 +655,11 @@ async def lifespan(_app: FastAPI) -> AsyncGenerator[None]:
                 name=f"dispatch-migrate-{a.instance_id[:8]}",
             )
             _dispatch_tasks[a.instance_id] = task
+
+            def _cleanup(_t: asyncio.Task[None], jid: str = a.instance_id) -> None:
+                _dispatch_tasks.pop(jid, None)
+
+            task.add_done_callback(_cleanup)
 
     async def _slot_listener() -> None:
         """LISTEN ijm_slot_freed: release the permit and (conditionally) wake the optimiser.

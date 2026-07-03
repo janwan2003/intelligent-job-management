@@ -2,7 +2,7 @@
 
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 from unittest.mock import AsyncMock
@@ -10,11 +10,12 @@ from unittest.mock import AsyncMock
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
+from pydantic import ValidationError
 
 import src.state as state_module
 from src.app import app
 from src.cluster import ClusterManager, cluster
-from src.models import Job
+from src.models import Job, JobCreate
 from src.profiling import ProfilingScheduler
 
 # Save original get_conn before any tests can override it
@@ -156,6 +157,20 @@ def test_job_model_validate_with_extended_fields() -> None:
     assert job.epochs_total == 50
     assert job.profiling_epochs_no == 2
     assert job.assigned_node == "node-01"
+
+
+def test_jobcreate_deadline_converts_aware_to_utc() -> None:
+    """An aware deadline is converted to UTC — instant preserved, not re-labeled."""
+    # 12:00 at +02:00 is the same instant as 10:00 UTC.
+    jc = JobCreate(job_id="t", dockerImage="img", deadline="2026-01-01T12:00:00+02:00")
+    assert jc.deadline == datetime(2026, 1, 1, 10, 0, tzinfo=UTC)
+    assert jc.deadline is not None and jc.deadline.utcoffset() == timedelta(0)
+
+
+def test_jobcreate_deadline_rejects_naive() -> None:
+    """A naive deadline (no offset) is rejected rather than assumed-UTC."""
+    with pytest.raises(ValidationError):
+        JobCreate(job_id="t", dockerImage="img", deadline="2026-01-01T12:00:00")
 
 
 def test_cluster_manager_load_nodes(tmp_path: Path) -> None:

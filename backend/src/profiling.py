@@ -36,7 +36,7 @@ class ProfilingScheduler:
     rounds every valid configuration is eventually visited.
 
     The per-round limit is controlled by the ``PROFILING_CONFIGS_PER_JOB``
-    environment variable (default 1).
+    environment variable (default 2).
     """
 
     def __init__(self) -> None:
@@ -219,8 +219,6 @@ class ProfilingScheduler:
         conn: psycopg.AsyncConnection[Any],
         job_id: str,
         result: ScheduleResult,
-        type_id: str = "",
-        instance_id: str = "",
     ) -> None:
         """Write the scheduling decision to the jobs table.
 
@@ -228,7 +226,6 @@ class ProfilingScheduler:
         existence of unmeasured claim rows — see the source-of-truth note in
         that function and the matching derivation in worker ``handle_complete``.
         """
-        del type_id, instance_id  # unused; kept for signature stability
         now = datetime.now(UTC)
         async with conn.cursor() as cur:
             await cur.execute(
@@ -610,7 +607,7 @@ class ProfilingScheduler:
             is_profiling_run=is_profiling_run,
         )
 
-        await self._persist_assignment(conn, job_id, result, type_id=type_id, instance_id=job_id)
+        await self._persist_assignment(conn, job_id, result)
 
         logger.info(
             "Scheduled job %s: mode=%s, config=%s, node=%s",

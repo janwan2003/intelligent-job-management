@@ -1,13 +1,7 @@
-import { Briefcase, Server, Zap, DollarSign } from "lucide-react";
+import { Briefcase, Server } from "lucide-react";
 import { MetricCard } from "@/components/MetricCard";
 import { useJobs, useNodes } from "@/api/hooks";
 import { format } from "date-fns";
-import {
-  FEATURE_DASHBOARD_ACTIVE_NODES,
-  FEATURE_DASHBOARD_POWER_DRAW,
-  FEATURE_DASHBOARD_SESSION_COST,
-  FEATURE_DASHBOARD_ACTIVITY_LOG,
-} from "@/config/features";
 import {
   STATUS_QUEUED,
   STATUS_PROFILING,
@@ -55,44 +49,14 @@ export default function Dashboard() {
           />
         )}
 
-        {FEATURE_DASHBOARD_ACTIVE_NODES && (
-          <MetricCard
-            title="Cluster Nodes"
-            value={String(totalNodes)}
-            subtitle={`${busyNodes} busy · ${totalNodes - busyNodes} idle`}
-            icon={Server}
-            accentColor="bg-metric-nodes/10 text-metric-nodes"
-          />
-        )}
-        {FEATURE_DASHBOARD_POWER_DRAW && (
-          <MetricCard
-            title="Power Draw"
-            value="—"
-            subtitle="Est. cluster consumption"
-            icon={Zap}
-            accentColor="bg-metric-power/10 text-metric-power"
-          />
-        )}
-        {FEATURE_DASHBOARD_SESSION_COST && (
-          <MetricCard
-            title="Session Cost"
-            value="—"
-            subtitle="Current session"
-            icon={DollarSign}
-            accentColor="bg-metric-cost/10 text-metric-cost"
-          />
-        )}
+        <MetricCard
+          title="Cluster Nodes"
+          value={String(totalNodes)}
+          subtitle={`${busyNodes} busy · ${totalNodes - busyNodes} idle`}
+          icon={Server}
+          accentColor="bg-metric-nodes/10 text-metric-nodes"
+        />
       </div>
-
-      {/* Activity Log */}
-      {FEATURE_DASHBOARD_ACTIVITY_LOG && (
-        <div className="rounded-lg border border-border bg-card">
-          <div className="px-4 py-3 border-b border-border">
-            <h2 className="text-sm font-medium text-card-foreground">Recent Activity</h2>
-          </div>
-          <div className="px-4 py-6 text-sm text-muted-foreground text-center">No activity data available yet.</div>
-        </div>
-      )}
     </div>
   );
 }

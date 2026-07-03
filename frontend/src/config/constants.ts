@@ -15,7 +15,6 @@ export const POLL_JOB_LOGS_MS = 3_000;
 export const POLL_NODES_MS = 5_000;
 export const POLL_PROFILING_MS = 5_000;
 
-export const NODE_STATUS_IDLE = "idle" as const;
 export const NODE_STATUS_BUSY = "busy" as const;
 
 export const JOB_ID_DISPLAY_LENGTH = 8;
@@ -32,4 +31,3 @@ export const DEFAULT_JOB_PRIORITY = 4;
 export const DEFAULT_EPOCHS_TOTAL = 40;
 export const DEFAULT_PROFILING_EPOCHS = 3;
 export const DEFAULT_IMAGE = "wangrat/ijm-lstm-small:latest";
-export const DEFAULT_COMMAND = "python -u train.py";

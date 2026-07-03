@@ -67,10 +67,11 @@ Things that have tripped up past sessions:
   per-step compute amortises DataParallel sync overhead on both GPU
   classes (P600×2 is 1.68× faster than P600×1; A40×2 is 1.12× faster
   than A40×1, per the 2026-06-25 profiling runs, after the per-epoch
-  profiler-measurement fix). It is what
-  `e2e_scenario_2types.sh` uses to exercise
-  Scenario 2's 2-GPU placement path. Don't change its shape without
-  re-measuring.
+  profiler-measurement fix). `e2e_scenario_2gpu.sh` (Scenario 2b) uses it
+  to exercise the 2-GPU standard-placement path;
+  `e2e_scenario_2types.sh` (Scenario 2) uses it for the A40 pins and the
+  urgent job (which lands on P600×1, then migrates to A40). Don't change
+  its shape without re-measuring.
 
 - **Profile-always policy.** The `ProfilingScheduler` runs one untested
   GPU configuration per submission. Jobs transition

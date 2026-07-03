@@ -28,7 +28,7 @@ OPTIMIZER_URL: str | None = os.getenv("OPTIMIZER_URL")
 # Gate the per-round DIAG INFO logs (OPT GATE/REQ/RESP/PARSE/CLASSIFY) so they
 # don't flood the API log in steady state.  Set OPTIMIZER_VERBOSE=1 (or any
 # non-zero int) to re-enable them when debugging scheduler decisions.
-_OPT_DIAG: bool = bool(int(os.environ.get("OPTIMIZER_VERBOSE", "0") or "0"))
+_OPT_DIAG: bool = bool(int(os.getenv("OPTIMIZER_VERBOSE", "0") or "0"))
 
 _PROGRESS_RE = re.compile(r"^(\d+)/(\d+)$")
 

@@ -2,7 +2,7 @@
 
 import logging
 
-from shared.constants import PG_NOTIFY_SCHEDULE, PG_NOTIFY_SLOT_FREED, JobStatus
+from shared.constants import PG_NOTIFY_SCHEDULE, PG_NOTIFY_SLOT_FREED, JobStatus, SlotFreedReason
 from shared.profiling_sql import delete_unmeasured_claims
 
 from constants import JOB_ID_DISPLAY_LENGTH, NODE_ID, container_name_for
@@ -53,7 +53,7 @@ async def reconcile_job_states() -> None:
                     if slot_node and n_gpus > 0:
                         await cur.execute(
                             "SELECT pg_notify(%s, %s)",
-                            (PG_NOTIFY_SLOT_FREED, f"{slot_node}:{n_gpus}"),
+                            (PG_NOTIFY_SLOT_FREED, f"{slot_node}:{n_gpus}:{SlotFreedReason.ORPHAN_DRAIN}"),
                         )
             await c.commit()
     except Exception:

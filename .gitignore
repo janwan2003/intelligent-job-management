@@ -34,5 +34,8 @@ dist/
 # Data directories
 data/
 
+# Runtime-generated training checkpoints (written to the /checkpoints mount)
+runtime/checkpoints/
+
 # Generated chart outputs (regenerable via infra/generate_chart.py)
 documentation/charts/

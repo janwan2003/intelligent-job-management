@@ -112,6 +112,6 @@ class Trainer(BaseTrainer):
 
 if __name__ == "__main__":
     logger.info("=" * 60)
-    logger.info("Starting cnn_big v2 training (synthetic 128x128x3, deep CNN)")
+    logger.info("Starting cnn_big training (synthetic 128x128x3, deep CNN)")
     logger.info("=" * 60)
     Trainer().train()

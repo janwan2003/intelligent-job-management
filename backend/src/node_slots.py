@@ -281,7 +281,7 @@ class NodeSlots:
     async def detect_drift(self, get_conn: Any) -> dict[str, tuple[int, int]]:
         """Return ``{node: (in_memory_used, db_used)}`` for nodes that disagree.
 
-        Empty dict means in-memory state matches DB.  Useful as a 5-minute
+        Empty dict means in-memory state matches DB.  Useful as a periodic
         sanity check to catch leaked permits from crashed dispatch tasks.
         """
         async with get_conn() as conn:

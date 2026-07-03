@@ -143,8 +143,3 @@ export function DataTable<TData, TValue>({
     </div>
   );
 }
-
-/** Helper to create a sortable column header label */
-export function SortableHeader({ label }: { label: string }) {
-  return <span className="font-medium">{label}</span>;
-}

@@ -46,11 +46,6 @@ HOST_ROOT: str = os.getenv("HOST_ROOT", "/host")
 HOST_PROJECT_ROOT: str = os.path.normpath(os.getenv("HOST_PROJECT_ROOT", HOST_ROOT))
 
 # In-process tracking
-# A value of ``None`` is a placeholder meaning "Phase 1 has claimed this job
-# but Phase 2 hasn't launched the container yet".  /stop must wait for the
-# Popen to materialize (or the placeholder to clear) before deciding what to
-# do; otherwise it would persist QUEUED while the container is about to be
-# launched, leaving the row lying about a live container.
 # Tracks which physical GPU indices each in-flight job has claimed on this
 # node.  Without this, ``--gpus N`` and ``--device nvidia.com/gpu=0`` both
 # default to GPU index 0 for every concurrent dispatch — two 1-GPU jobs on
@@ -60,6 +55,11 @@ HOST_PROJECT_ROOT: str = os.path.normpath(os.getenv("HOST_PROJECT_ROOT", HOST_RO
 _claimed_gpus: dict[str, set[int]] = {}
 _gpu_claim_lock = asyncio.Lock()
 
+# A value of ``None`` is a placeholder meaning "Phase 1 has claimed this job
+# but Phase 2 hasn't launched the container yet".  /stop must wait for the
+# Popen to materialize (or the placeholder to clear) before deciding what to
+# do; otherwise it would persist QUEUED while the container is about to be
+# launched, leaving the row lying about a live container.
 running_jobs: dict[str, subprocess.Popen[str] | None] = {}
 # Set when Phase 2 has either populated the Popen or bailed out (claim lost,
 # launch failure).  /stop awaits this Event instead of polling running_jobs,

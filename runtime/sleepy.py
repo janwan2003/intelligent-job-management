@@ -5,6 +5,8 @@ Useful for testing the full pipeline (profiling, stop, resume, checkpointing)
 without heavy CPU usage. Each "epoch" just sleeps for 1 second.
 """
 
+from __future__ import annotations
+
 import logging
 import os
 import random

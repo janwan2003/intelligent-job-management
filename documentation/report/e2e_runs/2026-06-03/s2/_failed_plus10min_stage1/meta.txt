@@ -1,5 +1,0 @@
-scenario_script: infra/e2e_scenario_2types.sh
-start_utc: 2026-06-03T10:34:23Z
-end_utc:   2026-06-03T10:47:06Z
-duration_s: 763
-exit_code: 1

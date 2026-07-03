@@ -5,7 +5,6 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { useCreateJob } from "@/api/hooks";
-import { FEATURE_SUBMIT_EXTENDED_FIELDS } from "@/config/features";
 import {
   DEFAULT_IMAGE,
   DEFAULT_JOB_PRIORITY,
@@ -167,7 +166,6 @@ export default function SubmitJob() {
           </div>
 
           {/* Training Parameters */}
-          {FEATURE_SUBMIT_EXTENDED_FIELDS && (
             <div className="rounded-lg border border-border bg-card p-5 space-y-4">
               <h2 className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">Training Parameters</h2>
 
@@ -223,10 +221,8 @@ export default function SubmitJob() {
 
               </div>
             </div>
-          )}
 
           {/* Scheduling */}
-          {FEATURE_SUBMIT_EXTENDED_FIELDS && (
             <div className="rounded-lg border border-border bg-card p-5 space-y-4">
               <h2 className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">Scheduling</h2>
 
@@ -296,7 +292,6 @@ export default function SubmitJob() {
                 </div>
               </div>
             </div>
-          )}
 
           <div className="flex gap-3">
             <Button type="submit" className="px-6" disabled={createJob.isPending}>

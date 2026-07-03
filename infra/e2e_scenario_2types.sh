@@ -1,27 +1,29 @@
 #!/usr/bin/env bash
-# Scenario 2 — two types, single urgent 2-GPU preempt.
+# Scenario 2 — two types, full cluster: single-evict P600×1 + migrate-to-A40.
 #
-# Goal: demonstrate that under tight-deadline pressure the optimiser
-# picks a multi-GPU bundle (QuadroP600$\times$2) for a STANDARD run
-# (not just for profiling), evicting both low-priority occupants of
-# that node in a single cascade.  Two types exercised:
-#   - cnn\_big (1.68$\times$ speedup on P600$\times$2; A40 is 8$\times$
-#     faster than P600 so tight-deadline cnn\_big is forced to A40).
-#   - lstm-small (P600 and A40 are roughly equal, so it lands on the
-#     cheaper P600 by default).
+# Goal: with the cluster full, an urgent cnn_big must PREEMPT to run.  The
+# GPUspb Random-Greedy proxy drop-preempts a SINGLE priority-1 lstm-small and
+# places URGENT on QuadroP600×1 — the cheapest preemptible bundle (A40 is held
+# by equal-priority priority-5 pins, which RG never evicts for an equal-
+# priority job).  When a pin finishes on its own, IJM migrates URGENT
+# P600×1 → A40×1 (cross-node, torch 1.5.1 → 2.6), where it meets its +22-min
+# deadline; the evicted lstm-small resumes on the freed P600 slot from its
+# checkpoint.  Two types exercised:
+#   - cnn_big     (compute-heavy synthetic CNN; the pins and the urgent job).
+#   - lstm-small  (MNIST; the two preemptible P600 patients).
+#
+# Matches the thesis Scenario 2 (documentation/report/Files/e2e.tex,
+# sec:e2e-s2 and tab:e2e-s2-decisions; run 2026-06-25).
 #
 # Cluster layout at S1 settle (deterministic by construction):
-#   polimi-gpu  (A40, 2 slots)  :: 2 cnn\_big priority-5 tight-deadline
-#                                  (forced to A40: P600 would be 8$\times$ tardy)
+#   polimi-gpu   (A40, 2 slots)  :: 2 cnn_big priority-5 tight-deadline pins
+#                                   (forced to A40: a P600 re-dispatch would
+#                                   blow their +10-min deadline)
 #   matemagician (P600, 2 slots) :: 2 lstm-small priority-1 loose-deadline
-#                                  (cheaper energy on P600; A40 blocked anyway)
+#                                   (cheaper energy on P600; A40 blocked anyway)
 #
-# At S2 we submit one URGENT cnn\_big with deadline +22\,min, which
-# admits P600$\times$2 (20\,min wallclock) but not P600$\times$1 (34\,min).
-# A40 cannot be used because evicting either priority-5 pin would
-# re-dispatch the victim onto P600$\times$1 (68\,min runtime $\gg$ its
-# 10-min deadline), and the cascade tardiness is far more expensive
-# than the P600$\times$2 plan's own preempt of two priority-1 lstm-smalls.
+# Behaviours exercised: deadline-driven preemption (single evict), cross-node
+# cross-version migration of URGENT, and resume of the EVICTED job.
 #
 # Usage:
 #   bash infra/e2e_scenario_2types.sh
@@ -124,9 +126,10 @@ all_jobs | jq -r '
     | "    \(.value.id[0:8]) \(.value.job_id) prio=\(.value.priority) → \(.value.assigned_node // "?") (\(.value.assigned_gpu_config // {} | tostring))"'
 
 # ---------------------------------------------------------------------------
-# Stage 2 — One URGENT cnn_big.  Deadline admits P600×2 (20 min) but
-# not P600×1 (34 min); A40 closed (priority-5 lstm-small).  Optimiser
-# must pick P600×2, preempting both PB1 and PB2.
+# Stage 2 — One URGENT cnn_big.  The cluster is full; A40 is held by equal-
+# priority pins (RG won't evict them), so the proxy drop-preempts a SINGLE
+# priority-1 lstm-small and places URGENT on P600×1.  It migrates to A40 in
+# Stage 3 once a pin frees.
 # ---------------------------------------------------------------------------
 
 log "Stage 2: submit URGENT cnn_big (priority=5, deadline $DEADLINE_URG)"
@@ -146,37 +149,84 @@ URG_P600=$(echo "$URG_CFG" | jq -r '.QuadroP600 // 0')
 log "  URGENT placed in ${URG_PLACE_S}s on $URG_NODE: $URG_CFG"
 [[ "$URG_NODE" == "matemagician" ]] \
     || fail "expected URGENT on matemagician (P600), got $URG_NODE"
-(( URG_P600 == 2 )) \
-    || fail "expected ${URG_P600}× QuadroP600=2 for P600×2 plan, got $URG_CFG"
-pass "URGENT placed on matemagician × QuadroP600×2 — 2-GPU standard run confirmed"
+(( URG_P600 == 1 )) \
+    || fail "expected QuadroP600×1 (single-evict plan, thesis), got $URG_CFG"
+pass "URGENT placed on matemagician × QuadroP600×1 — single-evict plan confirmed"
 
-# Both PB1 and PB2 should now be evicted (QUEUED with no assigned node,
-# or PREEMPTED briefly during cascade).
-log "Stage 2: verifying BOTH patient cnn_big got evicted"
+# Exactly ONE patient evicted (thesis: RG drop-preempts a single priority-1
+# lstm-small); the other keeps its P600 slot alongside URGENT.
+log "Stage 2: verifying exactly ONE lstm-small patient got evicted"
+evicted=0; still=0; EVICTED_ID=""
 for vid in "$PB1" "$PB2"; do
     status=$(job_field "$vid" status)
     node=$(job_field "$vid" assigned_node)
     log "    ${vid:0:8} status=$status node=$node"
-    [[ "$status" == "RUNNING" && "$node" == "matemagician" ]] \
-        && fail "patient ${vid:0:8} was NOT evicted (still on matemagician)"
+    if [[ "$status" == "RUNNING" && "$node" == "matemagician" ]]; then
+        still=$((still + 1))
+    else
+        evicted=$((evicted + 1)); EVICTED_ID="$vid"
+    fi
 done
-pass "both patient cnn_big jobs evicted"
+(( evicted == 1 )) \
+    || fail "expected exactly ONE lstm-small evicted (thesis single drop-preempt), got evicted=$evicted still=$still"
+(( still == 1 )) \
+    || fail "expected the other lstm-small still RUNNING on P600, got still=$still"
+pass "single-evict confirmed: ${EVICTED_ID:0:8} preempted, one patient still on P600"
 
 # ---------------------------------------------------------------------------
-# Stage 3 — Wait for terminal.  Evicted patients resume after URGENT
-# finishes (or migrate to A40 when lstm-small jobs vacate).
+# Stage 3 — When a pin finishes on its own, URGENT migrates P600×1 → A40×1
+# (cross-node, torch 1.5.1 → 2.6) to meet its deadline; the evicted lstm-small
+# resumes on the freed P600 slot from its checkpoint.
 # ---------------------------------------------------------------------------
 
-log "Stage 3: wait for terminal (≤ ${TERMINAL_TIMEOUT_S}s)…"
+log "Stage 3: waiting for URGENT ${URG:0:8} to migrate matemagician → A40 ($NODE_B) (≤ 12 min)…"
+if ! wait_for "URGENT migrate to A40" 720 5 \
+    "[.[] | select(.id == \"$URG\" and .assigned_node == \"$NODE_B\" and (.status == \"RUNNING\" or .status == \"PROFILING\"))] | length == 1"; then
+    log "  current state:"; all_jobs | jq '.[] | {id: .id[0:8], status, node: .assigned_node, cfg: .assigned_gpu_config}'
+    fail "URGENT did not migrate onto A40 ($NODE_B) — thesis: migrates once a pin frees"
+fi
+URG_MIG_CFG=$(job_field "$URG" assigned_gpu_config)
+pass "URGENT migrated P600 → A40 ($NODE_B): $URG_MIG_CFG (cross-node, torch 1.5.1 → 2.6)"
+
+log "Stage 3: waiting for evicted ${EVICTED_ID:0:8} to resume from checkpoint (≤ 12 min)…"
+if ! wait_for "evicted patient resumes" 720 5 \
+    "[.[] | select(.id == \"$EVICTED_ID\" and .assigned_node != null and (.status == \"RUNNING\" or .status == \"PROFILING\"))] | length == 1"; then
+    log "  current state:"; all_jobs | jq '.[] | {id: .id[0:8], status, node: .assigned_node, prog: .progress}'
+    fail "evicted lstm-small ${EVICTED_ID:0:8} did not resume"
+fi
+pass "evicted lstm-small ${EVICTED_ID:0:8} resumed from checkpoint"
+
+# ---------------------------------------------------------------------------
+# Stage 4 — Drain and final state.  All 5 jobs terminal, URGENT SUCCEEDED
+# (met its deadline on A40), 0 FAILED, slot tracker coherent.
+# ---------------------------------------------------------------------------
+
+log "Stage 4: wait for all 5 jobs terminal (≤ ${TERMINAL_TIMEOUT_S}s)…"
 if ! wait_for "all terminal" "$TERMINAL_TIMEOUT_S" 15 \
-    '[.[] | select(.status == "RUNNING" or .status == "QUEUED" or .status == "PROFILING")] | length == 0'; then
+    '[.[] | select(.status == "SUCCEEDED" or .status == "FAILED" or .status == "PREEMPTED")] | length == 5'; then
     log "  current state:"; all_jobs | jq '.[] | {id: .id[0:8], status, prog: .progress}'
-    fail "jobs still pending after ${TERMINAL_TIMEOUT_S}s"
+    fail "not all 5 jobs reached terminal state within ${TERMINAL_TIMEOUT_S}s"
 fi
 SUCC=$(count_status SUCCEEDED); FAIL=$(count_status FAILED); PRE=$(count_status PREEMPTED)
 log "  terminal: SUCCEEDED=$SUCC FAILED=$FAIL PREEMPTED=$PRE"
 (( FAIL == 0 )) || fail "expected 0 FAILED, got $FAIL"
-pass "all jobs reached terminal cleanly"
+URG_FINAL=$(job_field "$URG" status)
+[[ "$URG_FINAL" == "SUCCEEDED" ]] \
+    || fail "expected URGENT SUCCEEDED (met deadline on A40), got $URG_FINAL"
+pass "all jobs terminal cleanly; URGENT SUCCEEDED"
+
+# Slot-tracker coherence (thesis: zero oversubscription, zero underflow).
+SLOTS_METRICS=$(curl -sS "$API/admin/slots" | jq -c '.metrics')
+OVERSUB=$(echo "$SLOTS_METRICS" | jq -r '.acquire_oversub_count')
+UNDERFLOW=$(echo "$SLOTS_METRICS" | jq -r '.release_underflow_count')
+(( OVERSUB == 0 )) || fail "slot-tracker regression: acquire_oversub_count=$OVERSUB (expected 0)"
+if (( UNDERFLOW > 5 )); then
+    fail "slot-tracker regression: release_underflow_count=$UNDERFLOW (expected ≤ 5)"
+elif (( UNDERFLOW > 0 )); then
+    warn "release_underflow_count=$UNDERFLOW (within absorbed tolerance)"
+else
+    pass "slot-tracker clean: zero oversub, zero underflow"
+fi
 
 echo
-echo "${C_OK}✓ Scenario 2 (one-urgent P600×2 preempt) passed${C_END}"
+echo "${C_OK}✓ Scenario 2 (single-evict P600×1, migrate P600→A40, evicted patient resumes) passed${C_END}"

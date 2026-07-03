@@ -75,7 +75,7 @@ export default function ClusterStatus() {
                       <span className="text-muted-foreground">GPU</span>
                       <span className="text-card-foreground font-mono">
                         {node.resources.map((r, i) => (
-                          <span key={i}>
+                          <span key={r.gpu_type}>
                             {i > 0 && " + "}
                             {r.gpu_count}&times; {r.gpu_type}
                           </span>

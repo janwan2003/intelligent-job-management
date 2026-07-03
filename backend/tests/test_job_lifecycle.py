@@ -857,6 +857,17 @@ class TestCreateJob:
         )
         assert response.status_code == 201
 
+    def test_create_job_naive_deadline_returns_422(self) -> None:
+        # A deadline without a timezone offset is rejected rather than
+        # silently assumed-UTC (see JobCreate._require_tz_aware_deadline) —
+        # guessing the zone could shift the absolute instant.
+        client, _conn, _ = _make_rich_client()
+        response = client.post(
+            "/jobs",
+            json={"job_id": "t", "dockerImage": "img", "command": ["cmd"], "deadline": "2026-01-01T00:00:00"},
+        )
+        assert response.status_code == 422
+
     def test_create_job_assigns_profiling_config(self) -> None:
         client, conn, _ = _make_rich_client()
         response = client.post(

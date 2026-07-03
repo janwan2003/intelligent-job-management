@@ -1,15 +1,10 @@
 #!/usr/bin/env bash
 # Deploy the IJM worker (+ postgres on matemagician) to a GPU node.
 # Usage:
-#   ./infra/deploy.sh                              # full deploy to matemagician
-#   ./infra/deploy.sh --worker-only polimi-gpu     # worker-only deploy
+#   ./infra/deploy.sh [HOST]                       # full deploy (default: matemagician)
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-WORKER_ONLY=0
-if [ "${1:-}" = "--worker-only" ]; then
-  WORKER_ONLY=1; shift
-fi
 HOST="${1:-polimi}"
 # Remote deploy identity — the account whose name prefixes the containers and
 # deploy path on the shared host.  REMOTE_DIR and the compose container names
@@ -32,7 +27,7 @@ IMAGE_TAG_OVERRIDE="${IMAGE_TAG_OVERRIDE:-}"
 NODE_TOTAL_GPUS="${NODE_TOTAL_GPUS:-0}"
 SOCKET="/tmp/ijm-deploy-$$"
 
-echo "==> Deploying $([ "$WORKER_ONLY" = 1 ] && echo "worker-only" || echo "full stack") to $HOST:$REMOTE_DIR (NODE_ID=$NODE_ID)"
+echo "==> Deploying full stack to $HOST:$REMOTE_DIR (NODE_ID=$NODE_ID)"
 
 ssh -fNM -S "$SOCKET" "$HOST"
 trap 'ssh -S "$SOCKET" -O exit "$HOST" 2>/dev/null; rm -f "$SOCKET"' EXIT
@@ -50,11 +45,7 @@ done
 eval "$RSYNC '$REPO_ROOT/worker/Dockerfile.server' '$HOST:$REMOTE_DIR/Dockerfile'"
 eval "$RSYNC '$REPO_ROOT/shared/constants.py' '$HOST:$REMOTE_DIR/shared/'"
 eval "$RSYNC '$REPO_ROOT/shared/profiling_sql.py' '$HOST:$REMOTE_DIR/shared/'"
-if [ "$WORKER_ONLY" = 1 ]; then
-  eval "$RSYNC '$REPO_ROOT/infra/docker-compose.worker.yml' '$HOST:$REMOTE_DIR/docker-compose.yml'"
-else
-  eval "$RSYNC '$REPO_ROOT/infra/docker-compose.server.yml' '$HOST:$REMOTE_DIR/docker-compose.yml'"
-fi
+eval "$RSYNC '$REPO_ROOT/infra/docker-compose.server.yml' '$HOST:$REMOTE_DIR/docker-compose.yml'"
 $SSH "$HOST" "printf 'data\n' > $REMOTE_DIR/.dockerignore"
 
 echo "==> Starting services"

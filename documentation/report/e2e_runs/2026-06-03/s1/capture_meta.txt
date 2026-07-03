@@ -1,4 +1,0 @@
-capture_kind: full-drain (live run after Stage-2 script abort)
-run_start_utc: 2026-06-03T09:35:00Z
-drain_wait_s: 2130
-captured_utc: 2026-06-03T10:32:05Z

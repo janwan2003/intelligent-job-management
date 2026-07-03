@@ -36,9 +36,10 @@ PG_NOTIFY_SCHEDULE = "ijm_schedule"
 # API's own /stop calls issued as part of an in-flight plan; the plan's
 # own dispatch step will pick up the just-released slot, so re-running
 # the optimiser there would just thrash the plan it is already
-# executing.  Legacy 2-field payloads ("<node>:<count>", emitted by
-# pre-fix workers) are still parsed and default to TERMINAL — safe
-# (wakes the scheduler) and forwards-compatible during rolling deploy.
+# executing.  All emitters send the 3-field form; ``parse_slot_payload``
+# also tolerates a 2-field payload ("<node>:<count>") and defaults it to
+# TERMINAL — a defensive fallback (wakes the scheduler, never drops a
+# slot release) if a malformed or truncated reason ever arrives.
 PG_NOTIFY_SLOT_FREED = "ijm_slot_freed"
 
 

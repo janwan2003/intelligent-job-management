@@ -173,7 +173,7 @@ export default function Profiling() {
                               {formatGpuConfig(config.gpu_config)}
                             </TableCell>
                             <TableCell className="font-mono text-xs py-2.5">
-                              {isDone ? (
+                              {result != null && result.duration_seconds != null ? (
                                 formatDuration(result.duration_seconds)
                               ) : (
                                 <span className="text-muted-foreground">—</span>

@@ -692,7 +692,7 @@ A40↔P600 / torch-2.6↔1.5.1 migration path.
 
 | File | Purpose |
 |---|---|
-| [`cnn_big.py`](runtime/cnn_big.py) | Deep, wide CNN on synthetic 128×128×3 tensors. **The placement-choice / 2-GPU benchmark** — deliberately sized so per-step compute amortizes DataParallel sync overhead (P600×2 is 1.68× P600×1; A40×2 is 1.12× A40×1). Used by `e2e_scenario_2types.sh`. Don't change its shape without re-measuring (CLAUDE.md). |
+| [`cnn_big.py`](runtime/cnn_big.py) | Deep, wide CNN on synthetic 128×128×3 tensors. **The placement-choice / 2-GPU benchmark** — deliberately sized so per-step compute amortizes DataParallel sync overhead (P600×2 is 1.68× P600×1; A40×2 is 1.12× A40×1). Used by `e2e_scenario_2gpu.sh` (the 2-GPU standard-placement proof) and `e2e_scenario_2types.sh` (pins + urgent job). Don't change its shape without re-measuring (CLAUDE.md). |
 | [`convnet.py`](runtime/convnet.py) | Lightweight 3-layer CNN on CIFAR-10 (no multi-GPU win). |
 | [`efficientnet.py`](runtime/efficientnet.py) | MBConv EfficientNet on CIFAR-10 (SiLU unsupported on legacy torch). |
 | [`lstm_big.py`](runtime/lstm_big.py) / [`lstm_small.py`](runtime/lstm_small.py) | 3-layer / 1-layer LSTM on MNIST sequences; `flatten_parameters()` to quiet the DataParallel RNN warning. |
@@ -725,9 +725,9 @@ to a bug in §3.
 
 | File | What it does |
 |---|---|
-| `docker-compose.yml` / `.server.yml` / `.worker.yml` / `.tunnel.yml` | Compose topologies: full local stack, API+Postgres "server" half, per-node worker half, and the SSH-tunnel wiring for distributed runs. |
-| `e2e_scenario.sh` | **Scenario 1** (~10 min, `cnn_big`): multi-GPU profiling → horizon-myopic placement on cheaper P600 → natural-finish migration P600→A40 (exercising cross-version checkpoint resume) → user-stop takeover. Assertions are plain `curl` calls — reproducible by hand. |
-| `e2e_scenario_2types.sh` | Scenario 1 with mixed `lstm-small` + `lstm-big` (back-to-back preempts). |
+| `docker-compose.yml` / `.server.yml` / `.tunnel.yml` | Compose topologies: full local stack, the remote worker+Postgres "server" half deployed per GPU node, and the SSH-tunnel wiring for distributed runs. |
+| `e2e_scenario.sh` | **Scenario 1** (~15 min, `cnn_big`): multi-GPU profiling → horizon-myopic placement on the free cheaper P600 (no preempt) → natural-finish migration P600→A40 (exercising cross-version checkpoint resume) → slot-tracker invariants. Assertions are plain `curl` calls — reproducible by hand. |
+| `e2e_scenario_2types.sh` | **Scenario 2** (`cnn_big` + `lstm-small`): prio-5 `cnn_big` pins on A40, prio-1 `lstm-small` patients on P600; one urgent `cnn_big` drop-preempts a *single* patient onto P600×1, then migrates P600→A40 when a pin frees while the evicted patient resumes. |
 | `e2e_scenario_unprofiled.sh` | Profile-always path for jobs with no pre-seeded profiling data. |
 | `e2e_scenario_2gpu.sh` | 2-GPU DataParallel bundle placement. |
 | `smoke_test.sh` | Bring up the stack, wait for API + worker health. |

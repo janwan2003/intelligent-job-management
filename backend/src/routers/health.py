@@ -1,14 +1,11 @@
 """Health check endpoints."""
 
-import logging
 from typing import Any
 
 from fastapi import APIRouter
 from fastapi.responses import JSONResponse
 
 import src.state as state
-
-logger = logging.getLogger(__name__)
 
 router = APIRouter()
 

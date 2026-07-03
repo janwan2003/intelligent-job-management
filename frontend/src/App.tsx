@@ -6,7 +6,6 @@ import { TooltipProvider } from "@/components/ui/tooltip";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { BrowserRouter, Routes, Route } from "react-router-dom";
 import { AppSidebar } from "@/components/AppSidebar";
-import { FEATURE_CLUSTER_STATUS, FEATURE_PROFILING_PAGE } from "@/config/features";
 import Dashboard from "@/pages/Dashboard";
 import JobQueue from "@/pages/JobQueue";
 import SubmitJob from "@/pages/SubmitJob";
@@ -71,8 +70,8 @@ export default function App() {
                   <Route path="/" element={<Dashboard />} />
                   <Route path="/jobs" element={<JobQueue />} />
                   <Route path="/submit" element={<SubmitJob />} />
-                  {FEATURE_CLUSTER_STATUS && <Route path="/cluster" element={<ClusterStatus />} />}
-                  {FEATURE_PROFILING_PAGE && <Route path="/profiling" element={<Profiling />} />}
+                  <Route path="/cluster" element={<ClusterStatus />} />
+                  <Route path="/profiling" element={<Profiling />} />
                   <Route path="*" element={<NotFound />} />
                 </Routes>
               </main>

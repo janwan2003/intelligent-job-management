@@ -6,7 +6,6 @@ import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { useJobs, useStopJob, useResumeJob, useDeleteJob, useClearAllJobs, useJobLogs } from "@/api/hooks";
-import { FEATURE_JOB_EXTENDED_FIELDS, FEATURE_PROFILING_SCHEDULER } from "@/config/features";
 import { STOPPABLE_STATUSES, RESUMABLE_STATUSES, JOB_ID_DISPLAY_LENGTH, formatGpuConfig } from "@/config/constants";
 import type { ApiJob } from "@/types/job";
 import { format } from "date-fns";
@@ -99,8 +98,7 @@ export default function JobQueue() {
     },
   ];
 
-  const extendedColumns: ColumnDef<ApiJob, unknown>[] = FEATURE_JOB_EXTENDED_FIELDS
-    ? [
+  const extendedColumns: ColumnDef<ApiJob, unknown>[] = [
         {
           accessorKey: "priority",
           header: "Priority",
@@ -149,11 +147,9 @@ export default function JobQueue() {
             return <span className="font-mono text-xs text-muted-foreground">{v ?? "—"}</span>;
           },
         },
-      ]
-    : [];
+      ];
 
-  const profilingColumns: ColumnDef<ApiJob, unknown>[] = FEATURE_PROFILING_SCHEDULER
-    ? [
+  const profilingColumns: ColumnDef<ApiJob, unknown>[] = [
         {
           id: "gpu_config",
           header: "GPU Config",
@@ -171,19 +167,7 @@ export default function JobQueue() {
             );
           },
         },
-        {
-          accessorKey: "estimated_duration",
-          header: "ETA",
-          cell: ({ getValue }) => {
-            const v = getValue() as number | null | undefined;
-            if (v === null || v === undefined) return <span className="font-mono text-xs text-muted-foreground">—</span>;
-            const mins = Math.floor(v / 60);
-            const secs = (v % 60).toFixed(2);
-            return <span className="font-mono text-xs text-muted-foreground">{mins > 0 ? `${mins}m ` : ""}{secs}s</span>;
-          },
-        },
-      ]
-    : [];
+      ];
 
   const tailColumns: ColumnDef<ApiJob, unknown>[] = [
     {

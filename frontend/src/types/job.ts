@@ -44,7 +44,7 @@ export interface ProfilingResult {
   id: string;
   gpu_config: Record<string, number>;
   node_id: string;
-  duration_seconds: number;
+  duration_seconds: number | null;
   created_at: string;
 }
 

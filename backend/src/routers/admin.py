@@ -15,7 +15,7 @@ async def slot_state() -> dict[str, Any]:
 
     A drift report (``per_node[node].drift = true``) means the in-memory
     semaphore disagrees with what the DB says is RUNNING/PROFILING.  The
-    drift watcher reconciles automatically every 5 min; this endpoint is
+    drift watcher reconciles automatically every 15 s (IJM_DRIFT_HEARTBEAT_S); this endpoint is
     for on-demand inspection.
     """
     if state.node_slots is None:

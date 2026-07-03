@@ -94,7 +94,7 @@ async def create_job(job_request: JobCreate) -> Job:
         # Wake the optimizer immediately.  Greedy placement above only fills
         # free slots; it cannot decide to preempt a lower-priority running
         # job to make room for an urgent (e.g. past-deadline) submission.
-        # The 60s safety-net watcher would eventually trigger that decision,
+        # The 60-min safety-net watcher would eventually trigger that decision,
         # but is too slow for the common case.  The notify is debounced on
         # the consumer side so a redundant pass when greedy already placed
         # the job is essentially free.
@@ -251,7 +251,7 @@ async def resume_job(job_id: str) -> dict[str, str]:
 
         # Same rationale as create_job: wake the optimizer so a resumed job
         # with high priority / past deadline can preempt running work
-        # without waiting for the 60s safety-net watcher.
+        # without waiting for the 60-min safety-net watcher.
         await conn.execute(f"NOTIFY {PG_NOTIFY_SCHEDULE}")
 
     if schedule_result.node_id is not None and schedule_result.gpu_config is not None:
