@@ -18,7 +18,7 @@ A job management system for GPU deep learning clusters with profiling-based sche
 
   Replace `wangrat` if your cluster account differs. The scripts treat `polimi` as the SSH alias for the postgres + matemagician host, and `polimi-gpu` for the GPU node behind it.
 
-> **Operator note.** The infra scripts and docker-compose files default to `wangrat` as the remote username and `/home/wangrat/ijm` as the deploy path. If your account is different, search-and-replace `wangrat` across `infra/` and `config/` before deploying — most call sites already accept env-var overrides (`REMOTE_DIR`, `TUNNEL_HOST`, `NODE_ID`, etc.) but the defaults are user-specific.
+> **Operator note.** The infra scripts default to the `wangrat` account; to deploy under a different one, set `IJM_REMOTE_USER` — the deploy path, container names, and compose environment all derive from it (see [Bootstrap & lifecycle](#bootstrap--lifecycle--bash-infraijm)). The only `wangrat` literals left are the Docker Hub image namespace (`wangrat/ijm-*`), which only matters if you build and push your own training images, and the SSH config example above.
 
 **To work on backend / frontend source** (optional, dev only):
 
