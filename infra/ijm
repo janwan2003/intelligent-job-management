@@ -85,7 +85,10 @@ cmd_up() {
 
     c_blue "[3/3] Local stack (API + optimizer + frontend)"
     HOST_PROJECT_ROOT="$REMOTE_DIR" docker compose -f "$COMPOSE_FILE" up -d
-    for i in $(seq 1 15); do
+    # Up to ~60 s: if the API crash-looped while the tunnel was down, the
+    # in-flight startup attempt spends 30 s timing out on the DB pool
+    # before it exits and the restart policy brings up one that connects.
+    for i in $(seq 1 60); do
         curl -sf -m 2 http://localhost:8000/health >/dev/null 2>&1 && break
         sleep 1
     done

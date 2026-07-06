@@ -157,8 +157,29 @@ async def reset_stuck_queued_assignments(
 
 
 @asynccontextmanager
-async def lifespan(_app: FastAPI) -> AsyncGenerator[None]:
-    """Application lifespan manager."""
+async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
+    """Application lifespan manager.
+
+    Wraps ``_lifespan_body`` to guarantee the connection pool is closed
+    when startup fails partway (e.g. the DB is unreachable and the schema
+    apply times out).  A leaked ``AsyncConnectionPool`` keeps background
+    reconnect tasks alive after uvicorn logs "Application startup failed.
+    Exiting." and can prevent the process from exiting — leaving a
+    running container with nothing listening, which the ``unless-stopped``
+    restart policy can never heal.
+    """
+    try:
+        async with _lifespan_body(app):
+            yield
+    except BaseException:
+        if state.pool is not None:
+            await state.pool.close()
+        raise
+
+
+@asynccontextmanager
+async def _lifespan_body(_app: FastAPI) -> AsyncGenerator[None]:
+    """Application startup/shutdown; see ``lifespan`` for the failure guard."""
     # Load cluster configuration (nodes + GPU energy costs)
     cluster.load_nodes()
     cluster.load_gpu_energy_costs()
