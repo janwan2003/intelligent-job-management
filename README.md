@@ -18,12 +18,14 @@ A job management system for GPU deep learning clusters with profiling-based sche
 
   Replace `wangrat` if your cluster account differs. The scripts treat `polimi` as the SSH alias for the postgres + matemagician host, and `polimi-gpu` for the GPU node behind it.
 
-> **Operator note.** The infra scripts default to the `wangrat` account; to deploy under a different one, set `IJM_REMOTE_USER` — the deploy path, container names, and compose environment all derive from it (see [Bootstrap & lifecycle](#bootstrap--lifecycle--bash-infraijm)). The only `wangrat` literals left are the Docker Hub image namespace (`wangrat/ijm-*`), which only matters if you build and push your own training images, and the SSH config example above.
+> **Operator note.** The infra scripts default to the `wangrat` account; to deploy under a different one, set `IJM_REMOTE_USER` — the deploy path, container names, and compose environment all derive from it (see [Bootstrap & lifecycle](#bootstrap--lifecycle--bash-infraijm)). The training-image namespace (`wangrat/ijm-*`) is likewise a default: the e2e scenarios take `IMAGE_NS=<your-namespace>` to submit images built under a different name. The remaining `wangrat` occurrences in this README are those two defaults spelled out in examples, plus the SSH config example above.
+
+The client machine can be Linux or macOS: the `infra/` scripts stick to portable shell (BSD-compatible `date`, no `ss`), and the local stack runs under Docker Desktop. On Apple Silicon the runtime images build as `linux/arm64` — pip resolves CPU wheels for `torch==2.6.0`, which is fine because the local worker is CPU-only (`WORKER_GPU_MODE=none`).
 
 **To work on backend / frontend source** (optional, dev only):
 
 - Python 3.13+ with [uv](https://docs.astral.sh/uv/)
-- Node.js 24+ with [pnpm](https://pnpm.io/)
+- Node.js 20+ with [pnpm](https://pnpm.io/) (the frontend Docker image builds on Node 24)
 
 ## Cluster Deployment (Polimi server) — the supported path
 
@@ -54,12 +56,12 @@ After `bash infra/ijm up`:
 
 ### Shared filesystem (for cross-node checkpoint resume)
 
-So a job preempted on node-A can resume on node-B from its checkpoint, all nodes must share `~/ijm/data/checkpoints/`. We use rclone over SSH:
+So a job preempted on node-A can resume on node-B from its checkpoint, all nodes must share `~/ijm/data/checkpoints/`. We use [rclone](https://rclone.org/install/) (single static binary, installable without root into `~/.local/bin`) over SSH; FUSE must be present for `rclone mount`:
 
 ```bash
-# On each non-primary node
-sudo dnf install fuse-sshfs   # or apt install fuse3
-~/.local/bin/rclone mount matemagician:/home/wangrat/ijm/data ~/ijm/data \
+# On each non-primary node (same account name on all nodes)
+sudo dnf install fuse-sshfs   # or apt install fuse3  (provides FUSE for the mount)
+~/.local/bin/rclone mount matemagician:/home/$USER/ijm/data ~/ijm/data \
   --daemon --vfs-cache-mode writes --dir-cache-time 10s
 ```
 
@@ -68,11 +70,13 @@ NFS works too if you have admin access.
 ### End-to-end scenarios
 
 ```bash
-bash infra/e2e_scenario.sh         # default: cnn_big single-type, prio-staggered patients + URGENT migration
-bash infra/e2e_scenario_2types.sh  # cnn_big PINs + lstm-small patients + one URGENT cnn_big
+bash infra/e2e_scenario.sh            # default: cnn_big single-type, prio-staggered patients + URGENT migration
+bash infra/e2e_scenario_2types.sh     # cnn_big PINs + lstm-small patients + one URGENT cnn_big
+bash infra/e2e_scenario_2gpu.sh       # Scenario 2b: forced 2-GPU standard placement (cnn_big)
+bash infra/e2e_scenario_unprofiled.sh # Scenario 3: preempt-for-profile with an unprofiled job type
 ```
 
-Both clear DB state at Stage 0 and run the full submission → profile-sweep → URGENT preempt → cross-node resume → drain pipeline. Override defaults via env: `JOB_TYPE=lstm-small bash infra/e2e_scenario.sh`, `EPOCHS_BIG=80 EPOCHS_SMALL=400 bash infra/e2e_scenario_2types.sh`, etc. Current script defaults: scenario 1 uses `JOB_TYPE=cnn_big`; scenario 2 uses `EPOCHS_BIG=40` for the URGENT cnn_big and `EPOCHS_SMALL=200` for the patient lstm-smalls.
+See [documentation/e2e-scenarios.md](documentation/e2e-scenarios.md) for what each scenario exercises. All clear DB state at Stage 0; the first two run the full submission → profile-sweep → URGENT preempt → cross-node resume → drain pipeline. Override defaults via env: `JOB_TYPE=lstm-small bash infra/e2e_scenario.sh`, `EPOCHS_BIG=80 EPOCHS_SMALL=400 bash infra/e2e_scenario_2types.sh`, `IMAGE_NS=<your-docker-namespace>` to submit images from a different namespace, etc. Current script defaults: scenario 1 uses `JOB_TYPE=cnn_big`; scenario 2 uses `EPOCHS_BIG=40` for the URGENT cnn_big and `EPOCHS_SMALL=200` for the patient lstm-smalls.
 
 ### Advanced: manual per-node deploy
 
@@ -100,14 +104,16 @@ The `runtime/` directory is not deployed to the server. Copy it over and build t
 ```bash
 rsync -av runtime/ polimi:~/ijm-runtime/
 ssh polimi 'cd ~/ijm-runtime &&
-  for s in lstm_small.py lstm_big.py convnet.py efficientnet.py cnn_big.py; do
-    tag=${s%.py}; tag=${tag//_/-}
-    docker build --build-arg SCRIPT=$s -t wangrat/ijm-$tag:latest .
-    docker build -f Dockerfile.legacy --build-arg SCRIPT=$s -t wangrat/ijm-$tag:legacy .
+  for pair in "lstm_small.py lstm-small" "lstm_big.py lstm-big" \
+              "convnet.py convnet" "efficientnet.py efficientnet" \
+              "cnn_big.py cnn_big"; do
+    set -- $pair
+    docker build --build-arg SCRIPT=$1 -t wangrat/ijm-$2:latest .
+    docker build -f Dockerfile.legacy --build-arg SCRIPT=$1 -t wangrat/ijm-$2:legacy .
   done'
 ```
 
-Note: the image-name convention uses dashes (`lstm-small`, `cnn-big`) but the python sources keep underscores (`lstm_small.py`, `cnn_big.py`). The scenarios submit with the **tag** in image+job_id, e.g.\ `wangrat/ijm-cnn_big:latest` — that's a tag that intentionally keeps the underscore (the worker / API don't care which separator the type uses; they just propagate it verbatim).
+Note the mixed naming convention, which the loop above reproduces exactly: the LSTM images use dashes (`lstm-small`, `lstm-big`) while `cnn_big` keeps its underscore — these tags are what the e2e scenarios submit as image+job_id (`wangrat/ijm-cnn_big:latest`, `wangrat/ijm-lstm-small:latest`). The worker / API don't care which separator a type uses; they propagate it verbatim — but the built tag must match what the scenarios submit, or jobs fail with image-not-found.
 
 If the node can't reach Docker Hub (Polimi firewall), build the image locally and transfer:
 
@@ -158,7 +164,7 @@ ssh polimi-gpu 'nvidia-ctk cdi generate --output=$HOME/.config/cdi/nvidia.yaml'
 ssh polimi-gpu 'mkdir -p ~/.config/docker && cat > ~/.config/docker/daemon.json <<EOF
 {
     "features": {"cdi": true},
-    "cdi-spec-dirs": ["/home/wangrat/.config/cdi"],
+    "cdi-spec-dirs": ["$HOME/.config/cdi"],
     "runtimes": {
         "nvidia": {"path": "nvidia-container-runtime", "args": []}
     }
@@ -178,7 +184,7 @@ sudo loginctl enable-linger $USER     # asks admin
 echo 'export DOCKER_HOST=unix:///run/user/$(id -u)/docker.sock' >> ~/.bashrc
 ```
 
-Then deploy as usual — the worker compose detects `DOCKER_SOCK` env var to mount the rootless socket.
+Then deploy with `deploy_native.sh` — the worker runs natively (no worker container) and its Docker CLI picks up `DOCKER_HOST` from your shell profile, so it talks to the rootless daemon.
 
 ---
 
@@ -196,7 +202,7 @@ docker build -t ijm-efficientnet:dev --build-arg SCRIPT=efficientnet.py runtime/
 docker build -t ijm-cnn_big:dev    --build-arg SCRIPT=cnn_big.py    runtime/   # heavy CNN, 2-GPU-beneficial
 ```
 
-`cnn_big` is a deep CNN (10 conv blocks, channels grow up to 512, 128×128×3 synthetic-tensor input, batch 32) deliberately sized so per-step compute amortises the DataParallel sync overhead on both GPU classes — see `tab:e2e-2gpu` in `documentation/report` for the measured per-bundle epoch times (P600×2 is **1.68× faster** than P600×1, A40×2 is 1.12× faster than A40×1).
+`cnn_big` is a deep CNN (10 conv blocks, channels grow up to 512, 128×128×3 synthetic-tensor input, batch 32) deliberately sized so per-step compute amortises the DataParallel sync overhead on both GPU classes — see `tab:e2e-bundle-costs` in `documentation/report` for the measured per-bundle epoch times (P600×2 is **1.68× faster** than P600×1, A40×2 is 1.12× faster than A40×1).
 
 ### 2. Create data directories
 
@@ -280,6 +286,52 @@ Each new job type runs a short profiling pass first to measure GPU throughput. A
 
 ---
 
+## Submitting your own job
+
+Use the frontend's **Submit** page, or POST directly (this exact payload works against the local stack):
+
+```bash
+curl -X POST http://localhost:8000/jobs -H 'Content-Type: application/json' -d "{
+  \"job_id\":      \"lstm-small\",
+  \"dockerImage\": \"ijm-lstm-small:dev\",
+  \"command\":     [],
+  \"Priority\":    3,
+  \"deadline\":    \"$(date -u -d '+2 hours' +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date -u -v +2H +%Y-%m-%dT%H:%M:%SZ)\",
+  \"epochsTotal\": 2
+}"
+```
+
+| Field | Meaning |
+|---|---|
+| `job_id` | The **job type**. Profiling results are keyed by it — submissions with the same `job_id` reuse the type's measured throughput instead of re-profiling. |
+| `dockerImage` | Any image following the container contract below (`ijm-*:dev` locally, `<ns>/ijm-*:latest` on the cluster). |
+| `Priority` | 1–5 (default 3). 5 is "urgent" — the scheduler may preempt running jobs for it. |
+| `deadline` | ISO-8601 UTC. Used by the optimizer for cost-aware placement. |
+| `epochsTotal` | Total training epochs (default 20). |
+| `batchSize` | Optional; exported to the container as `BATCH_SIZE`. |
+| `profilingEpochsNo` | Epochs per profiling pass (default 3). |
+
+On first submission of a new type the job runs short profiling passes (status `PROFILING`) to measure per-GPU-config throughput, then re-queues and runs to completion.
+
+### Writing a new training script
+
+Add a script to [runtime/](runtime/) that subclasses the `Trainer` base class in [runtime/base.py](runtime/base.py) (use [runtime/lstm_small.py](runtime/lstm_small.py) as a template — you provide the model, dataset, and batch preprocessing; checkpointing, resume, and progress logging come from the base class). Then build it the same way as the bundled scripts:
+
+```bash
+docker build -t ijm-my-model:dev --build-arg SCRIPT=my_model.py runtime/
+```
+
+and submit with `"dockerImage": "ijm-my-model:dev"`, `"job_id": "my-model"`. For the cluster, build both `:latest` and `:legacy` variants on the nodes as described in [Building the runtime images](#building-the-runtime-images-on-the-server).
+
+Any non-`Trainer` image works too if it honours the **container contract** the worker enforces:
+
+- Read `EPOCHS_TOTAL` (and optionally `BATCH_SIZE`) from the environment and run exactly that many epochs.
+- Write checkpoints atomically to `/checkpoints` (bind-mounted per job; shared across nodes) and on startup resume from the latest checkpoint if one exists — preempted jobs are restarted as fresh containers, possibly on another node.
+- Print one line per epoch to stdout in the form `Epoch <n>/<total> - Loss: <x> - Acc: <y>% - <seconds>s` — the worker parses `Epoch <n>/<total>` for live progress and the trailing `<seconds>s` for profiling measurements.
+- Exit 0 on completion (→ `SUCCEEDED`); non-zero → `FAILED` (resumable).
+
+---
+
 ## Development
 
 ### Backend
@@ -288,9 +340,11 @@ Each new job type runs a short profiling pass first to measure GPU throughput. A
 cd backend
 uv sync
 DATABASE_URL=postgresql://postgres:postgres@localhost:5432/ijm \
-HOST_PROJECT_ROOT=$(cd .. && pwd) \
+PYTHONPATH=$(cd .. && pwd) \
 uv run uvicorn src.app:app --port 8000 --reload
 ```
+
+(`PYTHONPATH` must point at the repo root so the backend can import the top-level `shared/` package.)
 
 Requires a running Postgres: `cd infra && docker compose up postgres`
 
@@ -306,15 +360,16 @@ pnpm dev        # dev server on :5173
 
 ```bash
 cd worker
+uv sync
 DATABASE_URL=postgresql://postgres:postgres@localhost:5432/ijm \
 HOST_ROOT=$(cd .. && pwd) \
 HOST_PROJECT_ROOT=$(cd .. && pwd) \
 PYTHONPATH=$(cd .. && pwd) \
 NODE_ID=local-worker \
-uvicorn app:app --port 8001
+uv run uvicorn app:app --port 8001
 ```
 
-The worker is split into modules: `app.py` (HTTP endpoints), `db.py`, `docker.py`, `execution.py`, `profiling.py`, `reconcile.py`.
+The worker is split into modules: `app.py` (HTTP endpoints), `constants.py`, `db.py`, `docker.py`, `execution.py`, `profiling.py`, `reconcile.py`.
 
 ### Tests
 
@@ -353,7 +408,8 @@ pre-commit install
 | `GET`  | `/jobs/{id}` | Get job details |
 | `POST` | `/jobs/{id}/stop` | Stop a running job |
 | `POST` | `/jobs/{id}/resume` | Resume a preempted/failed job |
-| `DELETE` | `/jobs/{id}` | Delete job and profiling results |
+| `DELETE` | `/jobs/{id}` | Delete job (keeps completed profiling results) |
+| `DELETE` | `/jobs` | Delete **all** jobs and profiling results |
 | `GET`  | `/jobs/{id}/logs` | Stream container output |
 
 ### Cluster
@@ -363,6 +419,14 @@ pre-commit install
 | `GET` | `/configurations` | List valid GPU configurations |
 | `GET` | `/gpu-costs` | GPU energy cost weights |
 | `GET` | `/profiling-results/{job_id}` | Profiling results for a job type |
+
+### Misc
+| Method | Path | Description |
+|--------|------|-------------|
+| `GET` | `/health` | API + DB + job-runner health |
+| `GET` | `/admin/slots` | Per-node slot-tracker state |
+| `POST` | `/admin/reconcile-slots` | Force a slot-drift reconcile |
+| `GET` | `/admin/dispatch-tasks` | In-flight dispatch tasks |
 
 ---
 
@@ -376,8 +440,9 @@ worker/     HTTP worker server — executes Docker containers on GPU nodes
 optimizer/  GPUspb cost-aware batch optimizer (C++ core + Flask wrapper)
 runtime/    Training container images (LSTM, ConvNet, EfficientNet, cnn_big)
 infra/      ijm orchestrator + deploy.sh / deploy_native.sh / tunnel.sh +
-            docker-compose{,.server,.tunnel,.worker}.yml + smoke_test.sh +
-            e2e_scenario*.sh + snapshot_run.sh + generate_chart{,_tex}.py
+            docker-compose{,.server,.tunnel}.yml + smoke_test.sh +
+            e2e_scenario*.sh + snapshot_run.sh + follow_optimizer.sh +
+            generate_chart{,_tex}.py + generate_fault_chart.py
 config/     Cluster node configs (local, server, tunnel) + GPU energy costs
 data/       Persistent data (pg/, checkpoints/, runs/)
 ```
@@ -385,10 +450,10 @@ data/       Persistent data (pg/, checkpoints/, runs/)
 ## Tech Stack
 
 **Backend**: Python 3.13, FastAPI, psycopg3, psycopg-pool, uv
-**Frontend**: TypeScript, React 19, Vite, TanStack Query, Tailwind, shadcn/ui
+**Frontend**: TypeScript, React 19, Vite (rolldown-vite), TanStack Query, Tailwind, shadcn/ui
 **Worker**: Python 3.13, FastAPI, asyncio, Docker CLI
 **Optimizer**: C++ (scheduling algorithms) + Python 3.8 (Flask REST wrapper)
-**Infrastructure**: Docker, PostgreSQL 16
+**Infrastructure**: Docker, PostgreSQL 18 (local compose; the matemagician server deploy is pinned to 16)
 
 ---
 
@@ -396,9 +461,9 @@ data/       Persistent data (pg/, checkpoints/, runs/)
 
 | Variable | Used by | Default | Notes |
 |---|---|---|---|
-| `DATABASE_URL` | API, worker | `postgresql://postgres:postgres@postgres:5432/ijm` | In tunnel mode the host is `localhost:5433`. |
-| `HOST_ROOT` | API | `/host` | Maps to repo root inside the API container. |
-| `HOST_PROJECT_ROOT` | API | `${PWD}/..` | Host-resolvable path used for Docker bind mounts. On the cluster the `infra/` scripts derive it from `IJM_REMOTE_USER`. |
+| `DATABASE_URL` | API, worker | compose sets `postgresql://postgres:postgres@postgres:5432/ijm`; bare backend falls back to `@localhost:5432`, the worker has no fallback | In tunnel mode the host is `localhost:5433`. |
+| `HOST_ROOT` | worker | `/host` | Repo root as seen from inside the worker container. |
+| `HOST_PROJECT_ROOT` | worker | `${PWD}/..` (compose) | Host-resolvable path used for Docker bind mounts. On the cluster the `infra/` scripts derive it from `IJM_REMOTE_USER`. |
 | `IJM_REMOTE_USER` | `infra/` scripts | `wangrat` | Account the remote deploy dir (`/home/$IJM_REMOTE_USER/ijm`) and the postgres/worker container names (`$IJM_REMOTE_USER-ijm-*`) are namespaced under. Set once to deploy under a different account — `REMOTE_DIR` and the container names all derive from it. |
 | `OPTIMIZER_URL` | API | `http://optimizer:8080` | Set to empty string to fall back to greedy FIFO scheduling. |
 | `OPTIMIZER_VERBOSE` | API | unset | Set to `1` for verbose optimizer-client diagnostic logs. |
@@ -406,7 +471,7 @@ data/       Persistent data (pg/, checkpoints/, runs/)
 | `WORKER_GPU_MODE` | worker | `runtime` | `runtime` (rootful + nvidia default runtime), `cdi` (rootless via CDI spec), or `none` (CPU-only — used by the all-in-one compose). |
 | `NODE_TOTAL_GPUS` | worker | (probes `nvidia-smi`) | Declares the node's GPU count without probing; set on GPU-less hosts (the all-in-one worker uses `2`). |
 | `IMAGE_TAG_OVERRIDE` | worker | unset | Rewrites the job's image tag (`:latest` → `:$IMAGE_TAG_OVERRIDE`). Set to `legacy` on matemagician. |
-| `NODE_ID` | worker | from deploy script | Identifies the node in `config/nodes_config.json`. |
+| `NODE_ID` | worker | `local` (code fallback; deploy scripts always set it) | Identifies the node in `config/nodes_config.json`. |
 | `VITE_API_URL` | frontend | `http://localhost:8000` | API base URL the SPA talks to. |
 
 ---

@@ -23,6 +23,12 @@
 set -euo pipefail
 
 API="${API:-http://localhost:8000}"
+IMAGE_NS="${IMAGE_NS:-wangrat}"   # Docker Hub namespace of the training images
+# Portable "UTC timestamp N minutes from now" (GNU `date -d` / BSD `date -v` on macOS).
+utc_in_min() {
+    date -u -d "+$1 minutes" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null \
+        || date -u -v "+$1M" +%Y-%m-%dT%H:%M:%SZ
+}
 NODE_A="${NODE_A:-polimi}"
 EPOCHS_SMALL="${EPOCHS_SMALL:-400}"
 EPOCHS_BIG="${EPOCHS_BIG:-40}"
@@ -39,7 +45,7 @@ submit_job() {
     local resp
     resp=$(curl -sS -X POST "$API/jobs" -H 'Content-Type: application/json' -d "{
         \"job_id\": \"$jt\",
-        \"dockerImage\": \"wangrat/ijm-$jt:latest\",
+        \"dockerImage\": \"$IMAGE_NS/ijm-$jt:latest\",
         \"command\": [],
         \"Priority\": $prio,
         \"deadline\": \"$deadline\",
@@ -85,7 +91,7 @@ pass "lstm-small + cnn_big fully profiled (4 cells each)"
 # ---------------------------------------------------------------------------
 
 log "Stage 1: 2 high-priority lstm-small jobs (will pin A40)"
-DL_AHEAD=$(date -u -d '+45 minutes' +%Y-%m-%dT%H:%M:%SZ)
+DL_AHEAD=$(utc_in_min 45)
 PIN1=$(submit_job lstm-small 5 "$DL_AHEAD" "$EPOCHS_SMALL"); sleep 4
 PIN2=$(submit_job lstm-small 5 "$DL_AHEAD" "$EPOCHS_SMALL")
 log "  ids: ${PIN1:0:8} ${PIN2:0:8}"
@@ -112,7 +118,7 @@ pass "both A40 slots pinned by priority=5 lstm-small"
 # Optimiser picks the on-time placement → P600x2.
 #
 log "Stage 2: submit URG-BIG-2GPU (cnn_big priority=4, deadline +22 min)"
-DL_TIGHT=$(date -u -d '+22 minutes' +%Y-%m-%dT%H:%M:%SZ)
+DL_TIGHT=$(utc_in_min 22)
 URG=$(submit_job cnn_big 4 "$DL_TIGHT" "$EPOCHS_BIG")
 log "  id: ${URG:0:8}"
 

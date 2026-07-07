@@ -13,7 +13,9 @@ services:
     environment:
       DATABASE_URL: postgresql://postgres:postgres@localhost:5433/ijm
       NODES_CONFIG: config/nodes_config.tunnel.json
-      HOST_PROJECT_ROOT: ${HOST_PROJECT_ROOT:-/home/wangrat/ijm}
+      # Set by `infra/ijm up` (derived from IJM_REMOTE_USER). Fails loud when
+      # this file is run by hand without it — export HOST_PROJECT_ROOT=/home/<user>/ijm.
+      HOST_PROJECT_ROOT: ${HOST_PROJECT_ROOT:?set by infra/ijm up (derived from IJM_REMOTE_USER)}
       OPTIMIZER_URL: ${OPTIMIZER_URL:-http://localhost:8080}
       OPTIMIZER_VERBOSE: ${OPTIMIZER_VERBOSE:-2}
       OPTIMIZER_METHOD: ${OPTIMIZER_METHOD:-RG}

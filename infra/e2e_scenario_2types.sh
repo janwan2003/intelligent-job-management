@@ -32,18 +32,24 @@
 #   EPOCHS_PIN     cnn_big A40-pin epochs (default 80 — outlast URG submit)
 #   EPOCHS_BIG     URGENT cnn_big epochs (default 40)
 #   EPOCHS_SMALL   patient lstm-small epochs (default 200)
-#   DEADLINE_PIN   cnn_big pin deadline (default "+10 minutes")
-#   DEADLINE_URG   URGENT cnn_big deadline (default "+22 minutes")
+#   DEADLINE_PIN_MIN   cnn_big pin deadline, minutes from now (default 10)
+#   DEADLINE_URG_MIN   URGENT cnn_big deadline, minutes from now (default 22)
 set -euo pipefail
 
 API="${API:-http://localhost:8000}"
+IMAGE_NS="${IMAGE_NS:-wangrat}"   # Docker Hub namespace of the training images
+# Portable "UTC timestamp N minutes from now" (GNU `date -d` / BSD `date -v` on macOS).
+utc_in_min() {
+    date -u -d "+$1 minutes" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null \
+        || date -u -v "+$1M" +%Y-%m-%dT%H:%M:%SZ
+}
 NODE_A="${NODE_A:-polimi}"
 NODE_B="${NODE_B:-polimi-gpu}"
 EPOCHS_PIN="${EPOCHS_PIN:-80}"
 EPOCHS_BIG="${EPOCHS_BIG:-40}"
 EPOCHS_SMALL="${EPOCHS_SMALL:-200}"
-DEADLINE_PIN="${DEADLINE_PIN:-+10 minutes}"
-DEADLINE_URG="${DEADLINE_URG:-+22 minutes}"
+DEADLINE_PIN_MIN="${DEADLINE_PIN_MIN:-10}"
+DEADLINE_URG_MIN="${DEADLINE_URG_MIN:-22}"
 TERMINAL_TIMEOUT_S="${TERMINAL_TIMEOUT_S:-3600}"
 
 C_INFO=$'\033[1;36m'; C_OK=$'\033[1;32m'; C_WARN=$'\033[1;33m'; C_FAIL=$'\033[1;31m'; C_END=$'\033[0m'
@@ -56,7 +62,7 @@ submit_job() {
     local jt="$1" prio="$2" deadline="$3" epochs="$4"
     local resp; resp=$(curl -sS -X POST "$API/jobs" -H 'Content-Type: application/json' -d "{
         \"job_id\": \"$jt\",
-        \"dockerImage\": \"wangrat/ijm-$jt:latest\",
+        \"dockerImage\": \"$IMAGE_NS/ijm-$jt:latest\",
         \"command\": [],
         \"Priority\": $prio,
         \"deadline\": \"$deadline\",
@@ -97,8 +103,8 @@ pass "API + workers healthy; DB cleared"
 # ---------------------------------------------------------------------------
 
 log "Stage 1a: 2 priority-5 tight-deadline cnn_big to pin A40"
-DL_PIN=$(date -u -d "$DEADLINE_PIN"  +%Y-%m-%dT%H:%M:%SZ)
-DL_LOOSE=$(date -u -d '+8 hours'     +%Y-%m-%dT%H:%M:%SZ)
+DL_PIN=$(utc_in_min "$DEADLINE_PIN_MIN")
+DL_LOOSE=$(utc_in_min 480)
 PIN1=$(submit_job cnn_big 5 "$DL_PIN" "$EPOCHS_PIN"); sleep 5
 PIN2=$(submit_job cnn_big 5 "$DL_PIN" "$EPOCHS_PIN")
 log "  pinA40 cnn_big: ${PIN1:0:8} ${PIN2:0:8} (deadline=$DL_PIN, epochs=$EPOCHS_PIN)"
@@ -132,8 +138,8 @@ all_jobs | jq -r '
 # Stage 3 once a pin frees.
 # ---------------------------------------------------------------------------
 
-log "Stage 2: submit URGENT cnn_big (priority=5, deadline $DEADLINE_URG)"
-DL_URG=$(date -u -d "$DEADLINE_URG" +%Y-%m-%dT%H:%M:%SZ)
+log "Stage 2: submit URGENT cnn_big (priority=5, deadline +${DEADLINE_URG_MIN} minutes)"
+DL_URG=$(utc_in_min "$DEADLINE_URG_MIN")
 URG=$(submit_job cnn_big 5 "$DL_URG" "$EPOCHS_BIG"); log "  URG=${URG:0:8} deadline=$DL_URG"
 
 T0=$(date +%s)

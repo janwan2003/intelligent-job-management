@@ -366,11 +366,33 @@ class ProfilingScheduler:
         profiled = await self.get_profiled_configs(conn, type_id)
         profiled_keys = {config_key(c) for c in profiled}
         remaining = [c for c in all_configs if config_key(c) not in profiled_keys]
-        if not remaining:
-            return [], None, None
-        target = remaining[0]
+        if remaining:
+            target = remaining[0]
+        else:
+            # Every config is claimed or measured for this type — but this
+            # instance may still OWN a claimed-unmeasured cell that cannot
+            # start because running standard jobs hold the GPUs it needs
+            # (e.g. an A40×2 claim while a standard run occupies one A40).
+            # Profile-always means that measurement outranks standard work,
+            # so chase the claim with the same min-cost eviction as an
+            # unclaimed config.  Without this branch the claim waits for
+            # natural drain, idling any partially-free node for the whole
+            # lifetime of the blocking job (observed 2026-07-16: lstm A40×2
+            # claim pended behind a standard cnn on one A40 while the other
+            # A40 sat idle).
+            in_flight = await self._get_in_flight_claims(conn, instance_id)
+            if not in_flight:
+                return [], None, None
+            # Smallest config first — cheapest eviction footprint.
+            target = sorted((c for c, _ in in_flight), key=lambda c: (sum(c.values()), sorted(c)))[0]
 
-        node_gpu_usage = await self.get_node_gpu_usage(conn)
+        # Exclude the requesting instance's own unmeasured claims from the
+        # occupancy view: the chase's whole purpose is to free THE slot its
+        # claim reserves, so counting that reservation as "used" inflates
+        # the shortfall past node capacity and makes every cover infeasible
+        # (an A40×2 claim on a 2-GPU node read as need=3).  No-op for the
+        # unclaimed-config path — the instance owns no claims yet.
+        node_gpu_usage = await self.get_node_gpu_usage(conn, exclude_instance=instance_id)
 
         # Find the first profile-capable node where evicting enough low-priority
         # jobs covers the shortfall.

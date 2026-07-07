@@ -28,7 +28,9 @@ c_green() { printf "\033[1;32m%s\033[0m\n" "$*"; }
 c_blue()  { printf "\033[1;36m%s\033[0m\n" "$*"; }
 
 port_listening() {
-    ss -tln 2>/dev/null | awk '{print $4}' | grep -qE "(:|^)$1\$"
+    # Portable across Linux + macOS (no `ss` on macOS): probe the port with
+    # bash's built-in /dev/tcp instead of parsing socket tables.
+    (: < "/dev/tcp/127.0.0.1/$1") 2>/dev/null
 }
 
 tunnel_up() {
@@ -105,7 +107,7 @@ cmd_up() {
 
 cmd_down() {
     c_blue "[1/2] Local stack"
-    docker compose -f "$COMPOSE_FILE" down 2>&1 | tail -5
+    HOST_PROJECT_ROOT="$REMOTE_DIR" docker compose -f "$COMPOSE_FILE" down 2>&1 | tail -5
     c_blue "[2/2] Tunnel"
     if [ -f "$TUNNEL_PIDFILE" ]; then
         local pid; pid=$(cat "$TUNNEL_PIDFILE")

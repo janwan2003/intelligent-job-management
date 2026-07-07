@@ -156,6 +156,146 @@ async def reset_stuck_queued_assignments(
     return reset_any
 
 
+def should_wake_on_slot_freed(
+    reason: SlotFreedReason,
+    pending_migrates: dict[str, Any],
+    dispatch_tasks: dict[str, asyncio.Task[None]],
+) -> bool:
+    """Decide whether a slot-freed NOTIFY should wake the optimiser.
+
+    Non-AUTO_PREEMPT reasons (TERMINAL, USER_STOP, ORPHAN_DRAIN — plus the
+    defensive TERMINAL fallback for unknown payloads) always wake: the free
+    is an external event the scheduler hasn't planned around.
+
+    AUTO_PREEMPT frees are the API's own ``/stop?reason=auto`` — but they
+    come in two flavours the payload cannot distinguish (it carries no
+    job id):
+
+    - **migrate**: the same plan queued a follow-up dispatch for the freed
+      slot (``pending_migrates`` → ``_apply_pending_migrates`` → a
+      ``dispatch_tasks`` entry).  Waking here would let RG's near-tie
+      nondeterminism flip the plan we are still executing — stay quiet.
+    - **drop**: the optimiser evicted the instance with NO re-assignment
+      (its plan omitted it entirely).  Nothing consumes the freed slot and
+      the evicted row sits QUEUED with no other wake source — the next
+      scheduled pass could be the 60-min queue watcher.  (The pre-
+      quiescence-gate drift watcher used to paper over this by waking every
+      15 s; observed stranding a live job for minutes on 2026-07-16 once
+      that was fixed.)  Waking is exactly what's needed.
+
+    We distinguish by plan state: any pending migrate or live dispatch task
+    means plan work is in flight and the suppression rationale holds.
+    Otherwise the plan has fully landed (or was drop-only) and the scheduler
+    must be woken to re-place whatever the drop left QUEUED.  A spurious
+    wake from the small window between a migrate's apply and its dispatch
+    registration is harmless — the pass no-ops as kept-same.
+
+    Hoisted to module scope for unit testing.
+    """
+    if reason != SlotFreedReason.AUTO_PREEMPT:
+        return True
+    plan_in_flight = bool(pending_migrates) or any(not t.done() for t in dispatch_tasks.values())
+    return not plan_in_flight
+
+
+async def gc_stale_pending_migrates(get_conn: Any, pending_migrates: dict[str, Any]) -> list[str]:
+    """Drop pending-migrate plans whose source row can no longer drain.
+
+    An entry waits for its row to reach QUEUED + ``assigned_node IS NULL``
+    (the state the worker leaves after ``/stop?reason=auto``).  That never
+    happens when the job outruns its own preempt: the container exits
+    SUCCEEDED/FAILED before the kill lands, the user stops or deletes the
+    job, or another path re-claims the row.  Such entries are dead plans —
+    but left in ``state.pending_migrates`` they read as "plan work in
+    flight" forever, muting both the drop-preempt wake
+    (``should_wake_on_slot_freed``) and the drift heartbeat's quiescence
+    gate (``drift_tick``).  Observed live 2026-07-16: two completed jobs'
+    migrate entries suppressed wakes on a fully idle cluster.
+
+    Keeps entries whose row is RUNNING/PROFILING (drain still in flight)
+    or QUEUED+NULL (drained — the caller's conditional UPDATE claims it
+    right after).  Everything else — terminal row, PREEMPTED (user-stop
+    owns it), QUEUED with a node already assigned (superseded), deleted
+    row — is popped.  Returns the popped instance ids.
+    """
+    if not pending_migrates:
+        return []
+    async with get_conn() as conn:
+        cur = await conn.execute(
+            "SELECT id, status, assigned_node FROM jobs WHERE id = ANY(%s)",
+            (list(pending_migrates.keys()),),
+        )
+        rows = {r[0]: (r[1], r[2]) for r in await cur.fetchall()}
+    stale: list[str] = []
+    for jid in list(pending_migrates.keys()):
+        row = rows.get(jid)
+        if row is not None:
+            status, assigned_node = row
+            if status in (JobStatus.RUNNING, JobStatus.PROFILING):
+                continue
+            if status == JobStatus.QUEUED and assigned_node is None:
+                continue
+        stale.append(jid)
+    for jid in stale:
+        pending_migrates.pop(jid, None)
+        logger.info("Dropped stale pending migrate for %s (source row can no longer drain)", jid[:8])
+    return stale
+
+
+async def drift_tick(
+    get_conn: Any,
+    node_slots: Any,
+    dispatch_tasks: dict[str, asyncio.Task[None]],
+    pending_migrates: dict[str, Any],
+) -> bool:
+    """One drift-heartbeat iteration.  Returns ``True`` iff drift was recovered
+    (the caller should then wake the scheduler — capacity may have changed).
+
+    The ``mem_used == db_used`` invariant (SLOT_INVARIANTS.md) is only defined
+    at quiescent points: while a dispatch is between ``acquire`` and the
+    worker's Phase-1 RUNNING flip, or a migrate is between the source
+    ``/stop`` and its re-dispatch, the two counters legitimately disagree.
+    Sampling mid-flight used to be misread as drift; the "recovery" then
+    released permits that live dispatch tasks were holding and woke the
+    optimiser, whose fresh cost-equivalent RG plan started the next migration
+    — a self-sustaining shuffle loop (observed 2026-07-15: identical tardy
+    jobs ping-ponged between nodes every 15–30 s for the whole run).  So the
+    check runs ONLY at quiescence.
+
+    Quiescence = no live dispatch task, no pending migrate plan, and no
+    QUEUED row holding an ``assigned_node`` (the DB-visible signature of a
+    dispatch between /run-accepted and the worker's claim; the stuck-dispatch
+    reaper clears stale ones after 30 s, so a wedged dispatch cannot mute the
+    watcher for long).  A true leak — a lost ``ijm_slot_freed`` NOTIFY — has
+    no in-flight work behind it and persists, so it is still healed on the
+    first quiescent tick after the loss.
+
+    Hoisted to module scope so the unit tests can exercise the gate against a
+    real connection (same pattern as ``reset_stuck_queued_assignments``).
+    """
+    if pending_migrates:
+        # A stale entry (job outran its own preempt) must not mute the
+        # heartbeat forever — purge first, then re-check.
+        await gc_stale_pending_migrates(get_conn, pending_migrates)
+    if pending_migrates:
+        return False
+    if any(not t.done() for t in dispatch_tasks.values()):
+        return False
+    async with get_conn() as conn:
+        cur = await conn.execute(
+            "SELECT 1 FROM jobs WHERE status = %s AND assigned_node IS NOT NULL LIMIT 1",
+            (JobStatus.QUEUED,),
+        )
+        if await cur.fetchone() is not None:
+            return False
+    drift = await node_slots.detect_drift(get_conn)
+    if not drift:
+        return False
+    logger.warning("Drift watcher: %s — reconciling", drift)
+    await node_slots.recover_from_drift(get_conn)
+    return True
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
     """Application lifespan manager.
@@ -444,17 +584,27 @@ async def _lifespan_body(_app: FastAPI) -> AsyncGenerator[None]:
                         still_unassigned.append((instance_id, type_id))
                 await conn.commit()
 
-                # Proactive profile preempts: an unprofiled type is invisible to
-                # the optimizer, so without an eviction the job sits forever.
-                # We only fire for jobs that have never been profiled — chasing
-                # additional configs on partially-profiled types thrashes because
-                # standard placement re-claims the freed slot before profile can.
+                # Proactive profile preempts: a profile-owing instance is
+                # invisible to the optimizer, so without an eviction it sits
+                # until the blocking jobs drain naturally.  Profile-always
+                # (the report's policy) says measurement outranks standard
+                # work, so we fire both for instances that can still claim a
+                # new config AND for instances holding a claimed-but-
+                # unmeasured cell that can't fit (e.g. an A40×2 claim behind
+                # a standard A40×1 run).  The historical thrash concern
+                # ("standard re-claims the freed slot before profile can")
+                # is closed by the pre-claim UPDATE below, which reserves
+                # the slot before the victims are stopped.
                 evicted_in_round: set[str] = set()
                 for instance_id, type_id in still_unassigned:
-                    # Only evict for instances under the configs_per_job budget —
-                    # otherwise we'd create extra profile runs the user never asked for.
+                    # Fire when the instance can still claim (budget left) or
+                    # already owns an unmeasured cell to execute.  Never
+                    # creates claims beyond configs_per_job: the chase for a
+                    # budget-exhausted instance only targets its own claims.
                     already_profiled = await scheduler._count_profiled_this_round(conn, instance_id)
-                    if already_profiled >= scheduler.configs_per_job:
+                    if already_profiled >= scheduler.configs_per_job and not await scheduler._get_in_flight_claims(
+                        conn, instance_id
+                    ):
                         continue
                     victims, target_node, target_config = await scheduler.try_preempt_for_profile(
                         conn, instance_id, type_id
@@ -641,6 +791,12 @@ async def _lifespan_body(_app: FastAPI) -> AsyncGenerator[None]:
         """
         if not state.pending_migrates:
             return
+        # Purge plans whose source row can no longer drain (job finished,
+        # user-stopped, deleted, or re-claimed) so they don't read as
+        # in-flight work forever — see gc_stale_pending_migrates.
+        await gc_stale_pending_migrates(state.get_conn, state.pending_migrates)
+        if not state.pending_migrates:
+            return
         now = datetime.now(UTC)
         applied: list[Assignment] = []
         async with state.schedule_lock, state.get_conn() as conn:
@@ -688,15 +844,18 @@ async def _lifespan_body(_app: FastAPI) -> AsyncGenerator[None]:
         Payload is "<node_id>:<n_gpus>:<reason>".  Receipt means the worker
         has fully cleaned up that slot's container.
 
-        The wake is gated by reason:
+        The wake is gated by ``should_wake_on_slot_freed``:
         - TERMINAL / USER_STOP / ORPHAN_DRAIN: external event — wake the
           optimiser so the freed slot can be reassigned.
-        - AUTO_PREEMPT: the API's own ``_preempt_and_release`` issued this
-          /stop as part of an in-flight plan.  The dispatch step of that
-          same plan will acquire the just-released slot via the
-          ``node_slots.release()`` we did synchronously above; re-running
-          the optimiser here would let RG's near-tie nondeterminism flip
-          the plan we are still executing.  Skip the wake.
+        - AUTO_PREEMPT with plan work in flight (pending migrate or live
+          dispatch task): the dispatch step of that same plan will acquire
+          the just-released slot; re-running the optimiser here would let
+          RG's near-tie nondeterminism flip the plan we are still
+          executing.  Skip the wake.
+        - AUTO_PREEMPT with NO plan work in flight: a drop-preempt — the
+          optimiser evicted the instance without re-assigning it, so no
+          dispatch will ever consume the slot and the evicted row would
+          otherwise sit QUEUED until the 60-min watcher.  Wake.
 
         Plan-execution safety net is preserved: if a planned preempt
         somehow fails to be followed by its planned dispatch (worker
@@ -727,16 +886,18 @@ async def _lifespan_body(_app: FastAPI) -> AsyncGenerator[None]:
                         state.node_slots.release(node_id, count)
                         # The just-released slot may be the source of an
                         # in-flight migrate whose new assignment we stashed
-                        # in ``state.pending_migrates`` at apply time.  Try
-                        # to commit any whose row is now QUEUED+NULL and
-                        # spawn their dispatch tasks — the UPDATE filter
-                        # guarantees only the right ones match.
+                        # in ``state.pending_migrates`` at apply time.  Apply
+                        # (and GC) those SYNCHRONOUSLY before the wake
+                        # decision below: it pops entries whose row drained
+                        # or died, so ``should_wake_on_slot_freed`` sees the
+                        # true plan state — a stale entry would otherwise
+                        # suppress the wake this free is owed.
                         if state.pending_migrates:
-                            asyncio.create_task(
-                                _apply_pending_migrates(),
-                                name="apply-pending-migrates",
-                            )
-                        if reason == SlotFreedReason.AUTO_PREEMPT:
+                            try:
+                                await _apply_pending_migrates()
+                            except Exception:
+                                logger.exception("apply_pending_migrates from slot listener failed")
+                        if not should_wake_on_slot_freed(reason, state.pending_migrates, state.dispatch_tasks):
                             logger.info(
                                 "slot freed by auto-preempt on %s (%d GPU) — skipping wake "
                                 "(in-flight plan's dispatch will pick it up)",
@@ -744,6 +905,13 @@ async def _lifespan_body(_app: FastAPI) -> AsyncGenerator[None]:
                                 count,
                             )
                             continue
+                        if reason == SlotFreedReason.AUTO_PREEMPT:
+                            logger.info(
+                                "slot freed by auto-preempt on %s (%d GPU) with no in-flight plan work — "
+                                "waking scheduler to re-place the dropped instance",
+                                node_id,
+                                count,
+                            )
                         notify_event.set()
             except Exception:
                 logger.warning("Slot listener lost connection, reconnecting in 5s")
@@ -751,11 +919,13 @@ async def _lifespan_body(_app: FastAPI) -> AsyncGenerator[None]:
 
     async def _drift_watcher() -> None:
         """Periodic drift heartbeat — corrects in-memory ``_used`` if it has
-        diverged from the DB authoritative count.  Catches anything the
-        listener missed: leftover containers from pre-fix runs completing,
-        races between profile→standard transitions, etc.  Bounds the time
-        any single drift episode can wedge the scheduler.  Period
-        configurable via IJM_DRIFT_HEARTBEAT_S (default 15s).
+        diverged from the DB authoritative count (missed ``ijm_slot_freed``
+        NOTIFY, crashed dispatch task).  Delegates to the module-level
+        ``drift_tick``, which only checks at quiescence — sampling while a
+        dispatch/migrate is in flight would misread legal transitional state
+        as drift and feed the optimiser spurious wakes.  Wakes the scheduler
+        only when something was actually recovered.  Period configurable via
+        IJM_DRIFT_HEARTBEAT_S (default 15s).
         """
         period_s = float(os.getenv("IJM_DRIFT_HEARTBEAT_S", "15"))
         while True:
@@ -763,10 +933,13 @@ async def _lifespan_body(_app: FastAPI) -> AsyncGenerator[None]:
             try:
                 if state.node_slots is None:
                     continue
-                drift = await state.node_slots.detect_drift(state.get_conn)
-                if drift:
-                    logger.warning("Drift watcher: %s — reconciling", drift)
-                    await state.node_slots.recover_from_drift(state.get_conn)
+                recovered = await drift_tick(
+                    state.get_conn,
+                    state.node_slots,
+                    state.dispatch_tasks,
+                    state.pending_migrates,
+                )
+                if recovered:
                     notify_event.set()
             except Exception:
                 logger.exception("Drift watcher iteration failed")

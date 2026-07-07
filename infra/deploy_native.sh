@@ -44,6 +44,8 @@ fi
 # Image tag override: ``:latest`` → ``:$IMAGE_TAG_OVERRIDE`` (per-node).
 # Used on matemagician where the legacy CUDA-10.1 image is needed.
 IMAGE_TAG_OVERRIDE="${IMAGE_TAG_OVERRIDE:-}"
+# GPU count override; empty means the worker probes ``nvidia-smi -L``.
+NODE_TOTAL_GPUS="${NODE_TOTAL_GPUS:-}"
 SOCKET="/tmp/ijm-native-deploy-$$"
 
 echo "==> Native deploy of worker to $HOST:$REMOTE_DIR (NODE_ID=$NODE_ID)"
@@ -96,6 +98,7 @@ $SSH "$HOST" "cd $REMOTE_DIR && (
     NODE_ID=$NODE_ID \
     WORKER_GPU_MODE='$WORKER_GPU_MODE' \
     IMAGE_TAG_OVERRIDE='$IMAGE_TAG_OVERRIDE' \
+    NODE_TOTAL_GPUS='$NODE_TOTAL_GPUS' \
     nohup .venv/bin/python -m uvicorn app:app --host 0.0.0.0 --port 8001 \
         > /tmp/ijm-worker.log 2>&1 < /dev/null &
 )"

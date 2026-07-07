@@ -79,10 +79,14 @@ Things that have tripped up past sessions:
   PostgreSQL `NOTIFY ijm_schedule` after profiling completes — don't
   add an in-memory fast-path that bypasses it.
 
-- **Slot accounting is `pg` + `node_slots.py`.** `mem_used` is in the
-  DB; `db_used` is reconciled by a periodic drift heartbeat
-  (`IJM_DRIFT_HEARTBEAT_S`). Never paper over a slot mismatch with a
-  rescue UPDATE — fix the producer.
+- **Slot accounting is `pg` + `node_slots.py`.** `db_used` (counted from
+  RUNNING/PROFILING rows) is authoritative; `mem_used` is the in-memory
+  semaphore mirror, reconciled to it by a periodic drift heartbeat
+  (`IJM_DRIFT_HEARTBEAT_S`). The heartbeat only checks at quiescence
+  (`drift_tick` in `backend/src/app.py`) — while a dispatch or migrate is
+  in flight the two counters legitimately disagree; don't remove the
+  gate, and never paper over a slot mismatch with a rescue UPDATE — fix
+  the producer.
 
 ## Design docs
 
@@ -99,10 +103,12 @@ Read these before making non-trivial scheduler or worker changes:
 
 ## Common pitfalls when making changes
 
-- Tests live in `backend/tests/` (real pytest suite, 6 files) and
-  `worker/tests/` (thin — only `test_profiling_duration.py`; most
-  worker behaviour is covered by `infra/e2e_scenario*.sh`). Adding
-  worker-side logic without an e2e to back it up is a known gap.
+- Tests live in `backend/tests/` (real pytest suite, 8 test modules —
+  `test_fault_injection.py` and `test_sql_integration.py` need a
+  reachable Postgres, else they skip) and `worker/tests/` (thin — only
+  `test_profiling_duration.py`; most worker behaviour is covered by
+  `infra/e2e_scenario*.sh`). Adding worker-side logic without an e2e to
+  back it up is a known gap.
 - Pre-commit hooks enforce ruff + mypy strict + deptry + eslint. See
   [.pre-commit-config.yaml](.pre-commit-config.yaml). Don't disable
   hooks; fix the cause.

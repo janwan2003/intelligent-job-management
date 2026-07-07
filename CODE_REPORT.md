@@ -227,6 +227,21 @@ on every slot-listener reconnect (catch events lost during downtime), on a
 15-second `_drift_watcher` heartbeat (`IJM_DRIFT_HEARTBEAT_S`), on
 `POST /admin/reconcile-slots`, and from the stuck-QUEUED reaper.
 
+**Refinement (2026-07): the heartbeat only fires at quiescence.** The
+`mem_used == db_used` invariant is only *defined* at quiescent points — while a
+dispatch sits between `acquire` and the worker's Phase-1 RUNNING flip, or a
+migrate sits between the source `/stop` and its re-dispatch, the two counters
+legitimately disagree. The original heartbeat sampled mid-flight, misread that
+transitional state as drift, "recovered" permits that live dispatch tasks were
+holding, and woke the optimizer — whose fresh cost-equivalent plan started the
+next migration, a self-sustaining shuffle loop (observed 2026-07-15: identical
+tardy jobs ping-ponged between nodes every 15–30 s for a whole run). The
+module-level `drift_tick()` now skips the check while any dispatch task is
+live, any migrate is pending, or any QUEUED row still holds an
+`assigned_node`; a true leak has no in-flight work behind it, persists, and is
+healed on the first quiescent tick. Pinned by the `test_drift_tick_*` cases in
+[test_fault_injection.py](backend/tests/test_fault_injection.py).
+
 **Honesty note (→ §11).** The drift watcher *is* a safety net layered over an
 event system — a "rule of thumb that compensates". It's justified because a
 distributed event bus over SSH tunnels genuinely *will* drop events, and the DB
@@ -242,13 +257,19 @@ cost-equivalent* plan, flip-flopping jobs mid-execution and never converging.
 
 **Fix.** The slot-freed payload carries a **reason**
 ([`SlotFreedReason`](shared/constants.py)). The API's `_slot_listener` releases
-the permit on every event but only **wakes the optimizer** for *external* events
-(`TERMINAL` / `USER_STOP` / `ORPHAN_DRAIN`). `AUTO_PREEMPT` — the API's own
-in-flight plan — releases silently; the plan's own dispatch step picks up the
-freed slot. Plan-execution safety is preserved because four independent wake
-sources (dispatch-exception, drift watcher, reaper, 60-min queue watcher) still
-recover if the plan stalls. Pinned by
-[test_slot_payload.py](backend/tests/test_slot_payload.py).
+the permit on every event; the wake decision is `should_wake_on_slot_freed()`.
+*External* events (`TERMINAL` / `USER_STOP` / `ORPHAN_DRAIN`) always wake.
+`AUTO_PREEMPT` — the API's own `/stop?reason=auto` — comes in two flavours the
+payload can't distinguish, so the gate reads plan state instead: while **plan
+work is in flight** (a pending migrate or a live dispatch task) the free is a
+*migrate* whose own dispatch step will consume the slot — waking would let the
+near-tie nondeterminism flip the plan mid-execution, so stay quiet. With **no
+plan work in flight** it's a *drop-preempt* (the optimizer evicted the instance
+without re-assigning it) — nothing will ever consume the slot and the evicted
+row would otherwise sit QUEUED until the 60-min watcher, so wake. Plan-execution
+safety is preserved because four independent wake sources (dispatch-exception,
+drift watcher, reaper, 60-min queue watcher) still recover if the plan stalls.
+Pinned by [test_slot_payload.py](backend/tests/test_slot_payload.py).
 
 ### 3.4 Phantom preempts in the dispatch window
 
@@ -273,13 +294,26 @@ dropped.
 
 **Fix.** A migrate is detected as an instance appearing in **both** the
 optimizer's assignments and its preempt list. The new placement is stashed in
-`state.pending_migrates`; the slot listener calls `_apply_pending_migrates()`
-after *every* slot-freed `NOTIFY`. The conditional `UPDATE` only fires once the
-source `/stop` has drained the row to `QUEUED + NULL`, so calling it on every
-event is safe. This became necessary *because of* the §3.3 fix — previously the
-churn-wake accidentally re-applied the plan; once we suppressed that wake, the
-migrate had to be carried across the preempt explicitly. Pinned by
+`state.pending_migrates`; the slot listener **awaits** `_apply_pending_migrates()`
+synchronously on *every* slot-freed `NOTIFY`, *before* the wake decision — so
+`should_wake_on_slot_freed` (§3.3) sees the true plan state. The conditional
+`UPDATE` only fires once the source `/stop` has drained the row to
+`QUEUED + NULL`, so calling it on every event is safe. This became necessary
+*because of* the §3.3 fix — previously the churn-wake accidentally re-applied
+the plan; once we suppressed that wake, the migrate had to be carried across
+the preempt explicitly. Pinned by
 [test_pending_migrates.py](backend/tests/test_pending_migrates.py).
+
+**Corollary — stale entries must be GC'd.** An entry waits for its row to
+reach `QUEUED + NULL`; that never happens when the job *outruns its own
+preempt* (container exits before the kill lands), is user-stopped, deleted, or
+re-claimed. Left in place, a dead plan reads as "plan work in flight" forever —
+muting both the drop-preempt wake (§3.3) and the drift heartbeat's quiescence
+gate (§3.2). Observed live 2026-07-16: two completed jobs' migrate entries
+suppressed wakes on a fully idle cluster. `gc_stale_pending_migrates()` purges
+entries whose source row can no longer drain; it runs at the top of every
+apply and every `drift_tick`. Pinned by the `test_gc_*` cases in
+[test_fault_injection.py](backend/tests/test_fault_injection.py).
 
 ### 3.6 Profile-always policy
 
@@ -354,34 +388,44 @@ background thread drops the noise lines.
 
 ## 4. Backend — `backend/src/`
 
-FastAPI application. **3,433 LOC across 19 files.** The center of gravity is
+FastAPI application. **3,720 LOC across 19 files.** The center of gravity is
 `app.py` (the scheduler engine), `node_slots.py` (the in-memory slot semaphores),
 `job_dispatcher.py` (the single dispatch path), `profiling.py` (profile-always),
 and `optimizer.py` (the GPUspb client). Everything else is models, config,
 routers, and helpers.
 
-### 4.1 `app.py` — application factory, lifespan, scheduler engine *(752 LOC)*
+### 4.1 `app.py` — application factory, lifespan, scheduler engine *(986 LOC)*
 
 **Purpose.** Build the FastAPI app, own the application lifespan, and run the
 five background tasks that *are* the scheduler.
 
 **Inside.**
-- `lifespan()` — loads cluster config, opens the psycopg `AsyncConnectionPool`
-  (min 2 / max 50), runs `schema.sql`, builds the `JobDispatcher` and
-  `NodeSlots` (then `reconcile()`s slots from the DB), and starts five tasks:
-  `_queue_watcher` (60-min safety net), `_notify_listener` (LISTEN
-  `ijm_schedule`), `_notify_consumer` (debounce + ≥5s min interval between
-  optimizer passes), `_slot_listener` (LISTEN `ijm_slot_freed`), `_drift_watcher`
-  (15s heartbeat). It kicks `notify_event` once at startup so jobs queued across
-  a restart get placed immediately.
-- `parse_slot_payload()` — module-scope parser for `"node:n:reason"` (and legacy
-  `"node:n"` → `TERMINAL`); hoisted out of the lifespan so unit tests can call it.
+- `lifespan()` / `_lifespan_body()` — the body loads cluster config, opens the
+  psycopg `AsyncConnectionPool` (min 2 / max 50), runs `schema.sql`, builds the
+  `JobDispatcher` and `NodeSlots` (then `reconcile()`s slots from the DB), and
+  starts five tasks: `_queue_watcher` (60-min safety net), `_notify_listener`
+  (LISTEN `ijm_schedule`), `_notify_consumer` (debounce + ≥5s min interval
+  between optimizer passes), `_slot_listener` (LISTEN `ijm_slot_freed`),
+  `_drift_watcher` (15s heartbeat). It kicks `notify_event` once at startup so
+  jobs queued across a restart get placed immediately. The `lifespan()` wrapper
+  closes the pool if startup fails partway — a leaked `AsyncConnectionPool`
+  keeps reconnect tasks alive after "Application startup failed", leaving a
+  zombie container that `unless-stopped` can never heal.
+- Module-scope, unit-testable helpers (hoisted out of the lifespan closures):
+  `parse_slot_payload()` — parser for `"node:n:reason"` (legacy `"node:n"` →
+  `TERMINAL`); `should_wake_on_slot_freed()` — the §3.3 wake gate;
+  `gc_stale_pending_migrates()` — the §3.5 dead-plan GC; `drift_tick()` — the
+  §3.2 quiescence-gated heartbeat iteration;
+  `reset_stuck_queued_assignments()` — the reaper body.
 - `_schedule_waiting_jobs()` — **the core loop.** Acquires `state.schedule_lock`
   only around DB writes; runs `optimize()` *outside* the lock so the HTTP call
   can't block other scheduler work. Three placement phases: **1b** apply
   optimizer assignments (stashing migrates into `pending_migrates`), **1a**
   profile-place QUEUED rows the optimizer skipped via `scheduler.schedule_job()`,
-  **1c** profile-preempt for still-unassigned unprofiled instances. Preempt and
+  **1c** profile-preempt for still-unassigned profile-owing instances — both
+  those that can still claim a new config *and* those holding a
+  claimed-but-unmeasured cell that can't fit (e.g. an A40×2 claim stuck behind
+  a standard A40×1 run). Preempt and
   dispatch tasks are spawned **outside** the lock and coordinate via `NodeSlots`.
 - `_preempt_and_release()` — fire-and-forget auto-preempt; **refuses to preempt a
   profiling run** ("profiling is sacred") and skips rows already PREEMPTED by a
@@ -470,7 +514,7 @@ slot_free`. Calls `node_slots.acquire/release` and the worker HTTP API.
 defensive bound (→ §11): if a worker truly hangs, the drift heartbeat repairs the
 slot anyway. Routing **everything** through this method is the §3.1 fix.
 
-### 4.4 `profiling.py` — the ProfilingScheduler *(588 LOC)*
+### 4.4 `profiling.py` — the ProfilingScheduler *(645 LOC)*
 
 **Purpose.** Implements profile-always (§3.6): decide whether a job runs in
 profiling or standard mode, claim configs atomically, and find/evict slots for
@@ -485,7 +529,15 @@ profiling.
   atomically claim new cells (`_atomic_claim_remaining` with `ON CONFLICT DO
   NOTHING` for race-safety); set `is_profiling_run` and the assignment.
 - `try_preempt_for_profile()` — find the cheapest victim set to evict so an
-  unprofiled type can profile.
+  unprofiled type can profile. When every config is already claimed/measured
+  but the instance still **owns a claimed-unmeasured cell** that can't start
+  (e.g. an A40×2 claim behind a standard A40×1 run), it *chases the claim*
+  with the same min-cost eviction — otherwise the claim waits for natural
+  drain while a partially-free node idles. The occupancy view excludes the
+  requesting instance's own unmeasured claims
+  (`get_node_gpu_usage(exclude_instance=...)`) — counting the reservation the
+  chase exists to free would inflate the shortfall past node capacity and make
+  every cover infeasible.
 - `_count_profiled_this_round()`, `get_profiled_configs()`,
   `gc_orphaned_claims()` (15-min lease cleanup for crashed claims).
 
@@ -541,7 +593,7 @@ only standard) are all here. Mixed-GPU virtual node IDs require the reverse map.
 | [`jobs.py`](backend/src/routers/jobs.py) | 415 | `POST /jobs` (create → `schedule_job` → dispatch), `GET /jobs[/{id}]`, `POST /jobs/{id}/stop` (SELECT FOR UPDATE → atomically pre-flip to PREEMPTED → async `/stop?reason=user`), `POST /jobs/{id}/resume`, `DELETE /jobs[/{id}]` (stop + delete unmeasured claims + drift-recover), `GET /jobs/{id}/logs` (proxy with assigned-node → fan-out → local FS fallback, UUID + path-traversal guards). |
 | [`nodes.py`](backend/src/routers/nodes.py) | 66 | `GET /nodes`, `GET /gpu-costs`, `GET /configurations`. |
 | [`admin.py`](backend/src/routers/admin.py) | 62 | `GET /admin/slots` (per-node total/available/used_mem/used_db/drift + lifetime metrics), `POST /admin/reconcile-slots`, `GET /admin/dispatch-tasks` (in-flight task introspection). |
-| [`health.py`](backend/src/routers/health.py) | 44 | `GET /`, `GET /health` (DB ping + runner status, 503 if degraded). |
+| [`health.py`](backend/src/routers/health.py) | 41 | `GET /`, `GET /health` (DB ping + runner status, 503 if degraded). |
 | [`profiling.py`](backend/src/routers/profiling.py) | 24 | `GET /profiling-results/{job_id}` (ordered fastest-first). |
 | [`__init__.py`](backend/src/routers/__init__.py) | 16 | Aggregates all routers into one. |
 
@@ -556,11 +608,11 @@ own redundant UPDATE. It's the API and worker cooperating across an async gap.
 ## 5. Worker — `worker/`
 
 Pure-Python asyncio HTTP server, one per GPU node, driving the Docker CLI.
-**1,526 LOC across 7 modules.** Must stay importable on Python 3.7 (legacy
+**1,546 LOC across 7 modules.** Must stay importable on Python 3.7 (legacy
 image). It owns no
 scheduling logic — it executes, measures, and reports state back to Postgres.
 
-### 5.1 `execution.py` — the four-phase job lifecycle *(572 LOC)*
+### 5.1 `execution.py` — the four-phase job lifecycle *(586 LOC)*
 
 **Purpose.** Run a job in a container, stream its output, measure profiling
 epochs, and handle every completion/failure/stop/migration outcome with correct
@@ -636,11 +688,11 @@ timeout and the 10-s `dispatch_ready` wait are defensive bounds (→ §11).
 |---|---|---|
 | [`docker.py`](worker/docker.py) | 266 | Docker CLI wrapper. `total_gpus()` (env → `nvidia-smi` → 0), `_gpu_flags()` (runtime/cdi/none modes; uses `NVIDIA_VISIBLE_DEVICES` to pin concrete indices, §3.9), `_is_rootless_docker()` + `_host_data_owner()` + `build_run_cmd()` (rootless vs. rootful `--user`, DNS pinning, checkpoint/runs/shared-dataset mounts), `kill_container()` (kill + `rm -f` + poll-to-convergence), `remove_container_if_exists()`. |
 | [`reconcile.py`](worker/reconcile.py) | 102 | Startup recovery. `reconcile_job_states()` marks RUNNING/PROFILING rows whose container is gone as FAILED + deletes unmeasured claims + emits `ijm_slot_freed` (a **legacy 2-field** payload → defaults to TERMINAL). `pickup_queued_jobs()` **clears `assigned_node`** and notifies the API (the §3.1 phantom-release fix). |
-| [`profiling.py`](worker/profiling.py) | 109 | `compute_duration()` (mean of post-warmup inter-epoch intervals; excludes the warmup epoch) and `handle_complete()` (writes `duration_seconds` filtered by `instance_id`, decides whether the instance `still_owes` more profiles, resets to QUEUED, NOTIFYs — all in one transaction). |
+| [`profiling.py`](worker/profiling.py) | 115 | `compute_duration()` (mean of post-warmup inter-epoch intervals; excludes the warmup epoch) and `handle_complete()` (writes `duration_seconds` filtered by `instance_id`, decides whether the instance `still_owes` more profiles, resets to QUEUED, NOTIFYs — all in one transaction). |
 | [`db.py`](worker/db.py) | 107 | `connect()` / `conn()` short-lived connections; `update_job()` and `fetch_job()` with **column whitelists** so the worker can't accidentally write read-only fields. Caller owns the transaction for atomicity. |
 | [`constants.py`](worker/constants.py) | 43 | `NODE_ID`, `WORKER_PORT`, `RUNNABLE_STATUSES = {QUEUED}`, container-name convention (`ijm-` + first 8 chars), mount paths. |
 | [`Dockerfile`](worker/Dockerfile) / [`Dockerfile.server`](worker/Dockerfile.server) | — | Worker container images. |
-| `tests/__init__.py` | 0 | **Empty — a known coverage gap.** The worker is exercised only by `infra/e2e_scenario*.sh`; per CLAUDE.md, adding worker logic without an e2e to back it is a recognized risk. |
+| [`tests/test_profiling_duration.py`](worker/tests/test_profiling_duration.py) | — | The only worker unit-test file (guards `compute_duration`'s warmup-exclusion math). **Thin by design — a known coverage gap:** everything else in the worker is exercised only by `infra/e2e_scenario*.sh`; per CLAUDE.md, adding worker logic without an e2e to back it is a recognized risk. |
 
 ---
 
@@ -669,7 +721,7 @@ The training container images and scripts. They subclass a common
 `BaseTrainer`, support checkpoint resume, and are built from a single Dockerfile
 parameterized by a `SCRIPT` build-arg.
 
-### 7.1 `base.py` — the trainer base class *(417 LOC)* — the cross-version centerpiece
+### 7.1 `base.py` — the trainer base class *(416 LOC)* — the cross-version centerpiece
 
 **Purpose.** Provide checkpoint save/load, dataset loading, the training loop,
 and evaluation, so concrete scripts only define the model/dataset/preprocessing.
@@ -692,7 +744,7 @@ A40↔P600 / torch-2.6↔1.5.1 migration path.
 
 | File | Purpose |
 |---|---|
-| [`cnn_big.py`](runtime/cnn_big.py) | Deep, wide CNN on synthetic 128×128×3 tensors. **The placement-choice / 2-GPU benchmark** — deliberately sized so per-step compute amortizes DataParallel sync overhead (P600×2 is 1.68× P600×1; A40×2 is 1.12× A40×1). Used by `e2e_scenario_2gpu.sh` (the 2-GPU standard-placement proof) and `e2e_scenario_2types.sh` (pins + urgent job). Don't change its shape without re-measuring (CLAUDE.md). |
+| [`cnn_big.py`](runtime/cnn_big.py) | Deep, wide CNN on synthetic 128×128×3 tensors — **class-conditional Gaussian blobs** (each class owns a fixed prototype; samples are `signal·prototype + noise`), so the label is a genuine function of the input and test accuracy measures generalisation, while shapes/dtypes (and hence per-step FLOPs and the profiling) match the old pure-noise version exactly. **The placement-choice / 2-GPU benchmark** — deliberately sized so per-step compute amortizes DataParallel sync overhead (P600×2 is 1.68× P600×1; A40×2 is 1.12× A40×1). Used by `e2e_scenario_2gpu.sh` (the 2-GPU standard-placement proof) and `e2e_scenario_2types.sh` (pins + urgent job). Don't change its shape without re-measuring (CLAUDE.md). |
 | [`convnet.py`](runtime/convnet.py) | Lightweight 3-layer CNN on CIFAR-10 (no multi-GPU win). |
 | [`efficientnet.py`](runtime/efficientnet.py) | MBConv EfficientNet on CIFAR-10 (SiLU unsupported on legacy torch). |
 | [`lstm_big.py`](runtime/lstm_big.py) / [`lstm_small.py`](runtime/lstm_small.py) | 3-layer / 1-layer LSTM on MNIST sequences; `flatten_parameters()` to quiet the DataParallel RNN warning. |
@@ -706,16 +758,17 @@ A40↔P600 / torch-2.6↔1.5.1 migration path.
 
 ## 8. Tests — `backend/tests/`
 
-A real pytest suite (8 files) framed as **regression guards** — most map directly
-to a bug in §3.
+A real pytest suite (8 test modules) framed as **regression guards** — most map
+directly to a bug in §3.
 
 | File | Guards |
 |---|---|
 | [`test_node_slots.py`](backend/tests/test_node_slots.py) | Semaphore construction, acquire/release, **multi-GPU atomic acquire** (the deadlock fix), reconcile, drift detection. The §3.1/§3.2 spec. |
+| [`test_fault_injection.py`](backend/tests/test_fault_injection.py) | **Fault-injection against real PostgreSQL** (skips if unreachable): concurrent optimizer-apply and worker Phase-1 claims are exclusive, reaper-clear makes an in-flight worker claim miss (the 5-on-4-GPUs race), the stuck-dispatch reaper reclaims orphans but skips live/fresh rows, drift recovery heals leaked permits and missed acquires, `drift_tick` fires only at quiescence, the pending-migrates GC pops dead plans and keeps live ones, and a reassigned row stops streaming progress. |
 | [`test_job_lifecycle.py`](backend/tests/test_job_lifecycle.py) | The full state machine: stop/resume transitions, invalid-transition 409s, rapid stop/resume cycling, the runner contract — via `FakeConn`/`FakeRunner`. |
 | [`test_main.py`](backend/tests/test_main.py) | Root/health (503 when degraded), job CRUD, deadline UTC normalization, admin endpoints. |
 | [`test_pending_migrates.py`](backend/tests/test_pending_migrates.py) | The migrate-apply `WHERE` clause (`status=QUEUED AND assigned_node IS NULL`); **greps the source** to fail if the status guard is refactored away. The §3.5 spec. |
-| [`test_slot_payload.py`](backend/tests/test_slot_payload.py) | Legacy 2-field vs. new 3-field payload parsing, and the wake-gate (AUTO_PREEMPT does **not** wake). The §3.3 spec. |
+| [`test_slot_payload.py`](backend/tests/test_slot_payload.py) | Legacy 2-field vs. new 3-field payload parsing, and the wake-gate (`should_wake_on_slot_freed`: external reasons always wake; AUTO_PREEMPT wakes **only** when no plan work is in flight). The §3.3 spec. |
 | [`test_sql_integration.py`](backend/tests/test_sql_integration.py) | Real-Postgres JSONB equality (`= %s::jsonb`); skips gracefully if no DB. |
 | [`test_infra.py`](backend/tests/test_infra.py) | Compose validation: Postgres volume mount at `/var/lib/postgresql` (not `.../data`), consistent Python base images. |
 
@@ -732,7 +785,8 @@ to a bug in §3.
 | `e2e_scenario_2gpu.sh` | 2-GPU DataParallel bundle placement. |
 | `smoke_test.sh` | Bring up the stack, wait for API + worker health. |
 | `deploy.sh` / `deploy_native.sh` / `tunnel.sh` | Remote deploy (SSH ControlMaster multiplexing; rootless variant avoids a `pkill` self-match SSH-255 bug) and tunnel setup. |
-| `generate_chart.py` (494) / `generate_chart_tex.py` (404) | Parse `api.log` into a matplotlib PNG / a deterministic TikZ Gantt chart for the thesis — every bar position comes from a real log event, not hand-tuning. |
+| `generate_chart.py` (511) / `generate_chart_tex.py` (597) | Parse `api.log` into a matplotlib PNG / a deterministic TikZ Gantt chart for the thesis — every bar position comes from a real log event, not hand-tuning. |
+| `generate_fault_chart.py` (143) | TikZ step plot of `used_db` vs `used_mem` from a fault-injection slot timeseries (drift windows shaded, reconcile deltas annotated) — same auto-generated-from-committed-logs approach. |
 | `follow_optimizer.sh` / `snapshot_run.sh` / `ijm` | Tail optimizer decisions live; snapshot a run's logs/json; the CLI entry point. |
 
 ---
@@ -765,7 +819,7 @@ that isn't fully persistent.
 
 | # | Location | What it compensates for | Classification & root-fix note |
 |---|---|---|---|
-| 1 | `app._drift_watcher` (15 s) + `_slot_listener` reconnect | Lost `ijm_slot_freed` events when an SSH tunnel drops | **Justified safety net.** DB is the real source of truth; this reconciles to it. Look here first if a release path is found missing a `NOTIFY`. |
+| 1 | `app._drift_watcher` (15 s, via `drift_tick`) + `_slot_listener` reconnect | Lost `ijm_slot_freed` events when an SSH tunnel drops | **Justified safety net.** DB is the real source of truth; this reconciles to it. Only fires at quiescence (§3.2) — don't remove the gate, sampling mid-dispatch/migrate misreads legal transitional state as drift and re-feeds the §3.3 churn loop. Look here first if a release path is found missing a `NOTIFY`. |
 | 2 | `app._reset_stuck_queued_assignments` (30 s reaper) | QUEUED-with-assignment rows orphaned by an API crash post-dispatch | **Band-aid-ish.** Root cause is that dispatch tasks live only in process memory (`state.dispatch_tasks`) and don't survive a restart. A fully persistent task ledger would remove the need; judged not worth the cost. |
 | 3 | `node_slots` `BoundedSemaphore` + `SLOT-OVERSUB`/`OVERRELEASE` logs | A latent acquire/release imbalance | **Structural guard**, not a band-aid — caps capacity so a bug can't silently oversubscribe; the ERROR log surfaces it. |
 | 4 | `execution._claim_gpu_indices` fallback to lowest indices | A slot-accounting bug delivering more GPUs than free | **Deliberate.** Never block a launch; the WARNING makes the upstream bug operator-visible. |
@@ -776,27 +830,28 @@ that isn't fully persistent.
 | 9 | `_stream_output` 1 s progress coalescing | ~5 s/line DB writes over the SSH tunnel starving the reader | **Correct fix** — batches writes so `/stop` drains don't hit the 60 s timeout. |
 | 10 | `base.py` fd-2 cuDNN noise filter, `strict=False`, optimizer try/except, format/kwarg fallbacks | Legacy torch 1.5.1 / Python 3.7 / FUSE mounts | **Necessary compatibility shims** for the heterogeneous cluster (§3.7–§3.8). CLAUDE.md forbids tightening them. |
 | 11 | `reconcile_job_states` emits a **legacy 2-field** payload (→ TERMINAL) while `_zombie_release` uses `ORPHAN_DRAIN` | — | **Minor inconsistency to be aware of.** Both wake the optimizer (TERMINAL and ORPHAN_DRAIN are both external reasons), so behavior is correct, but the reason tag on the reconcile path is less precise than it could be. |
+| 12 | `app.gc_stale_pending_migrates` (runs before every migrate-apply and every `drift_tick`) | Pending-migrate entries whose source row can no longer drain (job outran its own preempt, user-stop, delete) reading as "plan in flight" forever | **Band-aid-ish, same root as #2.** Plan state lives only in process memory (`state.pending_migrates`); a persistent plan ledger with row-level triggers would remove the need. GC against the DB row state is the cheap honest alternative. |
 
 ---
 
 ## 12. Appendix: full file inventory
 
-### Backend — `backend/src/` (3,433 LOC)
+### Backend — `backend/src/` (3,720 LOC)
 
 | File | LOC | One-line role |
 |---|---|---|
-| `app.py` | 752 | App factory, lifespan, scheduler engine + 5 background tasks |
-| `profiling.py` | 588 | ProfilingScheduler — profile-always policy |
+| `app.py` | 986 | App factory, lifespan, scheduler engine + 5 background tasks |
+| `profiling.py` | 645 | ProfilingScheduler — profile-always policy |
 | `optimizer.py` | 481 | GPUspb optimizer client (request build + response classify) |
 | `routers/jobs.py` | 415 | Job CRUD / stop / resume / delete / logs |
 | `node_slots.py` | 362 | Per-node GPU semaphores + drift reconciliation |
-| `job_dispatcher.py` | 285 | The single dispatch path (acquire → /run) |
+| `job_dispatcher.py` | 284 | The single dispatch path (acquire → /run) |
 | `models.py` | 139 | Pydantic schemas |
 | `cluster.py` | 68 | Cluster + GPU-cost config loader |
 | `routers/nodes.py` | 66 | Node / GPU-cost / configuration endpoints |
 | `routers/admin.py` | 62 | Slot introspection + manual reconcile |
 | `state.py` | 59 | Global mutable state + connection helper |
-| `routers/health.py` | 44 | Health checks |
+| `routers/health.py` | 41 | Health checks |
 | `constants.py` | 32 | Status sets, priority bounds, profiling config |
 | `routers/profiling.py` | 24 | Profiling-results query |
 | `main.py` | 22 | Entry point + logging bootstrap |
@@ -805,25 +860,25 @@ that isn't fully persistent.
 | `utils/__init__.py` | 7 | Re-export |
 | `__init__.py` | 3 | Package marker |
 
-### Worker — `worker/` (1,526 LOC across 7 modules)
+### Worker — `worker/` (1,546 LOC across 7 modules)
 
 | File | LOC | One-line role |
 |---|---|---|
-| `execution.py` | 572 | Four-phase job lifecycle, GPU claim, progress streaming |
+| `execution.py` | 586 | Four-phase job lifecycle, GPU claim, progress streaming |
 | `app.py` | 327 | HTTP server: /run /stop /logs /health, startup reconcile |
 | `docker.py` | 266 | Docker CLI wrapper (GPU pinning, rootless/rootful, kill) |
-| `profiling.py` | 109 | Profiling completion (duration → DB → re-queue) |
+| `profiling.py` | 115 | Profiling completion (duration → DB → re-queue) |
 | `db.py` | 107 | Whitelisted DB access |
 | `reconcile.py` | 102 | Startup recovery (reconcile + pickup) |
 | `constants.py` | 43 | Node config + container-name helpers |
-| `tests/__init__.py` | 0 | **Empty — known coverage gap** |
+| `tests/test_profiling_duration.py` | — | The only worker unit test (**thin — known coverage gap**; rest is e2e) |
 | `Dockerfile`, `Dockerfile.server`, `requirements.txt`, `pyproject.toml`, `pytest.ini` | — | Packaging / tooling |
 
-### Shared — `shared/` (76 LOC)
+### Shared — `shared/` (77 LOC)
 
 | File | LOC | One-line role |
 |---|---|---|
-| `constants.py` | 52 | JobStatus, SlotFreedReason, NOTIFY channels + payload format |
+| `constants.py` | 53 | JobStatus, SlotFreedReason, NOTIFY channels + payload format |
 | `profiling_sql.py` | 24 | `delete_unmeasured_claims` (shared by API + worker) |
 | `__init__.py` | 0 | Package marker |
 
@@ -831,24 +886,25 @@ that isn't fully persistent.
 
 | File | One-line role |
 |---|---|
-| `base.py` (417) | Trainer base class — checkpoint cross-version resilience (centerpiece) |
+| `base.py` (416) | Trainer base class — checkpoint cross-version resilience (centerpiece) |
 | `cnn_big.py` | Synthetic deep CNN — the 2-GPU / placement-choice benchmark |
 | `convnet.py`, `efficientnet.py`, `lstm_big.py`, `lstm_small.py`, `sleepy.py` | Concrete trainers |
 | `Dockerfile`, `Dockerfile.legacy` | Modern (torch 2.6) / legacy (torch 1.5.1) images |
 | `compat/Dockerfile`, `compat/train_lstm.py` | Intermediate torch-1.7.1 compat trainer |
 | `requirements.txt`, `README.md` | Deps / model table + build docs |
 
-### Tests — `backend/tests/` (8 files)
+### Tests — `backend/tests/` (9 files)
 
-`test_job_lifecycle.py`, `test_main.py`, `test_node_slots.py`,
-`test_pending_migrates.py`, `test_slot_payload.py`, `test_sql_integration.py`,
-`test_infra.py`, `__init__.py`.
+`test_fault_injection.py`, `test_job_lifecycle.py`, `test_main.py`,
+`test_node_slots.py`, `test_pending_migrates.py`, `test_slot_payload.py`,
+`test_sql_integration.py`, `test_infra.py`, `__init__.py`.
 
-### Infra — `infra/` (18 files)
+### Infra — `infra/` (17 files)
 
-4 compose files, 4 `e2e_scenario*.sh`, `smoke_test.sh`, `deploy.sh`,
+3 compose files, 4 `e2e_scenario*.sh`, `smoke_test.sh`, `deploy.sh`,
 `deploy_native.sh`, `tunnel.sh`, `follow_optimizer.sh`, `snapshot_run.sh`,
-`generate_chart.py`, `generate_chart_tex.py`, `ijm`.
+`generate_chart.py`, `generate_chart_tex.py`, `generate_fault_chart.py`,
+`ijm`.
 
 ### Documentation — `documentation/`
 

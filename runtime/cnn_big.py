@@ -31,14 +31,39 @@ logger = logging.getLogger(__name__)
 
 
 class SyntheticTensorDataset(Dataset):
-    """Random tensors + random labels, fixed-seed so two runs see the same data."""
+    """Class-conditional Gaussian blobs — learnable synthetic data.
+
+    Each class owns a fixed random prototype tensor (shared across splits
+    via a constant seed); every sample is ``signal * prototype[label] +
+    noise``.  The label is therefore a genuine function of the input, so
+    the CNN can learn it, and train/test draw the same prototypes but
+    independent per-sample noise (different ``seed``) so test accuracy
+    measures generalisation rather than noise memorisation.  Shapes and
+    dtypes are identical to the old pure-noise version, so per-step FLOPs
+    — and the DataParallel profiling that depends on them — are unchanged.
+    Fixed seeds keep every run reproducible.
+    """
 
     def __init__(
-        self, n: int, channels: int = 3, size: int = 128, num_classes: int = 10
+        self,
+        n: int,
+        channels: int = 3,
+        size: int = 128,
+        num_classes: int = 10,
+        *,
+        seed: int = 0,
+        signal: float = 0.1,
     ) -> None:
-        gen = torch.Generator().manual_seed(0)
-        self.x = torch.randn(n, channels, size, size, generator=gen)
+        # Prototypes: constant seed => identical class structure in every
+        # split and every run.
+        proto_gen = torch.Generator().manual_seed(1234)
+        prototypes = torch.randn(num_classes, channels, size, size, generator=proto_gen)
+        # Labels + per-sample noise: split-specific seed => train and test
+        # are distinct draws from the same class-conditional distribution.
+        gen = torch.Generator().manual_seed(seed)
         self.y = torch.randint(0, num_classes, (n,), generator=gen)
+        noise = torch.randn(n, channels, size, size, generator=gen)
+        self.x = signal * prototypes[self.y] + noise
 
     def __len__(self) -> int:
         return self.x.shape[0]
@@ -102,7 +127,11 @@ class Trainer(BaseTrainer):
         # GPU enough batches to amortise per-epoch setup.
         n_train = int(os.environ.get("SYNTHETIC_TRAIN_N", "4096"))
         n_test = int(os.environ.get("SYNTHETIC_TEST_N", "512"))
-        return SyntheticTensorDataset(n_train), SyntheticTensorDataset(n_test)
+        signal = float(os.environ.get("SYNTHETIC_SIGNAL", "0.1"))
+        return (
+            SyntheticTensorDataset(n_train, seed=0, signal=signal),
+            SyntheticTensorDataset(n_test, seed=1, signal=signal),
+        )
 
     def _preprocess_batch(
         self, images: torch.Tensor, labels: torch.Tensor

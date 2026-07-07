@@ -26,6 +26,11 @@ Each test injects one fault and asserts the corresponding invariant from
     in-memory permit is released and a missed acquire is re-taken to match the
     DB authority (``test_drift_recovers_leaked_permit``,
     ``test_drift_recovers_missed_acquire``).
+  * **Drift heartbeat only fires at quiescence.** ``drift_tick`` recovers a
+    real leak when the cluster is idle, but treats in-flight dispatches
+    (live task, QUEUED+assigned row) and pending migrates as legal
+    transitional state — no recovery, no scheduler wake
+    (``test_drift_tick_*``).
   * **Reassigned row stops streaming.** A progress write guarded on
     ``container_name`` no-ops once the row is reassigned
     (``test_progress_write_noops_on_reassigned_row``).
@@ -47,7 +52,7 @@ import pytest_asyncio
 from psycopg.types.json import Json
 from shared.constants import JobStatus
 
-from src.app import reset_stuck_queued_assignments
+from src.app import drift_tick, gc_stale_pending_migrates, reset_stuck_queued_assignments
 from src.cluster import ClusterManager
 from src.node_slots import NodeSlots
 
@@ -460,3 +465,198 @@ async def test_progress_write_noops_on_reassigned_row(pool: Any) -> None:
     assert await progress_write(old_container, "4/50") == 0
     row = await _row(pool, jid)
     assert row["container_name"] == new_container
+
+
+# ---------------------------------------------------------------------------
+# Drift heartbeat quiescence gate (drift_tick)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_drift_tick_recovers_leak_at_quiescence(pool: Any) -> None:
+    """A leaked permit (lost slot-freed NOTIFY) with no in-flight work is the
+    one case the heartbeat exists for: drift_tick recovers it and returns
+    True so the caller wakes the scheduler.  A finished dispatch task left in
+    the registry must not block the check.
+    """
+    slots = NodeSlots(_make_cluster())
+    await slots.acquire("matemagician", 1)  # permit held, DB has no row behind it
+
+    done_task = asyncio.create_task(asyncio.sleep(0))
+    await done_task  # completed → not in-flight
+
+    recovered = await drift_tick(_get_conn_factory(pool), slots, {"finished-job": done_task}, {})
+
+    assert recovered is True
+    assert slots.available("matemagician") == 2
+    # Idempotent: nothing left to do, no wake requested.
+    assert await drift_tick(_get_conn_factory(pool), slots, {}, {}) is False
+
+
+@pytest.mark.asyncio
+async def test_drift_tick_skips_live_dispatch_task(pool: Any) -> None:
+    """A live dispatch task holds its permit legitimately (acquire happened,
+    worker hasn't flipped the row to RUNNING yet).  drift_tick must neither
+    'recover' that permit nor request a scheduler wake.
+    """
+    slots = NodeSlots(_make_cluster())
+    await slots.acquire("matemagician", 1)  # held by the in-flight dispatch
+
+    inflight = asyncio.create_task(asyncio.sleep(30))
+    try:
+        recovered = await drift_tick(_get_conn_factory(pool), slots, {"job-a": inflight}, {})
+        assert recovered is False
+        assert slots.available("matemagician") == 1, "permit must stay held"
+    finally:
+        inflight.cancel()
+
+
+@pytest.mark.asyncio
+async def test_drift_tick_skips_pending_migrate(pool: Any) -> None:
+    """A stashed migrate plan whose source row is still RUNNING means the
+    /stop drain + re-dispatch are in flight — transitional state, not drift.
+    No recovery, no wake.  (The entry must have a live source row: drift_tick
+    GCs entries whose row is terminal or gone before honouring the gate.)
+    """
+    slots = NodeSlots(_make_cluster())
+    # 1 permit matches the RUNNING row below; the 2nd is a transient extra
+    # that WOULD read as drift — the pending-migrate gate must stop the
+    # heartbeat from "recovering" it mid-plan.
+    await slots.acquire("polimi-gpu", 2)
+    jid = str(uuid4())
+    await _insert_job(pool, job_uuid=jid, status=JobStatus.RUNNING, assigned_node="polimi-gpu", gpu_config={"A40": 1})
+    pending = {jid: object()}
+
+    recovered = await drift_tick(_get_conn_factory(pool), slots, {}, pending)
+
+    assert recovered is False
+    assert jid in pending, "live migrate entry must survive the GC"
+    assert slots.available("polimi-gpu") == 0, "no permit may be force-released mid-plan"
+
+
+@pytest.mark.asyncio
+async def test_drift_tick_skips_queued_assigned_row(pool: Any) -> None:
+    """A QUEUED row with assigned_node set is the DB-visible signature of a
+    dispatch between /run-accepted and the worker's Phase-1 claim (the
+    dispatch task itself may already be done).  drift_tick must treat the
+    cluster as non-quiescent and leave the permit alone.
+    """
+    slots = NodeSlots(_make_cluster())
+    await slots.acquire("matemagician", 1)
+    await _insert_job(
+        pool,
+        job_uuid=str(uuid4()),
+        status=JobStatus.QUEUED,
+        assigned_node="matemagician",
+        gpu_config={"QuadroP600": 1},
+    )
+
+    recovered = await drift_tick(_get_conn_factory(pool), slots, {}, {})
+
+    assert recovered is False
+    assert slots.available("matemagician") == 1, "permit must stay held"
+
+
+@pytest.mark.asyncio
+async def test_drift_tick_quiet_when_consistent(pool: Any) -> None:
+    """Quiescent AND consistent (permit held, matching RUNNING row): nothing to
+    recover, no wake — the steady-state tick is silent.
+    """
+    slots = NodeSlots(_make_cluster())
+    await slots.acquire("polimi-gpu", 1)
+    await _insert_job(
+        pool,
+        job_uuid=str(uuid4()),
+        status=JobStatus.RUNNING,
+        assigned_node="polimi-gpu",
+        gpu_config={"A40": 1},
+        container_name="ijm-consistent",
+    )
+
+    assert await drift_tick(_get_conn_factory(pool), slots, {}, {}) is False
+    assert slots.available("polimi-gpu") == 1
+
+
+# ---------------------------------------------------------------------------
+# Pending-migrate GC (gc_stale_pending_migrates)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_gc_pops_migrate_whose_job_finished(pool: Any) -> None:
+    """The 2026-07-16 wedge: a migrate was planned, but the job SUCCEEDED
+    before the preempt landed.  The entry can never apply (row never reaches
+    QUEUED+NULL) and must be GC'd, or it reads as in-flight plan work forever
+    and mutes the drop-preempt wake + drift heartbeat.
+    """
+    jid = str(uuid4())
+    await _insert_job(pool, job_uuid=jid, status=JobStatus.SUCCEEDED)
+    pending = {jid: object()}
+
+    popped = await gc_stale_pending_migrates(_get_conn_factory(pool), pending)
+
+    assert popped == [jid]
+    assert not pending
+
+
+@pytest.mark.asyncio
+async def test_gc_keeps_migrate_still_draining(pool: Any) -> None:
+    """Source row still RUNNING → the /stop drain is in flight; the plan is
+    alive and must be kept."""
+    jid = str(uuid4())
+    await _insert_job(pool, job_uuid=jid, status=JobStatus.RUNNING, assigned_node="polimi-gpu", gpu_config={"A40": 1})
+    pending = {jid: object()}
+
+    assert await gc_stale_pending_migrates(_get_conn_factory(pool), pending) == []
+    assert jid in pending
+
+
+@pytest.mark.asyncio
+async def test_gc_keeps_drained_row_ready_to_apply(pool: Any) -> None:
+    """QUEUED + assigned_node NULL is exactly the state the apply UPDATE
+    claims — GC must leave it for the apply step."""
+    jid = str(uuid4())
+    await _insert_job(pool, job_uuid=jid, status=JobStatus.QUEUED)
+    pending = {jid: object()}
+
+    assert await gc_stale_pending_migrates(_get_conn_factory(pool), pending) == []
+    assert jid in pending
+
+
+@pytest.mark.asyncio
+async def test_gc_pops_deleted_and_superseded_rows(pool: Any) -> None:
+    """A deleted row (DELETE /jobs) and a QUEUED row someone else already
+    re-assigned are both dead plans."""
+    gone = str(uuid4())  # never inserted → deleted
+    superseded = str(uuid4())
+    await _insert_job(
+        pool,
+        job_uuid=superseded,
+        status=JobStatus.QUEUED,
+        assigned_node="matemagician",
+        gpu_config={"QuadroP600": 1},
+    )
+    pending = {gone: object(), superseded: object()}
+
+    popped = await gc_stale_pending_migrates(_get_conn_factory(pool), pending)
+
+    assert sorted(popped) == sorted([gone, superseded])
+    assert not pending
+
+
+@pytest.mark.asyncio
+async def test_drift_tick_unwedged_by_stale_migrate(pool: Any) -> None:
+    """End-to-end wedge check: a leaked permit AND a stale migrate entry.
+    drift_tick must GC the entry and still recover the leak (pre-GC it
+    returned False forever)."""
+    slots = NodeSlots(_make_cluster())
+    await slots.acquire("matemagician", 1)  # leaked permit, no DB row
+    dead = str(uuid4())
+    await _insert_job(pool, job_uuid=dead, status=JobStatus.FAILED)
+    pending = {dead: object()}
+
+    recovered = await drift_tick(_get_conn_factory(pool), slots, {}, pending)
+
+    assert recovered is True
+    assert not pending, "stale entry must be purged"
+    assert slots.available("matemagician") == 2

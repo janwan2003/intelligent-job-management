@@ -45,9 +45,15 @@
 set -euo pipefail
 
 API="${API:-http://localhost:8000}"
+IMAGE_NS="${IMAGE_NS:-wangrat}"   # Docker Hub namespace of the training images
+# Portable "UTC timestamp N minutes from now" (GNU `date -d` / BSD `date -v` on macOS).
+utc_in_min() {
+    date -u -d "+$1 minutes" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null \
+        || date -u -v "+$1M" +%Y-%m-%dT%H:%M:%SZ
+}
 NODE_A="${NODE_A:-polimi}"       # matemagician SSH alias
 JOB_TYPE="${JOB_TYPE:-cnn_big}"
-IMAGE="${IMAGE:-wangrat/ijm-${JOB_TYPE}:latest}"
+IMAGE="${IMAGE:-${IMAGE_NS}/ijm-${JOB_TYPE}:latest}"
 EPOCHS="${EPOCHS:-50}"
 URGENT_EPOCHS="${URGENT_EPOCHS:-200}"   # URGENT runs ~4× longer so Stages 3-4 have a live preempt victim+running job to act on
 TERMINAL_TIMEOUT_S="${TERMINAL_TIMEOUT_S:-3600}"
@@ -132,8 +138,8 @@ pass "DB + on-disk state cleared"
 # Profiling sweep with configs_per_job=2 still covers every (node, GPU-count)
 # cell, including 2-GPU bundles on both A40 and QuadroP600.
 log "Stage 1: submit 4 patient ${JOB_TYPE} jobs"
-DL_TIGHT=$(date -u -d '+30 minutes' +%Y-%m-%dT%H:%M:%SZ)
-DL_SLACK=$(date -u -d '+2 hours' +%Y-%m-%dT%H:%M:%SZ)
+DL_TIGHT=$(utc_in_min 30)
+DL_SLACK=$(utc_in_min 120)
 J1_EPOCHS=75
 J2_EPOCHS=75
 J3_EPOCHS=50
@@ -203,7 +209,7 @@ log "  settling: 60s wait after profile sweep so the cluster reaches steady stat
 sleep 60
 
 log "Stage 2: submit URGENT ${JOB_TYPE} (priority=$PRIORITY_MAX, deadline +10 min, epochs=$URGENT_EPOCHS)"
-URGENT_DL=$(date -u -d '+10 minutes' +%Y-%m-%dT%H:%M:%SZ)
+URGENT_DL=$(utc_in_min 10)
 JOB_URGENT=$(submit_job "$PRIORITY_MAX" "$URGENT_DL" "$URGENT_EPOCHS") || fail "POST /jobs urgent rejected"
 log "  id: ${JOB_URGENT:0:8}"
 

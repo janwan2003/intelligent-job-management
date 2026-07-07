@@ -20,6 +20,12 @@
 set -euo pipefail
 
 API="${API:-http://localhost:8000}"
+IMAGE_NS="${IMAGE_NS:-wangrat}"   # Docker Hub namespace of the training images
+# Portable "UTC timestamp N minutes from now" (GNU `date -d` / BSD `date -v` on macOS).
+utc_in_min() {
+    date -u -d "+$1 minutes" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null \
+        || date -u -v "+$1M" +%Y-%m-%dT%H:%M:%SZ
+}
 NODE_A="${NODE_A:-polimi}"
 NODE_B="${NODE_B:-polimi-gpu}"
 IJM_REMOTE_USER="${IJM_REMOTE_USER:-wangrat}"
@@ -38,7 +44,7 @@ submit_job() {
     local resp
     resp=$(curl -sS -X POST "$API/jobs" -H 'Content-Type: application/json' -d "{
         \"job_id\": \"$jt\",
-        \"dockerImage\": \"wangrat/ijm-$jt:latest\",
+        \"dockerImage\": \"$IMAGE_NS/ijm-$jt:latest\",
         \"command\": [],
         \"Priority\": $prio,
         \"deadline\": \"$deadline\",
@@ -97,8 +103,8 @@ pass "lstm-small + cnn_big profiled; convnet unprofiled (correct precondition)"
 #   JOB4  cnn_big     priority 4  ← protected
 #
 log "Stage 1: 4 patient pre-profiled jobs to fill the cluster"
-DL_LOOSE=$(date -u -d '+8 hours'  +%Y-%m-%dT%H:%M:%SZ)
-DL_MED=$(date  -u -d '+2 hours'   +%Y-%m-%dT%H:%M:%SZ)
+DL_LOOSE=$(utc_in_min 480)
+DL_MED=$(utc_in_min 120)
 JOB1=$(submit_job lstm-small 1 "$DL_LOOSE" "$EPOCHS_SMALL"); sleep 4
 JOB2=$(submit_job cnn_big    1 "$DL_LOOSE" "$EPOCHS_BIG");   sleep 4
 JOB3=$(submit_job lstm-small 4 "$DL_MED"   "$EPOCHS_SMALL"); sleep 4

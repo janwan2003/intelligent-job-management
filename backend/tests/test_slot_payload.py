@@ -10,10 +10,12 @@ the wake on it.
 
 from __future__ import annotations
 
+import asyncio
+
 import pytest
 from shared.constants import SlotFreedReason
 
-from src.app import parse_slot_payload
+from src.app import parse_slot_payload, should_wake_on_slot_freed
 
 
 class TestParseSlotPayload:
@@ -89,27 +91,41 @@ class TestParseSlotPayload:
 
 
 class TestListenerWakeGate:
-    """The listener calls ``node_slots.release()`` unconditionally and
-    ``notify_event.set()`` only for non-AUTO_PREEMPT events.
+    """``should_wake_on_slot_freed`` — the listener's wake decision.
 
-    We model the gate decision in isolation rather than spinning up a
-    real Postgres LISTEN connection.  The decision logic lives in
-    ``_slot_listener`` but is small enough that a behavioural assertion
-    matching the new code keeps regressions visible.
+    External frees (TERMINAL / USER_STOP / ORPHAN_DRAIN) always wake.
+    AUTO_PREEMPT wakes ONLY when no plan work is in flight: with a pending
+    migrate or a live dispatch task, the plan's own dispatch consumes the
+    slot and a wake would let RG flip the plan mid-execution; with neither,
+    the free came from a drop-preempt whose evicted row would otherwise sit
+    QUEUED until the 60-min watcher (the 2026-07-16 stranded-job bug).
     """
 
     @pytest.mark.parametrize(
-        ("reason", "should_wake"),
-        [
-            (SlotFreedReason.TERMINAL, True),
-            (SlotFreedReason.USER_STOP, True),
-            (SlotFreedReason.ORPHAN_DRAIN, True),
-            (SlotFreedReason.AUTO_PREEMPT, False),
-        ],
+        "reason",
+        [SlotFreedReason.TERMINAL, SlotFreedReason.USER_STOP, SlotFreedReason.ORPHAN_DRAIN],
     )
-    def test_wake_decision_by_reason(self, reason: SlotFreedReason, should_wake: bool) -> None:
-        # The gate is a single boolean: wake iff reason is not AUTO_PREEMPT.
-        # If this assertion ever flips, _slot_listener's behaviour changed
-        # and the regression test for d6365b9a-style churn would catch
-        # the surface symptom.
-        assert (reason != SlotFreedReason.AUTO_PREEMPT) is should_wake
+    def test_external_reasons_always_wake(self, reason: SlotFreedReason) -> None:
+        # Even mid-plan: an external free is news the scheduler must hear.
+        assert should_wake_on_slot_freed(reason, {}, {}) is True
+        assert should_wake_on_slot_freed(reason, {"job-a": object()}, {}) is True
+
+    def test_auto_preempt_suppressed_while_migrate_pending(self) -> None:
+        assert should_wake_on_slot_freed(SlotFreedReason.AUTO_PREEMPT, {"job-a": object()}, {}) is False
+
+    @pytest.mark.asyncio
+    async def test_auto_preempt_suppressed_while_dispatch_in_flight(self) -> None:
+        inflight = asyncio.create_task(asyncio.sleep(30))
+        try:
+            assert should_wake_on_slot_freed(SlotFreedReason.AUTO_PREEMPT, {}, {"job-b": inflight}) is False
+        finally:
+            inflight.cancel()
+
+    @pytest.mark.asyncio
+    async def test_auto_preempt_wakes_when_plan_landed(self) -> None:
+        # Drop-preempt signature: no pending migrates, no live dispatch.
+        # A finished dispatch task left in the registry must not suppress.
+        done = asyncio.create_task(asyncio.sleep(0))
+        await done
+        assert should_wake_on_slot_freed(SlotFreedReason.AUTO_PREEMPT, {}, {"old-job": done}) is True
+        assert should_wake_on_slot_freed(SlotFreedReason.AUTO_PREEMPT, {}, {}) is True
